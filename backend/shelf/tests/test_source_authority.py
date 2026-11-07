@@ -75,6 +75,40 @@ class SourceAuthorityTests(AuthorityCase):
             self.assertEqual(self.issuer._derived, {})
 
     def test_media_identity_cannot_borrow_moshtix_rights_or_inference_purpose(self):
+        from shelf.disclosure import read_json
+        from shelf.enhance_contract import digest
+        from shelf.provider_catalogue import BOOK_SEARCH, BOOK_DETAILS
+        from shelf.source_authority import source_identity
+
+        # The profile revision hashes this full template with the strict JSON codec.
+        # Keep the tuple API for callers, but bind every component on the JSON wire.
+        expected = (
+            ('tmdb_movie', ['tmdb-movie-fixed-v1', 'https://api.themoviedb.org',
+                            '/3/search/movie'], ['search_movie'], []),
+            ('tmdb_tv', ['tmdb-tv-fixed-v1', 'https://api.themoviedb.org',
+                         '/3/search/tv'], ['search_tv'], []),
+            ('hardcover', ['hardcover-fixed-v1', 'https://api.hardcover.app',
+                           '/v1/graphql'], ['book_search', 'book_details'],
+             [BOOK_SEARCH, BOOK_DETAILS]),
+        )
+        for source, identity, operations, documents in expected:
+            with self.subTest(source=source), patch.object(self.issuer, 'source_key', return_value=source):
+                self.assertIs(type(source_identity(source)), tuple)
+                self.assertEqual(source_identity(source), tuple(identity))
+                template = self.issuer.operation_template()
+                encoded = canonical_bytes(template)
+                self.assertEqual(read_json(encoded), {'source': source, 'identity': identity,
+                    'operations': operations, 'documents': documents})
+                bound_digest = digest(encoded)
+                for field in ('identity', 'operations', 'documents'):
+                    for index in range(len(template[field])):
+                        changed = read_json(encoded)
+                        changed[field][index] += '-changed'
+                        self.assertNotEqual(digest(canonical_bytes(changed)), bound_digest)
+                changed = read_json(encoded)
+                changed['source'] += '-changed'
+                self.assertNotEqual(digest(canonical_bytes(changed)), bound_digest)
+
         vault = self.authority._source_vault
         row = vault.configure(self.ref, {'adapter': 'tmdb_movie', 'model': '', 'reasoning': ''})
         vault.replace(self.ref, row.pk, row.config_revision, b'SYNTHETIC-SOURCE')
