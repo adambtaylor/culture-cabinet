@@ -8,7 +8,7 @@
 </head>
 <body data-state="{{ state }}" data-configured="{{ configured|yesno:'true,false' }}" data-connection-ready="{{ connection_ready|yesno:'true,false' }}" data-run-ready="false" data-credential-configured="{{ credential_configured|yesno:'true,false' }}">
 <a class="skip-link" href="#setup-main">Skip to setup</a>
-<header class="masthead"><p class="wordmark">Culture Cabinet</p><p class="edition">Portable developer preview</p></header>
+<header class="masthead"><p class="wordmark">Culture Cabinet</p><p class="edition">Portable developer preview</p><nav aria-label="Application information"><a href="#about-credits">About and credits</a></nav></header>
 <main id="setup-main" tabindex="-1">
   {% if success_notice %}<p id="setup-status" class="status" role="status">{{ success_notice }}</p>{% endif %}
   {% if notice %}<section id="setup-notice" class="notice" role="alert" tabindex="-1" autofocus><h2>Check your setup</h2><p>{{ notice }}</p></section>{% endif %}
@@ -56,6 +56,13 @@
       </section>
       {% endif %}
       <dl class="configuration"><div><dt>Provider</dt><dd>OpenAI Responses API</dd></div><div><dt>Model</dt><dd>gpt-6-astra · high reasoning</dd></div><div><dt>Destination</dt><dd>https://api.openai.com/v1/responses</dd></div></dl>
+      <section class="processor-disclosure" aria-labelledby="processor-disclosure-heading">
+        <h2 id="processor-disclosure-heading">Before sharing a request</h2>
+        <p>This build uses OpenAI Responses with gpt-6-astra and high reasoning, with a maximum of 2048 output tokens. Response storage is disabled (<code>store=false</code>); tools, background processing and streaming are not requested.</p>
+        <p>Disabled response storage does not mean zero retention. API data is not used for training by default unless the account opts in. Abuse-monitoring logs may retain request and response content for up to 30 days, with legal and safety exceptions. Prompt caching may retain encrypted representations for up to 24 hours.</p>
+        <p>This installation’s account opt-in, Zero Data Retention approval and processing region have not been verified. Review the <a href="https://developers.openai.com/api/docs/guides/your-data" rel="noreferrer noopener">processor’s data controls</a> and the exact request before confirming.</p>
+        <p>The connection test uses neutral input. Personal Enhance requests need their own source permissions, data-sharing choices and exact request confirmation. Opening this page or saving a key sends neither request.</p>
+      </section>
       {% if connections|length > 1 %}
       <form method="get" action="/setup" data-form="select">
         <label for="connection-choice">Choose a saved connection</label><select id="connection-choice" name="connection_ref" required>{% for choice in connections %}<option value="{{ choice.connection_ref }}"{% if choice.connection_ref == connection_ref %} selected{% endif %}>Saved connection {{ forloop.counter }} · gpt-6-astra · revision {{ choice.revision }}</option>{% endfor %}</select><button type="submit" class="secondary">Open selected connection</button>
@@ -95,6 +102,17 @@
   <form method="post" action="{{ actions.logout }}" data-form="logout" class="logout"><input type="hidden" name="csrfmiddlewaretoken" value="{{ csrf_token }}"><button type="submit" class="secondary">Log out</button></form>
   {% endif %}
 </main>
-<footer><p>This local setup does not provide an offline model. No source lookup or model send occurs merely by opening this page.</p></footer>
+<footer>
+  <section id="about-credits" class="credits" aria-labelledby="credits-heading">
+    <h2 id="credits-heading">About and credits</h2>
+    <p>Culture Cabinet identifies the source of movie and TV facts separately from any model-generated recommendation.</p>
+    <a class="tmdb-credit" href="https://www.themoviedb.org" rel="noreferrer noopener" aria-label="TMDB, The Movie Database">
+      <span class="tmdb-logo" aria-hidden="true">{% include 'assets/tmdb-approved.svg' %}</span>
+      <span>TMDB (The Movie Database)</span>
+    </a>
+    <p>This product uses the TMDB API but is not endorsed or certified by TMDB.</p>
+  </section>
+  <p>This local setup does not provide an offline model. No source lookup or model send occurs merely by opening this page.</p>
+</footer>
 </body>
 </html>

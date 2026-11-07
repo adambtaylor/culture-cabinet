@@ -139,6 +139,47 @@ class EnhancePresentationTests(SimpleTestCase):
         self.assertIn('hidden', doc.marked('data-enhance-coverage-pending').attrs)
         self.assertIn('your current picks have not changed', doc.root.text(visible=True))
 
+    def test_collection_without_model_permission_shows_counts_without_publication_or_send(self):
+        summary = [{'category': 'movie', 'collected_count': 4, 'model_eligible_count': 0},
+                   {'category': 'book', 'collected_count': 0, 'model_eligible_count': 0}]
+        _, doc = self.render(self.stage('sealed', code='AUTHORITY_DENIED',
+            dependency='source_model_context_unavailable', source_use=summary), portable_ui=True)
+        text = doc.root.text(visible=True)
+        self.assertIn('Source facts were collected, but model use is not yet cleared', text)
+        self.assertIn('No inference was sent', text)
+        counts = doc.marked('data-enhance-source-use')
+        self.assertIn('Films', counts.text())
+        self.assertIn('4 collected; 0 eligible for model use', counts.text())
+        self.assertIn('Books', counts.text())
+        self.assertNotIn('Publication confirmed', text)
+        self.assertNotIn('TMDB', counts.text())
+        self.assertEqual(doc.tagged('form'), [])
+        self.assertIn('Source policy setup must be completed', doc.marked('data-enhance-reason').text())
+        self.assertIn('hidden', doc.marked('data-enhance-publication').attrs)
+
+    def test_mixed_collection_preserves_counts_and_unavailable_is_not_empty(self):
+        _, doc = self.render(self.stage('sealed', source_use=[
+            {'category': 'movie', 'collected_count': 3, 'model_eligible_count': 2},
+            {'category': 'book', 'collected_count': 5, 'model_eligible_count': 0},
+            {'category': 'artist', 'collected_count': 0, 'model_eligible_count': 0}],
+            category_outcomes=[{'category': 'movie', 'state': 'fresh', 'candidate_count': 3, 'code': 'OK'},
+                {'category': 'book', 'state': 'unavailable', 'candidate_count': 0, 'code': 'AUTHORITY_DENIED'},
+                {'category': 'artist', 'state': 'empty_bounded', 'candidate_count': 0, 'code': 'OK'}]))
+        counts = doc.marked('data-enhance-source-use').text()
+        self.assertIn('3 collected; 2 eligible for model use', counts)
+        self.assertIn('5 collected; 0 eligible for model use', counts)
+        outcomes = doc.marked('data-enhance-outcomes').text()
+        self.assertIn('Model use is not cleared for this category; this is not an empty search', outcomes)
+        self.assertIn('No candidates within this round’s collection limits', outcomes)
+
+    def test_source_summary_absence_preserves_legacy_and_summary_text_is_escaped(self):
+        _, legacy = self.render({'state': 'queued', 'status_url': '/existing-status'})
+        self.assertFalse(any('data-enhance-source-use' in node.attrs for node in legacy.root.nodes()))
+        html, doc = self.render(self.stage('sealed', source_use=[{
+            'category': '<img src=x onerror=alert(1)>', 'collected_count': 1, 'model_eligible_count': 0}]))
+        self.assertEqual(doc.tagged('img'), [])
+        self.assertIn('&lt;img', html)
+
     def test_progress_receipts_never_create_commands_even_with_extra_url_fields(self):
         for stage in ('collecting', 'awaiting_preview', 'ready', 'unknown', 'failed', 'published'):
             with self.subTest(stage=stage):

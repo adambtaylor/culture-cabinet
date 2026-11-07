@@ -103,6 +103,36 @@ class OnboardingExperienceTests(SimpleTestCase):
         return {'body': '{"input":"FICTIONAL neutral <tag> & no personal taste"}\n',
                 'preview_ref': PREVIEW, 'intent_ref': INTENT}
 
+    def test_native_credits_keep_approved_logo_notice_and_source_link_in_every_state(self):
+        import hashlib
+        logo = Path(__file__).resolve().parents[3] / 'templates/assets/tmdb-approved.svg'
+        # Official approved asset bytes, not a recreated mark or generic source
+        # URL. Provenance URL and response hash are retained in the release.
+        self.assertEqual(hashlib.sha256(logo.read_bytes()).hexdigest(),
+                         '8e7b30f73a4020692ccca9c88bafe5dcb6f8a62a4c6bc55cd9ba82bb2cd95f6c')
+        for context in ({'state': 'claim'}, {'state': 'login'}, self.model()):
+            with self.subTest(state=context['state']):
+                _, html, doc = self.render(context)
+                credits = next(attrs for tag, attrs in doc.tags if attrs.get('id') == 'about-credits')
+                self.assertNotIn('hidden', credits)
+                self.assertIn('This product uses the TMDB API but is not endorsed or certified by TMDB.', html)
+                self.assertTrue(any(tag == 'svg' for tag, attrs in doc.tags))
+                self.assertTrue(any(tag == 'a' and attrs.get('href') == 'https://www.themoviedb.org'
+                                    for tag, attrs in doc.tags))
+                self.assertIn('href="#about-credits"', html)
+                self.assertNotIn('https://www.themoviedb.org/assets/', html)
+
+    def test_processor_disclosure_precedes_credentials_without_promising_zero_retention(self):
+        _, html, doc = self.render(self.model(credential_configured=True, secret=CANARY))
+        self.assertLess(html.index('Before sharing a request'), html.index('name="secret"'))
+        for copy in ('store=false', '2048 output tokens', 'up to 30 days', 'up to 24 hours',
+                     'does not mean zero retention', 'unless the account opts in',
+                     'have not been verified', 'exact request confirmation'):
+            self.assertIn(copy, html)
+        self.assertNotIn(CANARY, html)
+        self.assertNotIn('confirm', doc.forms)
+        self.assertTrue(all('value' not in row for row in doc.inputs if row.get('type') == 'password'))
+
     def test_claim_has_only_native_owner_claim_with_empty_secret_fields(self):
         response, html, doc = self.render({'state': 'claim'})
         self.assertEqual(response.status_code, 200)

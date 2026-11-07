@@ -22,7 +22,9 @@
       </div>
       <div data-enhance-stage="sealed"{% if enhancement.stage != 'sealed' %} hidden{% endif %}>
         <h3>API collection complete</h3>
-        <p>Collection outcomes are recorded for every enabled category. Candidates still need inference review; your current picks have not changed.</p>
+        {% if enhancement.dependency == 'source_model_context_unavailable' %}
+        <p>Source facts were collected, but model use is not yet cleared. No inference was sent and your current picks have not changed.</p>
+        {% else %}<p>Collection outcomes are recorded for every enabled category. Candidates still need inference review; your current picks have not changed.</p>{% endif %}
       </div>
       <div data-enhance-stage="awaiting_preview"{% if enhancement.stage != 'awaiting_preview' %} hidden{% endif %}>
         {% if portable_ui %}
@@ -88,7 +90,8 @@
     </div>
     {% comment %}Keep bounded native recovery text aligned with reasonText in enhancement.js. Category codes can differ from the overall code; never echo source errors or turn a cause into send permission.{% endcomment %}
     <p data-enhance-reason{% if enhancement.code == 'OK' or not enhancement.code %} hidden{% endif %}>
-{% if enhancement.code == 'UNAUTHENTICATED' %}Open owner setup to sign in or confirm your session, then review the existing round. Nothing is retried automatically.
+{% if enhancement.dependency == 'source_model_context_unavailable' %}Source policy setup must be completed before this collected pool can be used by the model. Keep your current picks; nothing is retried automatically. <a href="/setup#about-credits">Review source credits and processor disclosure</a>.
+{% elif enhancement.code == 'UNAUTHENTICATED' %}Open owner setup to sign in or confirm your session, then review the existing round. Nothing is retried automatically.
 {% elif enhancement.code == 'AUTHORITY_DENIED' %}Review the selected profile’s permissions before continuing. No extra send is available here.
 {% elif enhancement.code == 'CREDENTIAL_REQUIRED' %}Review the connection that needs a credential before continuing. Nothing is retried automatically.
 {% elif enhancement.code == 'CAPABILITY_UNAVAILABLE' %}This operation is not available with the current connections or integration. Keep your existing picks.
@@ -104,6 +107,27 @@
 {% elif enhancement.code == 'IDEMPOTENCY_CONFLICT' %}Check the existing round before continuing; do not start another attempt with changed request details.
 {% else %}This round needs attention. No additional send or automatic retry is available here.{% endif %}
     </p>
+    {% if enhancement.source_use %}
+    {% comment %}The producer authenticates these counts. They describe collection and model eligibility, not publication or provider identity; a category alone must not be called TMDB.{% endcomment %}
+    <section data-enhance-source-use aria-labelledby="enhance-source-use-heading">
+      <h3 id="enhance-source-use-heading">Collected facts and model eligibility</h3>
+      <ul>
+        {% for use in enhancement.source_use %}
+        <li>
+          <strong>{% if use.category == 'movie' %}Films
+            {% elif use.category == 'tv' %}TV
+            {% elif use.category == 'book' %}Books
+            {% elif use.category == 'artist' or use.category == 'music' %}Music
+            {% elif use.category == 'events' %}Events
+            {% elif use.category == 'outings' %}Outings
+            {% else %}{{ use.category }}{% endif %}</strong>
+          — {{ use.collected_count }} collected; {{ use.model_eligible_count }} eligible for model use.
+        </li>
+        {% endfor %}
+      </ul>
+      <p>Collection and eligibility counts do not confirm new recommendations or a changed publication.</p>
+    </section>
+    {% endif %}
     <p data-enhance-update role="status" aria-live="polite" aria-atomic="true"></p>
     <p data-enhance-publication{% if not enhancement.published or not enhancement.publication_revision %} hidden{% endif %}>Publication revision: <span data-enhance-revision>{{ enhancement.publication_revision }}</span></p>
     <div data-enhance-coverage>
@@ -115,7 +139,7 @@
           {% if outcome.state == 'fresh' %}{{ outcome.candidate_count }} sourced candidate{{ outcome.candidate_count|pluralize }} collected; new picks are not confirmed by collection alone.
           {% elif outcome.state == 'empty_bounded' %}No candidates within this round’s collection limits.
           {% elif outcome.state == 'unavailable' %}
-            {% if outcome.code == 'CAPABILITY_UNAVAILABLE' %}Not available with the current connections or integration.{% else %}Source unavailable; no fresh result.{% endif %}
+            {% if outcome.code == 'AUTHORITY_DENIED' and enhancement.source_use %}Model use is not cleared for this category; this is not an empty search.{% elif outcome.code == 'CAPABILITY_UNAVAILABLE' %}Not available with the current connections or integration.{% else %}Source unavailable; no fresh result.{% endif %}
           {% elif outcome.state == 'failed' %}Collection failed; this is not an empty result.
           {% elif outcome.state == 'cancelled' %}Collection cancelled; no fresh result.
           {% elif outcome.state == 'retained_previous_stale' %}Older picks retained; not refreshed by this round.
