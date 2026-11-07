@@ -19,6 +19,7 @@ from shelf.models import PortableCabinetManifest
 from shelf.portable_authority import AuthorityFault
 from shelf.portable_enhance_service import EnhanceService, SavedCandidateEvidence, SavedCandidateUnavailable
 from shelf.source_evidence import FieldPolicy
+from .test_portable_obtain import PortableObtainTests
 
 
 class SavedCandidateTests(SimpleTestCase):
@@ -238,3 +239,141 @@ class SavedCandidateTests(SimpleTestCase):
         with self.assertRaises(AuthorityFault):
             self.resolve()
         self.assertTrue(state['redacted'])
+
+
+class NativeSavedCandidateTests(PortableObtainTests):
+    """Real PA1, publication reader and denied Save; synthetic publication only.
+
+    The existing isolated store creates bounded fixture data, not a provider or
+    durable-rights grant. Neither PA1 nor the C4 denial is mocked in these cases.
+    """
+    def setUp(self):
+        super().setUp()
+        from shelf.enhance_contract import RegistryView
+        from .test_portable_cabinet_store import IsolatedStateProvider
+        self.consent(self.profile_ref)
+        self.consent(self.profile_ref, purpose='catalogue_lookup')
+        self.registry = RegistryView('1', ('books', 'films', 'tv', 'music', 'events', 'outings'))
+        self.provider = IsolatedStateProvider(self)
+        self.consumer = EnhanceService.isolated_test(self.authority, self.service,
+            registry=self.registry, state_provider=self.provider)
+        self.store = self.consumer._store(self.ref, self.profile_ref, str(self.config.pk))
+        self.native_card = dict(key='tmdb:movie:81001', category='films', title='Synthetic source film',
+            medium='movie', provider='tmdb', source_id='81001',
+            source_url='https://www.themoviedb.org/movie/81001', identity_status='fixture_identity_only',
+            evidence_type='fixture_not_live', observed_at='2026-01-01T00:00:00Z',
+            valid_until='2026-01-01T00:02:00Z', rights_ref='synthetic-rights',
+            source_roots=['synthetic-evidence'], facts=[])
+
+    def publish_fixture(self, card=None):
+        from shelf.disclosure import canonical_bytes
+        from shelf.enhance_contract import EnhanceIntent
+        card = card or self.native_card
+        import uuid
+        intent = EnhanceIntent(str(uuid.uuid4()), str(uuid.uuid4()), str(uuid.uuid4()),
+                               self.store.current().bindings)
+        row = self.store.admit(intent)
+        outcomes = [dict(category=key, state='fresh' if key == 'films' else 'unavailable',
+            candidate_count=int(key == 'films'), code='OK' if key == 'films' else 'CAPABILITY_UNAVAILABLE')
+            for key in self.registry.categories]
+        row = self.store.checkpoint(str(row.pk), stage='awaiting_preview', outcomes=outcomes,
+            metadata={'phase': 'inference', 'submitted_refs': {'signals': [], 'candidates': [
+                {'key': card['key'], 'evidence_refs': card['source_roots']}]}},
+            collection_digest='c' * 64, body_digest='b' * 64, sealed_run_digest='d' * 64)
+        row = self.store.reserve(str(row.pk), body_digest=row.body_digest, expected_revision=row.revision)
+        self.store.record_result(str(row.pk), canonical_bytes({'schema': 'cabinet-inference-result/v1',
+            'associations': None, 'candidate_assessments': [dict(candidate_key=card['key'],
+                decision='uncertain', signal_keys=[], evidence_refs=card['source_roots'],
+                hypothesis='Synthetic publication fixture only.')]}))
+        manifest = {'schema': 'cabinet-manifest/v1', 'categories': [dict(category=key,
+            state='fresh' if key == 'films' else 'unavailable',
+            code='OK' if key == 'films' else 'CAPABILITY_UNAVAILABLE',
+            cards=[card] if key == 'films' else []) for key in self.registry.categories], 'for_you': []}
+        self.state.refresh_from_db()
+        return self.store.publish(str(row.pk), manifest=manifest,
+            expected_publication_revision=self.state.publication_revision, allowed_candidates=[card])
+
+    def resolve_native(self, revision=1, key=None):
+        return self.consumer.resolve_saved_candidate(self.ref, profile_ref=self.profile_ref,
+            expected_publication_revision=revision, candidate_key=key or self.native_card['key'])
+
+    def test_real_non1_pa1_identity_nested_generation_closed_and_foreign_denials(self):
+        from shelf.portable_saved_authority import active_portable_access, select_portable_profile
+        import uuid
+        with self.controlled_recovery_state('clear'):
+            self.fault('AUTHORITY_DENIED', self.consumer._saved_access, self.ref, self.profile_ref)
+            with self.scope() as outer:
+                state, _, access = self.consumer._saved_access(self.ref, self.profile_ref)
+                self.assertIs(access, outer)
+                self.assertEqual((state.actor_id, state.profile_id), (self.actor.pk, self.state.profile_id))
+                self.assertNotEqual(state.actor_id, 1)
+                self.assertNotEqual(state.profile_id, 1)
+                self.fault('AUTHORITY_DENIED', self.consumer._saved_access, self.ref, str(uuid.uuid4()))
+                with self.scope() as inner:
+                    self.assertIs(active_portable_access(), inner)
+                    self.fault('AUTHORITY_DENIED', outer.require, actor_id=self.actor.pk,
+                               profile_id=self.state.profile_id, action='save')
+                self.assertIs(active_portable_access(), outer)
+                select_portable_profile(self.authority, self.ref, profile_ref=self.profile_ref)
+                self.fault('SELECTION_STALE', self.consumer._saved_access, self.ref, self.profile_ref)
+            self.assertTrue(outer.closed)
+            self.fault('AUTHORITY_DENIED', outer.require, actor_id=self.actor.pk,
+                       profile_id=self.state.profile_id, action='save')
+
+    def test_native_save_missing_c4_has_zero_saved_floor_attempt_and_transfer_delta(self):
+        from shelf.models import AcquisitionJob, ObtainTransfer, ProfileCabinetState, SavedItem, SynthesisRun
+        with self.controlled_recovery_state('clear'):
+            self.publish_fixture()
+            before = ProfileCabinetState.objects.values().get(pk=self.state.pk)
+            attempts = list(SynthesisRun.objects.values_list('pk', 'attempts'))
+            response = self.post('/cabinet/saved/save/', {'publication_revision': '1',
+                'candidate_key': self.native_card['key'], 'list_kind': 'watch'})
+            self.assertEqual(response.status_code, 503)
+            self.assertIn('durable saved copy', response.content.decode())
+            self.assertFalse(SavedItem.objects.exists())
+            self.assertFalse(AcquisitionJob.objects.exists())
+            self.assertFalse(ObtainTransfer.objects.exists())
+            self.assertEqual(ProfileCabinetState.objects.values().get(pk=self.state.pk), before)
+            self.assertEqual(list(SynthesisRun.objects.values_list('pk', 'attempts')), attempts)
+
+    def test_actual_publication_replacement_and_candidate_expiry_have_no_old_fallback(self):
+        with self.controlled_recovery_state('clear'):
+            first = self.publish_fixture()
+            with self.scope():
+                with self.assertRaises(SavedCandidateUnavailable):
+                    self.resolve_native()
+            changed = dict(self.native_card, key='tmdb:movie:81002', source_id='81002',
+                           source_url='https://www.themoviedb.org/movie/81002')
+            second = self.publish_fixture(changed)
+            self.assertNotEqual(first.pk, second.pk)
+            with self.scope():
+                self.fault('PREVIEW_STALE', self.resolve_native)
+                self.fault('PREVIEW_STALE', self.resolve_native, revision=2)
+                self.clock.advance(121)
+                self.fault('PREVIEW_STALE', self.resolve_native, revision=2, key=changed['key'])
+
+    def test_refused_save_preserves_actual_committed_publication_redaction(self):
+        from shelf.models import PortableCabinetManifest, SavedItem, SynthesisRun
+        with self.controlled_recovery_state('clear'):
+            publication = self.publish_fixture()
+            self.provider.source_revision = 'synthetic-source-policy-revoked'
+            with self.scope(), self.assertRaises(AuthorityFault):
+                self.resolve_native()
+            row = PortableCabinetManifest.objects.get(pk=publication.pk)
+            self.assertIsNotNone(row.content_redacted_at)
+            self.assertEqual(row.manifest, {})
+            self.assertEqual(SynthesisRun.objects.get(pk=publication.run_id).output, {})
+            self.assertFalse(SavedItem.objects.exists())
+
+    def test_real_session_replacement_and_pending_recovery_cannot_reuse_pa1(self):
+        from .test_portable_authority import PASSWORD
+        with self.controlled_recovery_state('pending'):
+            with self.assertRaises(AuthorityFault):
+                self.resolve_native()
+        with self.controlled_recovery_state('clear'):
+            with self.scope():
+                response = self.json_post('/setup/login', {'passphrase': PASSWORD})
+                self.assertEqual(response.status_code, 200)
+                replacement = self.http.session['portable_session']
+                self.assertNotEqual(replacement, self.ref)
+                self.fault('UNAUTHENTICATED', self.consumer._saved_access, self.ref, self.profile_ref)
