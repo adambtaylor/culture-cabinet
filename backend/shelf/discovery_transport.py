@@ -1,4 +1,7 @@
-"""Bounded anonymous public reads. No caller URL or credential interface."""
+"""Bounded anonymous reads and explicitly authorized media transport.
+
+No caller URL, credential discovery or default-profile credential fallback.
+"""
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from hashlib import sha256

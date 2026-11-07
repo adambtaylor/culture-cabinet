@@ -33,9 +33,9 @@ class MediaAuthorizedTests(TestCase):
         return SourceRequest(source, 'book' if source == 'hardcover' else 'tv' if source == 'tmdb_tv' else 'movie',
             operation, ('Synthetic title',), (81001, 81002) if operation == 'book_details' else ())
 
-    def fake_send(self, *, raw=None, current=None, writes=None, timeout=False, wait_error=False):
+    def fake_send(self, *, operation=None, raw=None, current=None, writes=None, timeout=False, wait_error=False):
         raw = raw if raw is not None else b'HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n\r\n{}\n200'
-        operation = catalogue.media_operation(self.request())
+        operation = operation or catalogue.media_operation(self.request())
         secret = bytearray(b'SYNTHETIC-ONLY-CANARY')
         child = Mock(returncode=0)
         child.poll.return_value = None
@@ -63,7 +63,7 @@ class MediaAuthorizedTests(TestCase):
              patch.object(transport.os, 'read', side_effect=[raw, b'']):
             try:
                 result = transport.media_authorized(operation, secret=secret,
-                    revalidate=current or Mock(return_value=True), limiter=transport.MediaHostLimiter('tmdb'))
+                    revalidate=current or Mock(return_value=True), limiter=transport.MediaHostLimiter(operation.provider))
                 return result, spawn.call_args, captured
             finally:
                 self.assertEqual(secret, bytearray(len(secret)))
@@ -94,6 +94,74 @@ class MediaAuthorizedTests(TestCase):
         for ids in [(True,), (-1,), tuple(range(1, 11))]:
             with self.assertRaises(catalogue.CatalogueError):
                 catalogue.MediaOperation('hardcover', 'book_details', ids=ids)
+
+    def test_independent_pinned_wires_and_digests_reach_authorized_process(self):
+        import hashlib
+        import json
+        # Literal documents/parameter order copied from the pinned pre-change
+        # contract, independently of the builder under test.
+        fields = ('id title slug description book_category_id canonical_id image{url width height} '
+            'book_series(limit:12){book_id series_id position details compilation series{id name slug}} '
+            'editions(limit:12){id book_id canonical_id edition_format edition_information}')
+        search = 'query Search($q:String!){search(query:$q,per_page:9,page:1){ids error}}'
+        details = 'query Details($ids:[Int!]!){books(where:{id:{_in:$ids}},limit:9){' + fields + '}}'
+        query = 'include_adult=false&language=en-US&page=1&query=Synthetic+title'
+        expected = [
+            ('tmdb_movie', 'search_movie', 'GET', 'https://api.themoviedb.org', '/3/search/movie', query, b''),
+            ('tmdb_tv', 'search_tv', 'GET', 'https://api.themoviedb.org', '/3/search/tv', query, b''),
+            ('hardcover', 'book_search', 'POST', 'https://api.hardcover.app', '/v1/graphql', '',
+             json.dumps({'query': search, 'variables': {'q': 'Synthetic title'}}, ensure_ascii=True).encode()),
+            ('hardcover', 'book_details', 'POST', 'https://api.hardcover.app', '/v1/graphql', '',
+             json.dumps({'query': details, 'variables': {'ids': [81001, 81002]}}, ensure_ascii=True).encode())]
+        for source, name, method, origin, path, query, body in expected:
+            with self.subTest(source=source, operation=name):
+                operation = catalogue.media_operation(self.request(source, name))
+                material = {'method': method, 'origin': origin, 'path': path, 'query': query,
+                            'body_digest': hashlib.sha256(body).hexdigest()}
+                expected_digest = hashlib.sha256(json.dumps(material, sort_keys=True,
+                    separators=(',', ':'), ensure_ascii=False).encode()).hexdigest()
+                self.assertEqual(operation.material, material)
+                self.assertEqual(operation.body, body)
+                self.assertEqual(operation.operation_digest, expected_digest)
+                _, spawn, _ = self.fake_send(operation=operation)
+                args = spawn.args[0]
+                self.assertEqual(args[args.index('--request') + 1], method)
+                self.assertEqual(args[args.index('--url') + 1], origin + path + ('?' + query if query else ''))
+                if body:
+                    self.assertEqual(args[args.index('--data-binary') + 1].encode(), body)
+                else:
+                    self.assertNotIn('--data-binary', args)
+
+    def test_expired_original_observation_cannot_borrow_current_policy_or_permit(self):
+        request = self.request()
+        registry = registry_view(('movie',))
+        bindings = EnhanceBindings('synthetic-install', 'synthetic-actor', 'synthetic-profile',
+            'synthetic-snapshot', 1, 'synthetic-watermark', registry.revision, 1, 'synthetic-grants', 'synthetic-connection')
+        body = canonical_bytes({'schema': 'catalogue-query/v1', 'categories': ['movie'],
+            'queries': [{'category': 'movie', 'terms': list(request.terms)}], 'profile': {'signals': []}})
+        plan = CataloguePlan('synthetic-plan', bindings, ('movie',), body, digest(body), NOW + timedelta(seconds=600))
+        policy = FieldPolicy('synthetic-policy', 1, NOW - timedelta(seconds=1), NOW + timedelta(seconds=300),
+            (('*', ('fetch',)),) + tuple((key, ('fetch', 'display', 'model_context', 'retain', 'cache'))
+                                        for key in sorted(SCALARS)))
+        permit = SourcePermit(request.source, 'https://api.themoviedb.org', 'catalogue_lookup',
+            plan.plan_ref, bindings, request.request_digest, 1, 1, policy.ref, policy.revision,
+            plan.expires_at, ('synthetic-query',), 1)
+        permit.verify(request, plan, NOW)
+        self.assertTrue(policy.current(NOW))
+        observed = NOW - timedelta(hours=1)
+        reply = SourceReply(request.request_digest, 200,
+            canonical_bytes({'results': [{'id': 81001, 'title': 'Synthetic expired movie'}]}), observed)
+        cards = normalize(registered_source(request.source), request, reply, now=NOW).cards
+        records = []
+        with self.assertRaises(EnhanceFault) as denied:
+            batch = build_evidence(cards, category='movie', observation_ref='synthetic-expired',
+                source_revision=1, response_digest=digest(reply.body), observed_at=reply.observed_at,
+                expires_at=observed + timedelta(minutes=5), parents=permit.parent_ids,
+                policy=policy, now=NOW, fixture=True)
+            records.extend(read_json(batch.material)['records'])
+        self.assertEqual(denied.exception.code, 'PREVIEW_STALE')
+        self.assertEqual(records, [])
+        self.assertEqual(reply.observed_at, observed)
 
     def test_secret_only_in_stdin_partial_write_and_fixed_process_bounds(self):
         result, spawn, written = self.fake_send(writes='partial')
