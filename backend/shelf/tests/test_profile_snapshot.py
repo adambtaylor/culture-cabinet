@@ -4,19 +4,38 @@ from dataclasses import replace
 from unittest.mock import patch
 import uuid
 
+from django.db import transaction
+
 from shelf import grant_authority as ga, profile_snapshot as snapshots
-from shelf.models import DiscoveryState, IntakeRun, ProfileCabinetState, SavedItem
+from shelf.models import DiscoveryState, Grant, IntakeRun, Profile, ProfileCabinetState, SavedItem
 from .test_grant_authority import AuthorityCase, RecoveryCase, BrokerHistoryCase
+
+
+def _legacy_owner_state(authority, session_ref):
+    # These fixtures characterize history predating native v2. Create that
+    # old format directly; never downgrade a genuinely fresh native cabinet.
+    assert ga._fixture_database()
+    session = authority.authorize(session_ref, sensitive=True)
+    with transaction.atomic(), ga._write_window():
+        profile = Profile.objects.create(kind='owner', label='Your cabinet', active=True)
+        Grant.objects.create(user_id=session.owner_id, profile=profile,
+            can_view=True, can_select=True, can_mutate=True, can_export=True)
+        state = ProfileCabinetState.objects.create(profile=profile,
+            installation_id=authority.boundary.installation_id,
+            actor_id=session.owner_id, owner_revision=session.owner_revision)
+    assert state.data_schema_version == 1
+    return state
 
 
 class SnapshotCase(AuthorityCase):
     def setUp(self):
         super().setUp()
-        self.profile_ref = self.bind()
+        self.state = _legacy_owner_state(self.authority, self.ref)
+        self.profile_ref = str(self.state.profile_ref)
         self.classes = ['canonical_seed', 'explicit_favourites', 'anticipated_reactions',
                         'experienced_enjoyment', 'inferred_traits']
         self.consent(self.profile_ref, classes=self.classes)
-        self.state = ProfileCabinetState.objects.get()
+        self.assertEqual(self.state.data_schema_version, 1)
         self.history = DiscoveryState.objects.create(actor_id=self.state.actor_id,
             profile_id=self.state.profile_id, mode='household', nonce='isolated-history', history=[])
 
@@ -29,6 +48,7 @@ class SnapshotCase(AuthorityCase):
         return card
 
     def event(self, operation='respond', **fields):
+        self.assertEqual(ProfileCabinetState.objects.get(pk=self.state.pk).data_schema_version, 1)
         card = fields.pop('card', self.card())
         event = {'operation': operation, 'key': card['key'], 'card': card, 'choice': '',
             'mode': 'household', 'origin': 'authenticated-human-post', 'at': self.clock.wall.isoformat()}
