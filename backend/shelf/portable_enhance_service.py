@@ -442,7 +442,7 @@ class EnhanceService:
             return {'schema': 'cabinet-current/v1', 'published': True, 'reaction_targets': reactions,
                     'publication_revision': publication.publication_revision, 'manifest': manifest, 'code': 'OK'}
 
-    def _saved_access(self, session_ref, profile_ref, *, action='select'):
+    def _saved_access(self, session_ref, profile_ref, *, action='save'):
         # Evidence and matching numeric IDs cannot create or replace the live PA1
         # capability. In particular, a refused portable scope never falls back.
         try:
@@ -456,7 +456,7 @@ class EnhanceService:
                 and access.session_ref == session_ref and access.profile_ref == profile_ref,
                 'AUTHORITY_DENIED', 403)
         state, session = ga._bound(self.authority, session_ref, profile_ref,
-                                   sensitive=action == 'mutate')
+                                   sensitive=action == 'save')
         require(state.data_schema_version == 2, 'CAPABILITY_UNAVAILABLE', 503)
         identity = access.require(actor_id=state.actor_id, profile_id=state.profile_id, action=action)
         require(identity.actor_id == state.actor_id and identity.profile_id == state.profile_id,
@@ -554,7 +554,7 @@ class EnhanceService:
         require(type(evidence) is SavedCandidateEvidence, 'AUTHORITY_DENIED', 403)
         require(not connection.in_atomic_block, 'CAPABILITY_UNAVAILABLE', 503)
         with ga.recovery_guard(self.authority, session_ref, profile_ref=evidence.profile_ref), self.authority._lock:
-            _, _, access = self._saved_access(session_ref, evidence.profile_ref, action='mutate')
+            _, _, access = self._saved_access(session_ref, evidence.profile_ref, action='save')
             fresh = self.resolve_saved_candidate(session_ref, profile_ref=evidence.profile_ref,
                 expected_publication_revision=evidence.publication_revision, candidate_key=evidence.candidate_key)
             require(fresh == evidence, 'PREVIEW_STALE', 409)
@@ -562,7 +562,7 @@ class EnhanceService:
             # advancement (or duplicate no-write). Save intentionally invalidates
             # the old publication; re-reading it here would reject our own write.
             yield fresh
-            require(self._saved_access(session_ref, evidence.profile_ref, action='mutate')[2] is access,
+            require(self._saved_access(session_ref, evidence.profile_ref, action='save')[2] is access,
                     'AUTHORITY_DENIED', 403)
 
     def reconcile(self, session_ref, *, run_ref, receipt_ref):

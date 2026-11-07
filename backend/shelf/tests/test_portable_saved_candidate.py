@@ -57,7 +57,7 @@ class SavedCandidateTests(SimpleTestCase):
             def require(self, *, actor_id, profile_id, action):
                 self.calls.append((actor_id, profile_id, action))
                 if (self.closed or self.generation != case.generation
-                        or (actor_id, profile_id) != (17, 41) or action not in ('select', 'mutate')):
+                        or (actor_id, profile_id) != (17, 41) or action != 'save'):
                     raise AuthorityFault('AUTHORITY_DENIED', 403)
                 return SimpleNamespace(actor_id=actor_id, profile_id=profile_id)
 
@@ -180,7 +180,7 @@ class SavedCandidateTests(SimpleTestCase):
         # Isolate the later live-selection boundary; never a native Save success.
         with patch.object(self.service, '_saved_retention'), self.assertRaises(AuthorityFault):
             self.resolve()
-        self.assertEqual(self.access.calls, [(17, 41, 'select'), (17, 41, 'select')])
+        self.assertEqual(self.access.calls, [(17, 41, 'save'), (17, 41, 'save')])
 
     def test_window_revalidates_evidence_before_yield_and_never_reads_after_own_write(self):
         evidence = self.projection()
@@ -191,7 +191,7 @@ class SavedCandidateTests(SimpleTestCase):
             self.assertEqual(current, evidence)
             self.service.resolve_saved_candidate.assert_called_once()
             self.service.resolve_saved_candidate.side_effect = AssertionError('Old publication re-read after Save')
-        self.assertEqual(self.access.calls, [(17, 41, 'mutate'), (17, 41, 'mutate')])
+        self.assertEqual(self.access.calls, [(17, 41, 'save'), (17, 41, 'save')])
         self.service.current.assert_not_called()
 
     def test_window_rejects_changed_lineage_and_denies_scope_escape(self):
