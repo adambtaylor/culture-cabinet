@@ -22,6 +22,7 @@ from .source_adapters import registered_source
 from .secret_leases import MemoryCredentials
 
 ADAPTER = 'moshtix_public'
+MUSICBRAINZ = 'musicbrainz_recording'
 BUILD = 'moshtix-fixed-v1'
 ORIGIN = 'https://api.moshtix.com'
 PATH = '/v1/graphql'
@@ -31,6 +32,12 @@ MEDIA = {'tmdb_movie': ('tmdb-movie-fixed-v1', 'https://api.themoviedb.org', '/3
 
 
 def source_identity(adapter):
+    if adapter == MUSICBRAINZ:
+        spec = registered_source(adapter)
+        require(spec.origin == 'https://musicbrainz.org' and spec.categories == ('recording',)
+            and spec.operations == ('recordings_by_artist_name',) and spec.credential_required is False,
+            'CAPABILITY_UNAVAILABLE')
+        return ('musicbrainz-recording-fixed-v1', spec.origin, '/ws/2/recording/')
     require(adapter == ADAPTER or adapter in MEDIA, 'CAPABILITY_UNAVAILABLE')
     return (BUILD, ORIGIN, PATH) if adapter == ADAPTER else MEDIA[adapter]
 
@@ -49,13 +56,20 @@ class SourceRights:
 
     def validate(self, now):
         require(type(self.policy) is FieldPolicy and self.policy.current(now), 'AUTHORITY_DENIED')
-        require(self.source == 'moshtix' or self.source in MEDIA, 'AUTHORITY_DENIED')
+        require(self.source in ('moshtix', MUSICBRAINZ) or self.source in MEDIA, 'AUTHORITY_DENIED')
         require(type(self.revision) is int and 0 <= self.revision < 2**53)
         for value in (self.terms_ref, self.privacy_ref, self.locale_ref):
             require(type(value) is str and 0 < len(value) <= 300, 'AUTHORITY_DENIED')
         require(self.processor_ref is None or type(self.processor_ref) is str
                 and 0 < len(self.processor_ref) <= 300, 'AUTHORITY_DENIED')
-        MoshtixOperation(utc(now).replace(microsecond=0), 9, self.application_identity)
+        if self.source == MUSICBRAINZ:
+            # The fixed operation additionally validates its required contact.
+            # Rights alone cannot select a URL or authorize a request.
+            require(type(self.application_identity) is str and 0 < len(self.application_identity) <= 300
+                and self.application_identity.isascii()
+                and all(ord(c) >= 32 and ord(c) != 127 for c in self.application_identity), 'AUTHORITY_DENIED')
+        else:
+            MoshtixOperation(utc(now).replace(microsecond=0), 9, self.application_identity)
         return self
 
 
@@ -99,6 +113,8 @@ def _connection(authority, session_ref, connection_ref):
     ga._require(row.model == row.reasoning == '' and row.credential_generation >= 0
                 and row.validation_generation == 0, 'CAPABILITY_UNAVAILABLE', 503)
     build, origin, path = source_identity(row.adapter)
+    if row.adapter == MUSICBRAINZ:
+        ga._require(row.credential_generation == 0, 'CAPABILITY_UNAVAILABLE', 503)
     description = {'usable_until': ga._end(authority, session), 'configured': True}
     if row.adapter in MEDIA:
         vault = getattr(authority, '_source_vault', None)
@@ -109,7 +125,7 @@ def _connection(authority, session_ref, connection_ref):
                     'CREDENTIAL_REQUIRED', 503)
     config = {'schema': 'source-configuration/v1', 'adapter': row.adapter, 'build': build,
         'origin': origin, 'path': path, 'locale': 'VIC' if row.adapter == ADAPTER else '',
-        'credential_mode': 'none' if row.adapter == ADAPTER else 'session-memory-bearer',
+        'credential_mode': 'none' if row.adapter in (ADAPTER, MUSICBRAINZ) else 'session-memory-bearer',
         'config_revision': row.config_revision, 'credential_generation': row.credential_generation}
     binding = {**config, 'installation_id': str(installation.pk), 'owner_id': session.owner_id,
         'owner_revision': session.owner_revision, 'process_generation': str(authority.boundary.process_generation),
@@ -167,6 +183,9 @@ class SourceAuthority(SourceAuthorityIssuer):
 
     def operation_template(self):
         source = self.source_key()
+        if source == MUSICBRAINZ:
+            from .musicbrainz_source import musicbrainz_template
+            return musicbrainz_template()
         if source == 'moshtix':
             from .discovery_transport import MOSHTIX_QUERY
             return {'source': source, 'query': MOSHTIX_QUERY, 'page_size': 9, 'window_weeks': 8}
@@ -232,7 +251,6 @@ class SourceAuthority(SourceAuthorityIssuer):
                 operation = MoshtixOperation(now.replace(microsecond=0), 9, rights.application_identity)
                 request = SourceRequest('moshtix', 'event', 'events')
             else:
-                from .provider_catalogue import media_operation
                 spec = registered_source(source)
                 if request is None:
                     terms = next(q['terms'] for q in read_json(plan.body)['queries'] if q['category'] == spec.categories[0])
@@ -245,7 +263,12 @@ class SourceAuthority(SourceAuthorityIssuer):
                     self._check(derived[1], now)
                 # Detail IDs require their OWN exact disclosure/confirmation.
                 # There is no wildcard permission inherited from book search.
-                operation = media_operation(request)
+                if source == MUSICBRAINZ:
+                    from .musicbrainz_source import musicbrainz_operation
+                    operation = musicbrainz_operation(request, rights.application_identity)
+                else:
+                    from .provider_catalogue import media_operation
+                    operation = media_operation(request)
             expires = min(plan.expires_at, view.expires_at, rights.policy.expires_at, now + timedelta(minutes=5))
             require(now < expires, 'PREVIEW_STALE')
             self._previews = {k: v for k, v in self._previews.items() if now < v.expires_at}

@@ -170,7 +170,7 @@ class EnhanceService:
             clock = self._clock or CollectionClock()
             sources, backends, configured, limiters = [], {}, {}, {}
             for row in rows:
-                if row.adapter not in ('tmdb_movie', 'tmdb_tv', 'hardcover', 'moshtix_public'):
+                if row.adapter not in ('tmdb_movie', 'tmdb_tv', 'hardcover', 'moshtix_public', 'musicbrainz_recording'):
                     continue
                 issuer = SourceAuthority(self.authority, session_ref, profile_ref=profile_ref,
                     connection_ref=str(row.pk), policy_provider=self._policy_provider)
@@ -178,7 +178,11 @@ class EnhanceService:
                 require(name not in backends, 'REVISION_CONFLICT', 409)
                 sources.append(issuer)
                 try:
-                    if name == 'moshtix':
+                    if name == 'musicbrainz_recording':
+                        from .musicbrainz_source import MusicBrainzBackend
+                        limiter = limiters.setdefault('musicbrainz', MediaHostLimiter('musicbrainz'))
+                        backend = MusicBrainzBackend(issuer, limiter, clock=clock)
+                    elif name == 'moshtix':
                         backend = MoshtixBackend(issuer, MoshtixHostLimiter(), clock=clock)
                     else:
                         provider_name = 'hardcover' if name == 'hardcover' else 'tmdb'
@@ -389,6 +393,7 @@ class EnhanceService:
     def _install_preview(self, store, row, phase, work, body, expires_at, coordinator):
         prior = self._memory.get(str(row.pk), {})
         source_preview, issuer, source_previews = None, None, []
+        missing_artist = False
         if phase == 'catalogue' and self._isolated is not _ISOLATED:
             for key, plan in work.source_plans:
                 source = next((source for source in store.provider.sources if source.connection_ref == key), None)
@@ -398,7 +403,10 @@ class EnhanceService:
                 except EnhanceFault as error:
                     if error.code not in ('NO_GROUNDED_CANDIDATES', 'CAPABILITY_UNAVAILABLE', 'AUTHORITY_DENIED'):
                         raise
-            require(source_previews, 'CAPABILITY_UNAVAILABLE', 503)
+                    if error.code == 'NO_GROUNDED_CANDIDATES' and source.source_key() == 'musicbrainz_recording':
+                        missing_artist = True
+            require(source_previews, 'NO_GROUNDED_CANDIDATES' if missing_artist else 'CAPABILITY_UNAVAILABLE',
+                    422 if missing_artist else 503)
             issuer, source_preview = source_previews[0]
             body = source_preview['body'].encode('utf-8')
         preview_ref = str(uuid.uuid4())

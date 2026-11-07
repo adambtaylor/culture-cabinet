@@ -4,12 +4,17 @@ from shelf import portable_setup_views as views
 from shelf import portable_connection_views as connections
 from shelf import onboarding_experience_views as experience
 from shelf import enhancement_views as enhance
+from shelf import portable_source_views as sources
 
 urlpatterns = [
     path('setup/cabinet', views.cabinet_entry),
     path('setup/cabinet/create', views.create_cabinet),
     path('setup/cabinet/bind', views.bind_cabinet),
     path('cabinet', enhance.portable_cabinet),
+    path('cabinet/source/musicbrainz', sources.musicbrainz),
+    path('cabinet/source/musicbrainz/configure', sources.musicbrainz_configure),
+    path('cabinet/source/musicbrainz/consent', sources.musicbrainz_consent),
+    path('cabinet/taste/artist', sources.artist),
     path('cabinet/consent', enhance.portable_inference_consent),
     path('cabinet/consent/change', enhance.portable_inference_consent_change),
     path('enhance/presentation.css', enhance.portable_enhancement_style),
