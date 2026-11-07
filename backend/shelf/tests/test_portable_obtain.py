@@ -655,3 +655,43 @@ class PortableObtainTests(RecoveryCase):
             with self.assertRaises(AuthorityFault):
                 fresh.require(actor_id=1, profile_id=self.state.profile_id)
         self.assertNotIn('_auth_user_id', self.http.session)
+
+    def test_component_precommit_generation_loss_rolls_back_saved_row_and_floors(self):
+        """Synthetic PS1 port only; genuine PA1 and SQL precommit rollback.
+
+        This exercises a reentrant invalidation at the consumer boundary, not a
+        second owner, threaded concurrency or successful native retention rights.
+        """
+        from contextlib import contextmanager
+        from shelf.portable_enhance_service import EnhanceService, SavedCandidateEvidence
+        service = EnhanceService(self.authority)
+        lineage = self.lineage()
+        evidence = SavedCandidateEvidence(str(self.state.installation_id), self.state.owner_revision,
+            self.profile_ref, self.actor.pk, self.state.profile_id, lineage['publication_ref'], 1,
+            lineage['run_ref'], lineage['candidate_key'], lineage['candidate_digest'], lineage['source_evidence_digest'],
+            'tmdb', 'movie', 11, 'Synthetic consumer attribution', 'https://www.themoviedb.org/movie/11',
+            self.authority.now(), self.expires)
+        @contextmanager
+        def synthetic_window(session_ref, *, evidence):
+            with ga.recovery_guard(self.authority, session_ref), self.authority._lock:
+                yield evidence
+        before = ProfileCabinetState.objects.get(pk=self.state.pk)
+        manager = SavedItem.objects
+        original = manager.get_or_create
+        def create_then_invalidate(*args, **kwargs):
+            result = original(*args, **kwargs)
+            self.assertTrue(connection.in_atomic_block)
+            self.assertTrue(result[1])
+            Context().run(select_portable_profile, self.authority, self.ref, profile_ref=self.profile_ref)
+            return result
+        with self.scope() as access, patch.object(service, 'saved_candidate_window', side_effect=synthetic_window), \
+             patch.object(service, 'resolve_saved_candidate', return_value=evidence), \
+             patch.object(manager, 'get_or_create', side_effect=create_then_invalidate), self.assertRaises(AuthorityFault):
+            saved.save_publication_candidate(access=access, service=service,
+                expected_publication_revision=1, candidate_key=evidence.candidate_key, list_kind='watch')
+        self.assertFalse(SavedItem.objects.exists())
+        after = ProfileCabinetState.objects.get(pk=before.pk)
+        self.assertEqual((after.policy_epoch, after.restriction_watermark),
+                         (before.policy_epoch, before.restriction_watermark))
+        self.assertFalse(AcquisitionJob.objects.exists())
+        self.assertFalse(ObtainTransfer.objects.exists())
