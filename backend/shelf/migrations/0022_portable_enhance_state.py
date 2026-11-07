@@ -125,7 +125,20 @@ def trusted_table_inventory(apps, editor):
         actual = dict(cursor.execute("SELECT name,sql FROM sqlite_master WHERE type='table'").fetchall())
         index_sql = []
         for model in apps.get_models(include_auto_created=True):
-            sql, params = collector.table_sql(model)
+            # Historical ModelState renders foreign keys in an order different
+            # from SQLite's successive table remakes. Align only named columns;
+            # each full trusted definition/constraint/index must still match.
+            columns = [row[1] for row in cursor.execute(
+                'PRAGMA table_info(' + editor.quote_name(model._meta.db_table) + ')').fetchall()]
+            original_fields = model._meta.local_fields
+            if set(columns) != {field.column for field in original_fields}:
+                raise RuntimeError('PORTABLE_REVERSE_SCHEMA_REFUSED')
+            positions = {name: index for index, name in enumerate(columns)}
+            try:
+                model._meta.local_fields = sorted(original_fields, key=lambda field: positions[field.column])
+                sql, params = collector.table_sql(model)
+            finally:
+                model._meta.local_fields = original_fields
             if params or tokens(actual[model._meta.db_table]) != tokens(sql):
                 raise RuntimeError('PORTABLE_REVERSE_SCHEMA_REFUSED')
             index_sql.extend(collector._model_indexes_sql(model))
