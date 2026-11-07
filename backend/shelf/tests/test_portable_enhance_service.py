@@ -9,7 +9,7 @@ from shelf import grant_authority as ga, inference_body, profile_snapshot
 from shelf.disclosure import canonical_bytes, read_json
 from shelf.enhance_contract import (CataloguePlan, CollectionSeal, CategoryOutcome,
     EnhanceIntent, StageEvent, digest)
-from shelf.enhance_coordinator import PlannedEnhance, CollectedEnhance, InferencePreview, EnhanceOutcome
+from shelf.enhance_coordinator import EnhanceCoordinator, PlannedEnhance, CollectedEnhance, InferencePreview, EnhanceOutcome
 from shelf.models import PortableCabinetManifest, SynthesisRun
 from shelf.portable_enhance_service import EnhanceService, get_service
 from .test_portable_cabinet_store import StoreCase, result
@@ -60,6 +60,10 @@ class FixtureSelector:
 
 
 class FixturePipeline:
+    # The isolated pipeline must enforce the same final authority gate as the
+    # real coordinator; publication cannot inherit a fixture-only bypass.
+    _host_check = EnhanceCoordinator._host_check
+
     def __init__(self, case, catalogue):
         self.case, self.catalogue, self.ports = case, catalogue, None
         current = case.provider.current(case.authority, case.ref,
@@ -157,6 +161,35 @@ class PortableEnhanceServiceTests(ServiceCase):
             preview_ref=query['preview_ref'], body_digest=query['body_digest'], confirmed=True)
         self.assertTrue(repeated['published'])
         self.assertEqual((self.catalogue.calls, self.transport.calls), (1, 1))
+
+        # Exercise the final publication gate through the real supplied ports.
+        # Earlier plan/infer checks remain current; only the final check sees a
+        # changed binding or a missing owner session, so a no-op would publish.
+        from dataclasses import replace
+        from unittest.mock import patch
+        for changed in ('stale', 'denied'):
+            pending = self.confirm_run(self.start_run())
+            memory = self.enhance._memory[pending['run_ref']]
+            pipeline, work = memory['coordinator'], memory['work']
+            store = pipeline.ports.store
+            current = store.current()
+            host_check = pipeline._host_check
+            def final_check(intent, plan, seal=None, body=None):
+                self.assertIs(intent, work.collected.planned.intent)
+                self.assertIs(plan, work.collected.planned.plan)
+                self.assertIs(seal, work.collected.seal)
+                self.assertEqual(body, work.body)
+                if changed == 'stale':
+                    stale = replace(current, bindings=replace(current.bindings, snapshot_revision='0' * 64))
+                    with patch.object(store, 'current', return_value=stale):
+                        return host_check(intent, plan, seal, body)
+                with patch.object(store, 'session_ref', 'unknown-isolated-session'):
+                    return host_check(intent, plan, seal, body)
+            with patch.object(pipeline, '_host_check', side_effect=final_check):
+                self.fault('PREVIEW_STALE' if changed == 'stale' else 'UNAUTHENTICATED',
+                           self.confirm_run, pending)
+            self.assertEqual(self.enhance.current(self.ref, profile_ref=self.profile_ref)['publication_revision'], 1)
+            self.assertEqual(PortableCabinetManifest.objects.count(), 1)
 
     def test_lost_memory_and_wrong_session_scope_cannot_reconstruct_or_resend(self):
         started = self.start_run()
