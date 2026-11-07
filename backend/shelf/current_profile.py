@@ -5,7 +5,7 @@ from datetime import datetime
 from . import grant_authority as ga, profile_snapshot
 from .category_registry import registry_view
 from .disclosure import canonical_bytes
-from .enhance_contract import EnhanceBindings, digest
+from .enhance_contract import EnhanceBindings, EnhanceFault, digest
 from .models import PortableConnection, PortableDisclosureGrant, ProfileCabinetState
 from .portable_cabinet_store import CurrentState, StateProvider
 from .source_authority import SourceAuthority
@@ -41,12 +41,19 @@ class CurrentProfile(StateProvider):
             source_views, rights, ends = [], [], [view.expires_at]
             for source in self.sources:
                 ga._require(source.session_ref == session_ref and source.profile_ref == str(profile_ref))
-                current = source._view(); evidence = source._rights(authority.now())
+                try:
+                    current = source._view(); evidence = source._rights(authority.now())
+                    template = source.operation_template()
+                except (ga.AuthorityFault, EnhanceFault) as error:
+                    # A missing/revoked source stays in the source revision;
+                    # it cannot hide other permitted categories or old grants.
+                    rights.append({'connection': source.connection_ref, 'unavailable': error.code})
+                    continue
                 source_views.append(current); ends.extend((current.expires_at, evidence.policy.expires_at))
                 rights.append({'connection': source.connection_ref, 'policy': asdict(evidence.policy),
                     'revision': evidence.revision, 'terms': evidence.terms_ref, 'privacy': evidence.privacy_ref,
                     'locale': evidence.locale_ref, 'processor': evidence.processor_ref,
-                    'operation_template_digest': self._operation_digest(evidence.application_identity)})
+                    'operation_template_digest': digest(canonical_bytes(template))})
             # Include removed/disabled configurations and revoked grants as well.
             # They cannot disappear from freshness merely by being unavailable.
             configurations = list(PortableConnection.objects.filter(installation_id=state.installation_id)
@@ -70,8 +77,9 @@ class CurrentProfile(StateProvider):
 
     def filter_manifest(self, current, manifest):
         ga.assert_current(current.view)
-        for source in self.sources:
-            source._rights(self.authority.now())
+        fresh = self.current(self.authority, current.view._session,
+            profile_ref=current.view.profile_ref, connection_ref=current.view.connection_ref)
+        ga._require(fresh.source_revision == current.source_revision, 'PREVIEW_STALE', 409)
         # Stored content may only be retained while its original complete binding
         # is current. Filtering never reconstitutes deleted or newly allowed facts.
         return manifest

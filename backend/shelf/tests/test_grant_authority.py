@@ -27,6 +27,20 @@ from .test_portable_authority import PASSWORD
 
 
 class AuthorityCase(TestCase, ConnectionCase):
+    def test_media_catalogue_scope_is_distinct_from_neutral_inference(self):
+        profile = self.bind()
+        vault = self.authority._source_vault
+        row = vault.configure(self.ref, {'adapter': 'hardcover', 'model': '', 'reasoning': ''})
+        vault.replace(self.ref, row.pk, row.config_revision, b'SYNTHETIC-HARDCOVER')
+        ga.change_grant(self.authority, self.ref, profile_ref=profile, connection_ref=str(row.pk),
+            purpose='catalogue_lookup', allowed_data_classes=['canonical_seed'],
+            expected_revision=0, expires_at=self.expires, action='grant')
+        view = ga.current_view(self.authority, self.ref, profile_ref=profile,
+                               connection_ref=str(row.pk), purpose='catalogue_lookup')
+        self.assertEqual(view.context['adapter_id'], 'hardcover')
+        self.fault('AUTHORITY_DENIED', ga.current_view, self.authority, self.ref,
+            profile_ref=profile, connection_ref=str(row.pk), purpose='inference')
+
     def setUp(self):
         super().setUp()
         self.disclosure = DisclosureServices.isolated_test(self.authority, self.service)

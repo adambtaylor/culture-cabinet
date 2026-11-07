@@ -37,6 +37,94 @@ class FixtureBackend(MoshtixBackend):
 
 
 class SourceAuthorityTests(AuthorityCase):
+    def test_moshtix_material_origin_survives_preview_confirm_and_authorize(self):
+        preview = self.approved()
+        operation = self.issuer.operation_for(self.request, self.query, now=self.authority.now())
+        permit = self.issuer.authorize(self.request, self.query, operation, now=self.authority.now())
+        self.assertEqual(preview['destination'], 'https://api.moshtix.com')
+        self.assertEqual(permit.origin, operation.material['origin'])
+
+    def test_derived_proposals_obey_retention_and_expire_or_invalidate(self):
+        from shelf.source_adapters import SourceReply
+        from shelf.disclosure import read_json
+        request = SourceRequest('hardcover', 'book', 'book_search', ('Synthetic',))
+        now = self.authority.now()
+        permit = SimpleNamespace(expires_at=now + timedelta(seconds=300))
+        approval = SimpleNamespace(request=request, plan=self.query, rights=self.rights.value,
+            operation=object(), expires_at=permit.expires_at)
+        self.issuer._permits[id(permit)] = (permit, approval)
+        reply = SourceReply(request.request_digest, 200,
+            canonical_bytes({'data': {'search': {'ids': [81001], 'error': None}}}), now)
+        # Isolate retention from owner/history fixtures; normal authority checks
+        # remain covered by the existing confirmation/revocation regressions.
+        with patch.object(self.issuer, '_check', return_value=True), \
+             patch.object(self.issuer, 'revalidate', return_value=True):
+            for denied in ('cache', 'retain'):
+                approval.rights = replace(self.rights.value, policy=replace(self.rights.value.policy,
+                    permissions=tuple((key, tuple(use for use in uses if use != denied))
+                                      for key, uses in self.rights.value.policy.permissions)))
+                self.assertIsNone(self.issuer.remember_details(permit, reply))
+                self.assertEqual(self.issuer._derived, {})
+            approval.rights = self.rights.value
+            self.assertIsNone(self.issuer.remember_details(permit, replace(reply, headers=(('cache-control', 'no-store'),))))
+            self.assertIsNone(self.issuer.remember_details(permit, replace(reply, headers=(('cache-control', 'max-age=0'),))))
+            detail = self.issuer.remember_details(permit, reply)
+            self.assertEqual(detail.ids, (81001,))
+            self.clock.advance(301)
+            self.assertEqual(self.issuer.pending_details(self.query.plan_ref), ())
+            self.assertEqual(self.issuer._derived, {})
+
+    def test_media_identity_cannot_borrow_moshtix_rights_or_inference_purpose(self):
+        from shelf.disclosure import read_json
+        from shelf.enhance_contract import digest
+        from shelf.provider_catalogue import BOOK_SEARCH, BOOK_DETAILS
+        from shelf.source_authority import source_identity
+
+        # The profile revision hashes this full template with the strict JSON codec.
+        # Keep the tuple API for callers, but bind every component on the JSON wire.
+        expected = (
+            ('tmdb_movie', ['tmdb-movie-fixed-v1', 'https://api.themoviedb.org',
+                            '/3/search/movie'], ['search_movie'], []),
+            ('tmdb_tv', ['tmdb-tv-fixed-v1', 'https://api.themoviedb.org',
+                         '/3/search/tv'], ['search_tv'], []),
+            ('hardcover', ['hardcover-fixed-v1', 'https://api.hardcover.app',
+                           '/v1/graphql'], ['book_search', 'book_details'],
+             [BOOK_SEARCH, BOOK_DETAILS]),
+        )
+        for source, identity, operations, documents in expected:
+            with self.subTest(source=source), patch.object(self.issuer, 'source_key', return_value=source):
+                self.assertIs(type(source_identity(source)), tuple)
+                self.assertEqual(source_identity(source), tuple(identity))
+                template = self.issuer.operation_template()
+                encoded = canonical_bytes(template)
+                self.assertEqual(read_json(encoded), {'source': source, 'identity': identity,
+                    'operations': operations, 'documents': documents})
+                bound_digest = digest(encoded)
+                for field in ('identity', 'operations', 'documents'):
+                    for index in range(len(template[field])):
+                        changed = read_json(encoded)
+                        changed[field][index] += '-changed'
+                        self.assertNotEqual(digest(canonical_bytes(changed)), bound_digest)
+                changed = read_json(encoded)
+                changed['source'] += '-changed'
+                self.assertNotEqual(digest(canonical_bytes(changed)), bound_digest)
+
+        vault = self.authority._source_vault
+        row = vault.configure(self.ref, {'adapter': 'tmdb_movie', 'model': '', 'reasoning': ''})
+        vault.replace(self.ref, row.pk, row.config_revision, b'SYNTHETIC-SOURCE')
+        ga.change_grant(self.authority, self.ref, profile_ref=self.profile_ref,
+            expected_revision=0, purpose='catalogue_lookup', connection_ref=str(row.pk),
+            allowed_data_classes=['canonical_seed'], expires_at=self.expires, action='grant')
+        issuer = SourceAuthority(self.authority, self.ref, profile_ref=self.profile_ref,
+            connection_ref=str(row.pk), policy_provider=self.rights)
+        self.assertEqual(issuer._view().context['adapter_id'], 'tmdb_movie')
+        with self.assertRaises(EnhanceFault):
+            issuer._rights(self.authority.now())
+        self.rights.value = replace(self.rights.value, source='tmdb_movie')
+        self.assertEqual(issuer._rights(self.authority.now()).source, 'tmdb_movie')
+        self.fault('AUTHORITY_DENIED', ga.current_view, self.authority, self.ref,
+            profile_ref=self.profile_ref, connection_ref=str(row.pk), purpose='inference')
+
     def setUp(self):
         super().setUp()
         self.profile_ref = self.bind()

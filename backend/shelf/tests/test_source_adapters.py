@@ -13,6 +13,15 @@ from shelf.tests.test_source_collection import plan
 
 
 class SourceAdapterTests(TestCase):
+    def test_media_backend_refuses_missing_or_caller_authored_dependencies(self):
+        from unittest.mock import Mock, patch
+        from shelf.source_adapters import MediaBackend
+        from shelf.discovery_transport import MediaHostLimiter
+        for issuer, vault in [(None, None), ({'approved': True}, Mock()), (Mock(), Mock())]:
+            with patch('shelf.discovery_transport.media_authorized') as wire, self.assertRaises(EnhanceFault):
+                MediaBackend(issuer, vault, MediaHostLimiter('tmdb'), clock=Mock())
+            wire.assert_not_called()
+
     def test_only_registered_fixed_operations_and_bounded_ids_are_requests(self):
         for args in [('librarything', 'book', 'book_search', ('Synthetic',), ()),
                      ('tmdb_movie', 'movie', 'custom_url', ('Synthetic',), ()),

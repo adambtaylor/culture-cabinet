@@ -66,6 +66,74 @@ class Backend(SourceBackend):
 
 
 class SourceCollectionTests(TestCase):
+    def test_permitted_detail_resume_preserves_search_observation_without_resend(self):
+        registry, query = plan(('book',)); clock = Clock()
+        backend = Backend('hardcover', clock, [
+            (200, {'data': {'search': {'ids': [81001], 'error': None}}}, ()),
+            (200, {'data': {'books': [{'id': 81001, 'title': 'Synthetic', 'slug': 'synthetic'}]}}, ())])
+        original = backend.authorize; approved = [False]
+        def authorize(request, query, *, now):
+            if request.operation == 'book_details' and not approved[0]:
+                raise EnhanceFault('AUTHORITY_DENIED')
+            return original(request, query, now=now)
+        backend.authorize = authorize
+        collector = SourceCollection((('book', ('hardcover',)),), {'hardcover': backend},
+            clock=clock, isolated_fixture=True)
+        self.assertEqual(collector.collect(query, registry, CollectionBudget()).records, [])
+        approved[0] = True
+        result = collector.collect(query, registry, CollectionBudget())
+        self.assertEqual([operation for operation, _ in backend.sent], ['book_search', 'book_details'])
+        self.assertEqual(len(result.records), 1)
+        self.assertEqual(read_json(result.source_revisions)['book:hardcover']['response_chain'][0]['observed_at'], NOW.isoformat())
+        self.assertEqual(collector.state.pending, {})
+
+    def test_abandoned_checkpoint_cleanup_releases_capacity_and_revoked_entries(self):
+        registry, query = plan(('book',))
+        clock = Clock()
+        backend = Backend('hardcover', clock, [])
+        request = __import__('shelf.source_adapters', fromlist=['SourceRequest']).SourceRequest(
+            'hardcover', 'book', 'book_search', ('Synthetic book',))
+        permit = backend.authorize(request, query, now=clock.now())
+        reply = SourceReply(request.request_digest, 200, b'{}', clock.now())
+        collector = SourceCollection(clock=clock, isolated_fixture=True)
+        for index in range(128):
+            collector.state.pending[('synthetic', str(index))] = (
+                permit, backend.rights, reply, 'a' * 64, clock.now(), query, request, backend)
+        collector._purge_pending()
+        self.assertEqual(collector.state.pending, {})
+        collector.state.pending[('synthetic', 'live')] = (permit, backend.rights, reply, 'a' * 64,
+            clock.now() + timedelta(seconds=100), query, request, backend)
+        backend.revoked = True
+        collector._purge_pending()
+        self.assertEqual(collector.state.pending, {})
+
+    def test_per_connection_plan_uses_own_terms_and_seal_rejects_changed_map(self):
+        from types import SimpleNamespace
+        registry, primary = plan(('movie',))
+        body = read_json(primary.body)
+        body['queries'][0]['terms'] = ['Synthetic separately permitted title']
+        encoded = canonical_bytes(body)
+        own = replace(primary, plan_ref='synthetic-other-plan',
+            bindings=replace(primary.bindings, grants_digest='synthetic-other-grant',
+                             connection_digest='synthetic-other-connection'),
+            body=encoded, body_digest=digest(encoded))
+        clock = Clock()
+        backend = Backend('tmdb_movie', clock,
+            [(200, {'results': [{'id': 81001, 'title': 'Synthetic movie'}]}, ())])
+        backend.issuer = SimpleNamespace(connection_ref='synthetic-source')
+        collector = SourceCollection((('movie', ('tmdb_movie',)),), {'tmdb_movie': backend},
+            clock=clock, isolated_fixture=True)
+        source_plans = {'synthetic-source': own}
+        result = collector.collect(primary, registry, CollectionBudget(), source_plans=source_plans)
+        self.assertEqual(len(result.records), 1)
+        self.assertTrue(collector.revalidate_collection(result, primary, registry, source_plans=source_plans))
+        self.assertEqual(read_json(result.source_revisions)['_source_plans'][0]['body_digest'], own.body_digest)
+        with self.assertRaises(EnhanceFault):
+            collector.revalidate_collection(result, primary, registry, source_plans={'synthetic-source': primary})
+        foreign = replace(own, bindings=replace(own.bindings, profile_ref='foreign'))
+        with self.assertRaises(EnhanceFault):
+            collector._plan_for('tmdb_movie', primary, {'synthetic-source': foreign})
+
     def test_every_enabled_category_settles_with_enrichment_and_partial_failure(self):
         registry, query = plan(('book', 'movie', 'artist', 'event', 'outing'))
         clock = Clock()
