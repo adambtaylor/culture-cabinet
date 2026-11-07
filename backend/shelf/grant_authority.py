@@ -127,12 +127,13 @@ def recovery_guard(authority, session_ref, *, profile_ref=None):
     try:
         with recovery.access_barrier():
             witness = recovery.installed_coordinator()
-            # No normal-disk D5 adapter is admitted. The existing empty barrier
-            # already requires the isolated verification environment; its memory
-            # database/bound-root binding is distinct from a neutral-proof seal.
+            # Disk use needs a constructor-issued witness for this exact root.
+            # The isolated memory fallback and explicit synthetic restart remain
+            # separate; neither becomes authority for an arbitrary disk store.
             trusted = (witness is not None and getattr(witness, '_trusted_restart_seal', None)
                 is recovery._TRUSTED_RESTART_SEAL and witness.trusted_boundary is authority.boundary)
-            _require(_fixture_database() or trusted, 'CAPABILITY_UNAVAILABLE', 503)
+            native = recovery.native_first_start_matches(witness, authority.boundary)
+            _require(_fixture_database() or trusted or native, 'CAPABILITY_UNAVAILABLE', 503)
             checkpoint = _RecoveryCheckpoint(authority, session_ref, witness, connection.connection)
             checkpoint.check()
             yield checkpoint
@@ -196,8 +197,10 @@ def create_owner_profile(authority, session_ref, *, expected_owner_revision):
             profile = Profile.objects.create(kind='owner', label='Your cabinet', active=True)
             Grant.objects.create(user_id=session.owner_id, profile=profile,
                                  can_view=True, can_select=True, can_mutate=True, can_export=True)
+            # Only genuinely new cabinets start in the native feedback schema;
+            # returning an existing profile above never upgrades its history.
             state = ProfileCabinetState.objects.create(profile=profile, installation=installation,
-                actor_id=session.owner_id, owner_revision=session.owner_revision)
+                actor_id=session.owner_id, owner_revision=session.owner_revision, data_schema_version=2)
         return str(state.profile_ref)
 
 
@@ -272,7 +275,8 @@ def writer_window(actor, profile_id):
 def _connection(authority, session_ref, connection_ref, *, purpose=None):
     candidate = PortableConnection.objects.filter(pk=_uuid(connection_ref),
         installation_id=authority.boundary.installation_id, removed=False).first()
-    if candidate is not None and candidate.adapter in ('moshtix_public', 'tmdb_movie', 'tmdb_tv', 'hardcover'):
+    if candidate is not None and candidate.adapter in ('moshtix_public', 'tmdb_movie', 'tmdb_tv', 'hardcover',
+                                                      'musicbrainz_recording'):
         # Public source consent never borrows a processor key or its validation.
         # The source issuer separately checks current rights and exact operation.
         _require(purpose == 'catalogue_lookup')
@@ -452,8 +456,33 @@ def _broker_history_row(row, state):
     require(type(evidence) is dict and {'code', 'outcomes', 'phase', 'expected_publication_revision'} <= set(evidence))
     require(set(evidence) <= {'code', 'outcomes', 'phase', 'expected_publication_revision',
                             'preview_ref', 'preview_digest', 'session_digest', 'submitted_refs',
-                            'publication_revision', 'publication_ref'})
-    require(evidence['code'] in SAFE_CODES and evidence['phase'] in ('catalogue', 'inference'))
+                            'publication_revision', 'publication_ref', 'source_use'})
+    require(evidence['code'] in SAFE_CODES and evidence['phase'] in
+            ('catalogue', 'inference', 'source_model_context_unavailable'))
+    if 'source_use' in evidence:
+        summary = evidence['source_use']
+        require(type(summary) is list and len(summary) == len(registry.categories))
+        collected = eligible = 0
+        for category, item in zip(registry.categories, summary):
+            require(type(item) is dict and set(item) ==
+                    {'category', 'collected_count', 'model_eligible_count'}
+                    and item['category'] == category)
+            count, usable = item['collected_count'], item['model_eligible_count']
+            require(type(count) is int and type(usable) is int and 0 <= usable <= count <= 100)
+            collected += count
+            eligible += usable
+        require(collected <= 100 and sha(row['collection_digest']))
+        # These are historical collection counts, not today's permissions or
+        # the smaller queues later published after model/personal filtering.
+    if evidence['phase'] == 'source_model_context_unavailable':
+        require('source_use' in evidence and collected > 0 and eligible == 0
+                and row['attempts'] == 0 and row['transport_request_id'] is None
+                and row['output'] == {} and row['body_digest'] == row['sealed_run_digest'] == ''
+                and not {'submitted_refs', 'publication_revision', 'publication_ref'} & set(evidence))
+        require((row['state'] == 'queued' and row['portable_stage'] == 'sealed'
+                 and evidence['code'] == 'AUTHORITY_DENIED' and not row['cancel_requested'])
+                or (row['state'] == 'failed' and row['portable_stage'] in
+                    ('blocked', 'failed', 'cancelled', 'stale')))
     require(type(evidence['expected_publication_revision']) is int
             and 0 <= evidence['expected_publication_revision'] <= state.publication_revision)
     require(type(evidence['outcomes']) is list)

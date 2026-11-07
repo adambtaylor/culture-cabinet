@@ -511,3 +511,75 @@ class BrokerHistoryAuthorityTests(BrokerHistoryCase):
         from shelf.models import SynthesisRun
         with ga._write_window():
             return SynthesisRun.objects.create(**fields)
+
+
+class SourceUseHistoryTests(BrokerHistoryCase):
+    def source_row(self):
+        row = self.store.admit(self.intent())
+        outcomes = [{'category': key, 'state': 'fresh' if key == 'books' else 'unavailable',
+            'candidate_count': int(key == 'books'), 'code': 'OK'} for key in self.registry.categories]
+        summary = [{'category': key, 'collected_count': int(key == 'books'),
+                    'model_eligible_count': 0} for key in self.registry.categories]
+        return self.store.checkpoint(str(row.pk), stage='sealed', code='AUTHORITY_DENIED',
+            outcomes=outcomes, metadata={'phase': 'source_model_context_unavailable', 'source_use': summary},
+            collection_digest='a' * 64)
+
+    def test_actual_history_preserves_sealed_cancelled_stale_old_and_redacted_rows(self):
+        old = self.store.admit(self.intent())
+        self.assertNotIn('source_use', old.evidence)
+        row = self.source_row()
+        self.assertEqual(ga.synthesis_history(self.state), [])
+        self.store.cancel(str(row.pk), expected_revision=row.revision)
+        self.assertEqual(ga.synthesis_history(self.state), [])
+        stale = self.source_row()
+        self.store.finish(str(stale.pk), stage='stale', code='PREVIEW_STALE')
+        self.assertEqual(ga.synthesis_history(self.state), [])
+        self.store.redact_profile()
+        self.assertEqual(ga.synthesis_history(self.state), [])
+
+    def test_mixed_publication_history_does_not_equate_collection_and_published_counts(self):
+        from .test_portable_cabinet_store import StoreCase, candidate, result
+        row = StoreCase.sealed(self, self.intent())
+        outcomes = [{**value, **({'state': 'fresh', 'candidate_count': 1, 'code': 'OK'}
+                    if value['category'] == 'films' else {})} for value in row.evidence['outcomes']]
+        summary = [{'category': key, 'collected_count': int(key in ('books', 'films')),
+                    'model_eligible_count': int(key == 'books')} for key in self.registry.categories]
+        row = self.store.checkpoint(str(row.pk), stage='awaiting_preview', outcomes=outcomes,
+            metadata={'source_use': summary}, collection_digest=row.collection_digest)
+        row = self.store.reserve(str(row.pk), body_digest=row.body_digest, expected_revision=row.revision)
+        row = self.store.record_result(str(row.pk), result())
+        manifest = StoreCase.manifest(self)
+        next(value for value in manifest['categories'] if value['category'] == 'films')['code'] = 'AUTHORITY_DENIED'
+        self.store.publish(str(row.pk), manifest=manifest, expected_publication_revision=0,
+                           allowed_candidates=[candidate()])
+        self.assertEqual(ga.synthesis_history(self.state), [])
+
+    def test_history_rejects_malformed_summaries_and_any_effect_in_unavailable_phase(self):
+        import copy
+        from shelf.models import SynthesisRun
+        row = self.source_row()
+        original = SynthesisRun.objects.filter(pk=row.pk).values().get()
+        valid = original['evidence']['source_use']
+        malformed = [None, valid[:-1], list(reversed(valid)), [valid[0], valid[0], *valid[2:]]]
+        for changes in ({'extra': 'not-status'}, {'collected_count': True}, {'collected_count': -1},
+                        {'collected_count': 101}, {'model_eligible_count': 2}, {'category': 'foreign'}):
+            malformed.append([{**valid[0], **changes}, *valid[1:]])
+        for summary in malformed:
+            with self.subTest(summary=summary):
+                attack = copy.deepcopy(original)
+                attack['evidence']['source_use'] = summary
+                self.fault('CAPABILITY_UNAVAILABLE', ga._broker_history_row, attack, self.state)
+        for mutation in ({'attempts': 1, 'transport_request_id': uuid.uuid4()}, {'output': {'forged': True}},
+                         {'body_digest': 'b' * 64}, {'sealed_run_digest': 'b' * 64},
+                         {'portable_stage': 'awaiting_preview'}, {'portable_stage': 'published'}):
+            with self.subTest(mutation=mutation):
+                self.fault('CAPABILITY_UNAVAILABLE', ga._broker_history_row,
+                           {**copy.deepcopy(original), **mutation}, self.state)
+        for extra in ({'submitted_refs': {'signals': [], 'candidates': []}},
+                      {'publication_revision': 1}, {'unknown_status': 1}, {'phase': 'arbitrary'}):
+            attack = copy.deepcopy(original)
+            attack['evidence'].update(extra)
+            self.fault('CAPABILITY_UNAVAILABLE', ga._broker_history_row, attack, self.state)
+        attack = copy.deepcopy(original)
+        del attack['evidence']['source_use']
+        self.fault('CAPABILITY_UNAVAILABLE', ga._broker_history_row, attack, self.state)

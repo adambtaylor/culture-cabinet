@@ -4,7 +4,7 @@ No existing settings, household identity or demo runtime is imported. Only a new
 store is migrated; an existing incompatible/partial store needs an explicit
 future upgrade/recovery procedure, never a guessed cleanup or automatic adoption.
 """
-from contextlib import closing
+from contextlib import closing, ExitStack
 import logging
 import os
 from pathlib import Path
@@ -26,6 +26,20 @@ class PortableStop(BaseException):
 
 class RuntimeFailure(Exception):
     """A safe fixed diagnostic, without filesystem or transient input details."""
+
+
+_FRESH_DATABASES = {}
+
+
+def _consume_native_first_start(boundary):
+    """Only this process's exclusive creation can authorize first provisioning."""
+    proof = _FRESH_DATABASES.pop(id(boundary), None)
+    if proof is None or proof[0] is not boundary or not boundary.active:
+        raise RuntimeFailure('PORTABLE_RECOVERY_CONTINUITY_REQUIRED')
+    root, database = boundary.root.stat(), Path(boundary.database_name).stat()
+    if proof[1:] != ((root.st_dev, root.st_ino), (database.st_dev, database.st_ino)):
+        raise RuntimeFailure('PORTABLE_RECOVERY_CONTINUITY_REQUIRED')
+    return proof[1:]
 
 
 def protect_core():
@@ -54,7 +68,12 @@ def prepare_database(boundary):
         if {p.name for p in boundary.root.iterdir()} != {'.portable-lock', '.portable-installation.json'}:
             raise RuntimeFailure('PORTABLE_STORE_REFUSED')
         fd = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY | os.O_NOFOLLOW, 0o600)
-        os.close(fd)
+        try:
+            root_info, database_info = boundary.root.stat(), os.fstat(fd)
+            _FRESH_DATABASES[id(boundary)] = (boundary,
+                (root_info.st_dev, root_info.st_ino), (database_info.st_dev, database_info.st_ino))
+        finally:
+            os.close(fd)
         return True
     private_file(path)
     for suffix in ['-wal', '-shm', '-journal']:
@@ -205,9 +224,34 @@ def make_server(boundary, application):
         raise
 
 
-def run(root, *, port=0):
+def _compose_enhance(authority, connections, *, approved_policies=None, approved_policies_factory=None):
+    from shelf.native_source_policy import build_native_source_policy
+    from shelf.portable_enhance_service import EnhanceService
+    if (approved_policies is not None and approved_policies_factory is not None
+            or approved_policies_factory is not None and not callable(approved_policies_factory)):
+        raise RuntimeFailure('PORTABLE_SOURCE_POLICY_REFUSED')
+    # Trusted host code can import model-dependent rights only after Django
+    # setup. Consume it once here; requests never retain a factory/loader hook.
+    entries = approved_policies_factory() if approved_policies_factory is not None else (
+        {} if approved_policies is None else approved_policies)
+    if type(entries) is not dict:
+        raise RuntimeFailure('PORTABLE_SOURCE_POLICY_REFUSED')
+    policy = build_native_source_policy(authority, approved_policies=entries)
+    for rights in entries.values():
+        rights.validate(authority.now())
+        if rights.source == 'musicbrainz_recording':
+            from shelf.musicbrainz_source import MusicBrainzOperation
+            MusicBrainzOperation('Contact validation', rights.application_identity)
+    EnhanceService.compose(authority, connections, policy_provider=policy)
+    if not entries:
+        print('PORTABLE_SOURCE_POLICY_UNAVAILABLE', flush=True)
+    return policy
+
+
+def run(root, *, port=0, approved_policies=None, approved_policies_factory=None):
     os.umask(0o077)
     boundary = server = None
+    lifetime = ExitStack()
     previous = {}
     stopping = False
     closing = False
@@ -221,6 +265,9 @@ def run(root, *, port=0):
             raise PortableStop()
 
     try:
+        if (approved_policies is not None and approved_policies_factory is not None
+                or approved_policies_factory is not None and not callable(approved_policies_factory)):
+            raise RuntimeFailure('PORTABLE_SOURCE_POLICY_REFUSED')
         protect_core()
         # This process is a dedicated local server. Disabling logging avoids
         # accidental exception-value disclosure; terminal output is fixed below.
@@ -243,12 +290,17 @@ def run(root, *, port=0):
         from shelf.secret_leases import MemoryCredentials
         from shelf.connection_validation import ConnectionValidation
         authority = PortableAuthority(boundary)
+        from shelf.recovery import native_first_start
+        # Retain the real disk/journal witness through every request. Existing
+        # roots cannot recreate first-start authority after witness loss.
+        lifetime.enter_context(native_first_start(boundary))
         settings.PORTABLE_AUTHORITY = authority
         settings.PORTABLE_CONNECTIONS = ConnectionValidation(authority, MemoryCredentials(authority))
-        from shelf.portable_enhance_service import EnhanceService
-        # Construct the inert durable service only; missing real producers keep
-        # readiness closed. No source port or personal transport is registered.
-        EnhanceService(authority, settings.PORTABLE_CONNECTIONS)
+        # Only trusted host construction supplies reviewed entries; CLI defaults
+        # deny. Credentials and HTTP input cannot manufacture source permissions.
+        settings.PORTABLE_SOURCE_POLICY = _compose_enhance(authority,
+            settings.PORTABLE_CONNECTIONS, approved_policies=approved_policies,
+            approved_policies_factory=approved_policies_factory)
         server = make_server(boundary, get_wsgi_application())
         if not stopping:
             print('Origin: ' + boundary.origin, flush=True)
@@ -271,8 +323,12 @@ def run(root, *, port=0):
     finally:
         closing = True
         try:
-            if boundary is not None:
-                boundary.close()
+            try:
+                lifetime.close()
+            finally:
+                if boundary is not None:
+                    _FRESH_DATABASES.pop(id(boundary), None)
+                    boundary.close()
         finally:
             if server is not None:
                 server.server_close()

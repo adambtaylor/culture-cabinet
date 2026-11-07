@@ -4,6 +4,7 @@ No socket/resolver work occurs on import. Resolver abandonment cannot send:
 its daemon receives only the fixed hostname, and a shared lock prevents piling
 up unresolved lookups. All request I/O shares one monotonic deadline.
 """
+from contextlib import ExitStack, contextmanager
 import hashlib
 import http.client
 import io
@@ -104,6 +105,44 @@ class ProbePermit:
             return secret.decode('ascii')
 
 
+_PERSONAL = object()
+
+
+class PersonalPermit:
+    """Distinct one-shot authority for a durable, already reserved personal send."""
+    def __init__(self, body_digest, credential_scope, expires_at, now, *, _token=None):
+        if _token is not _PERSONAL or not callable(credential_scope) or not callable(now):
+            raise TransportFault('denied')
+        self.body_digest, self._scope = body_digest, credential_scope
+        self.expires_at, self.now = expires_at, now
+        self._used, self._lock = False, threading.Lock()
+
+    def remaining_seconds(self):
+        seconds = (self.expires_at-self.now()).total_seconds()
+        if seconds <= 0:
+            raise TransportFault('stale')
+        return min(DEADLINE_SECONDS, seconds)
+
+    @contextmanager
+    @sensitive_variables()
+    def authorize(self, body):
+        with self._lock:
+            if self._used or hashlib.sha256(body).hexdigest() != self.body_digest:
+                raise TransportFault('stale')
+            self._used = True
+        self.remaining_seconds()
+        # Scope supplies current reservation/consent and a generation-locked,
+        # wiped credential only after peer/TLS checks at the actual send boundary.
+        with self._scope() as secret:
+            if type(secret) not in (bytes, bytearray) or not secret or any(c < 33 or c > 126 for c in secret):
+                raise TransportFault('denied')
+            yield bytes(secret).decode('ascii')
+
+
+def personal_permit(body_digest, credential_scope, expires_at, now):
+    return PersonalPermit(body_digest, credential_scope, expires_at, now, _token=_PERSONAL)
+
+
 class _Reader(io.RawIOBase):
     """Reapply the whole-operation deadline before every underlying socket read.
 
@@ -147,11 +186,12 @@ class _Wire:
 class CheckedTransport:
     @sensitive_variables()
     def send(self, body, permit):
-        if type(body) is not bytes or not 0 < len(body) <= 16384 or type(permit) is not ProbePermit:
+        if type(body) is not bytes or not 0 < len(body) <= 16384 or type(permit) not in (ProbePermit, PersonalPermit):
             raise TransportFault('incompatible')
-        deadline = time.monotonic() + DEADLINE_SECONDS
+        deadline = time.monotonic() + (permit.remaining_seconds() if type(permit) is PersonalPermit else DEADLINE_SECONDS)
         raw = tls = connection = response = None
         sent = False
+        credential_scope = ExitStack()
         try:
             family, address = _resolve(deadline)
             raw = socket.socket(family, socket.SOCK_STREAM)
@@ -170,7 +210,8 @@ class CheckedTransport:
             connection.set_debuglevel(0)
             connection.sock = _Wire(tls, deadline)
             # Resolve current authority/credential only after DNS, TLS and peer checks.
-            secret = permit.authorize(body)
+            secret = (credential_scope.enter_context(permit.authorize(body))
+                      if type(permit) is PersonalPermit else permit.authorize(body))
             # This means possible transmission: request() can fail after writing
             # some bytes. Such a failure cannot safely be retried as a fresh call.
             sent = True
@@ -205,7 +246,10 @@ class CheckedTransport:
                 if connection is not None:
                     connection.close()
             finally:
-                if tls is not None:
-                    tls.close()
-                if raw is not None:
-                    raw.close()
+                try:
+                    if tls is not None:
+                        tls.close()
+                    if raw is not None:
+                        raw.close()
+                finally:
+                    credential_scope.close()

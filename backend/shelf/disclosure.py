@@ -646,6 +646,12 @@ def catalogue_input(snapshot, grants, context, categories, *, now):
     _require(prepared.ok, prepared.code)
     profile = read_json(prepared.profile_bytes)['profile']
     terms = sorted({signal['title'] for signal in profile['signals'] if signal['title']})
+    # Recording search accepts an artist name, not an arbitrary music title.
+    # Derive it only after consent/lineage filtering, never from raw notes.
+    artists = sorted({signal['title'] for signal in profile['signals']
+                      if signal.get('medium') == 'artist' and signal['title']})
     value = {'schema': 'catalogue-query/v1', 'categories': list(categories), 'profile': profile,
-             'queries': [{'category': category, 'terms': list(terms)} for category in categories]}
+             'queries': [{'category': category, 'terms': list(artists if
+                context.get('adapter_id') == 'musicbrainz_recording' and category == 'recording' else terms)}
+                for category in categories]}
     return canonical_bytes(value), prepared.omitted_classes

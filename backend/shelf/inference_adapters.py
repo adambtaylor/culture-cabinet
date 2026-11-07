@@ -92,3 +92,44 @@ class HostedResponsesAdapter:
                 'Model identifier is provider-reported, not independently attested.']}
         except (DisclosureError, ContractError, UnicodeError, TypeError, ValueError):
             raise TransportFault('incompatible') from None
+
+
+class PersonalResponsesAdapter:
+    """Uses the fixed checked transport without widening the neutral adapter."""
+    def __init__(self):
+        self.transport = CheckedTransport()
+
+    @sensitive_variables()
+    def dispatch(self, reservation, body, *, permit):
+        from .inference_transport import PersonalPermit
+        if reservation is None or type(permit) is not PersonalPermit:
+            raise TransportFault('denied')
+        raw = self.transport.send(body, permit)
+        try:
+            response = read_json(raw)
+            if (response.get('status') != 'completed' or response.get('model') != MODEL
+                    or response.get('error') is not None or response.get('incomplete_details') is not None
+                    or type(response.get('output')) is not list or len(response['output']) > 10):
+                raise TransportFault('incompatible')
+            texts = []
+            for item in response['output']:
+                if type(item) is not dict:
+                    raise TransportFault('incompatible')
+                if item.get('type') == 'reasoning':
+                    continue
+                if (item.get('type') != 'message' or item.get('role') != 'assistant'
+                        or item.get('status') != 'completed' or type(item.get('content')) is not list):
+                    raise TransportFault('incompatible')
+                for part in item['content']:
+                    if type(part) is not dict or part.get('type') != 'output_text' or type(part.get('text')) is not str:
+                        raise TransportFault('incompatible')
+                    texts.append(part['text'])
+            if len(texts) != 1:
+                raise TransportFault('incompatible')
+            submitted = read_json(read_json(body)['input'].encode())
+            signals = [{key: row[key] for key in ('key', 'medium')} for row in submitted['profile']['signals']]
+            candidates = [{'key': row['key'], 'evidence_refs': sorted(set(row['source_roots']) |
+                {fact['id'] for fact in row['facts']})} for row in submitted['candidates']]
+            return canonical_bytes(validate_result(texts[0].encode(), signals=signals, candidates=candidates))
+        except (DisclosureError, ContractError, UnicodeError, TypeError, ValueError, KeyError, AttributeError):
+            raise TransportFault('incompatible') from None

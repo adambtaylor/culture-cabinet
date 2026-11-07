@@ -463,11 +463,15 @@ class _MoshtixReservation:
 
 @dataclass(frozen=True)
 class MediaHostLimiter:
-    """Host-owner reservations: movie/TV share TMDB; Hardcover is separate."""
+    """Host-owner reservations; distinct providers, shared across contexts/processes.
+
+    MusicBrainz's six-second reservation is conservative against its one/second
+    app ceiling. This cannot police unrelated applications sharing the same IP.
+    """
     provider: str
 
     def __post_init__(self):
-        if self.provider not in ('tmdb', 'hardcover'):
+        if self.provider not in ('tmdb', 'hardcover', 'musicbrainz'):
             raise SourceError('Unknown media provider.')
 
     def reserve(self):
@@ -643,3 +647,100 @@ def media_authorized(operation, *, secret, revalidate, limiter, response_bytes=2
                 cleanup_failed = True
         if cleanup_failed:
             raise SourceError('Media child cleanup failed.') from None
+
+
+def musicbrainz_authorized(operation, *, revalidate, limiter, response_bytes=131072,
+                          request_seconds=5, parent_seconds=6):
+    """One fixed anonymous GET, using the existing bounded curl/closure pattern.
+
+    No bearer material, vault or ambient credential can enter this operation.
+    A host-owner reservation precedes the send; authority is freshly checked
+    on each side of I/O. Cleanup remains inside the original parent ceiling.
+    """
+    from .musicbrainz_source import MusicBrainzOperation
+    child, slot, status, headers = None, None, None, ()
+    end = time.monotonic() + (parent_seconds if type(parent_seconds) in (int, float)
+                              and 0 < parent_seconds <= 6 else 6)
+    try:
+        if (type(operation) is not MusicBrainzOperation or not callable(revalidate)
+                or type(limiter) is not MediaHostLimiter or limiter.provider != 'musicbrainz'
+                or type(response_bytes) is not int or not 0 < response_bytes <= 131072
+                or type(request_seconds) not in (int, float) or not 0 < request_seconds <= 5
+                or type(parent_seconds) not in (int, float) or not 0 < parent_seconds <= 6):
+            raise SourceError('Recording transport unavailable.')
+
+        def current():
+            try:
+                if revalidate() is not True or slot is not None and slot.current() is not True:
+                    raise SourceError('Recording authority unavailable.')
+            except Exception:
+                raise SourceError('Recording authority unavailable.') from None
+
+        current()
+        slot = limiter.reserve()
+        current()
+        io_end = end - min(0.2, parent_seconds / 4)
+        if time.monotonic() >= io_end:
+            raise TimeoutError
+        command = _base(response_bytes)
+        command[command.index('--connect-timeout') + 1] = str(min(5, request_seconds))
+        command[command.index('--max-time') + 1] = str(min(request_seconds, parent_seconds))
+        command += ['--include', '--request', 'GET', '--user-agent', operation.application_identity,
+                    '--url', operation.url]
+        child = subprocess.Popen(command, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL, close_fds=True, env={'LANG': 'C', 'LC_ALL': 'C'})
+        output, cap = bytearray(), response_bytes + 8192 + 8
+        with selectors.DefaultSelector() as ready:
+            os.set_blocking(child.stdout.fileno(), False)
+            ready.register(child.stdout, selectors.EVENT_READ)
+            while ready.get_map():
+                remaining = io_end - time.monotonic()
+                if remaining <= 0 or not ready.select(remaining):
+                    raise TimeoutError
+                try:
+                    block = os.read(child.stdout.fileno(), min(8192, cap + 1 - len(output)))
+                except BlockingIOError:
+                    continue
+                if not block:
+                    ready.unregister(child.stdout)
+                else:
+                    output.extend(block)
+                    if len(output) > cap:
+                        raise SourceError('Recording response budget exceeded.')
+            child.wait(timeout=max(0.001, io_end - time.monotonic()))
+        if child.returncode == 28:
+            raise TimeoutError
+        if child.returncode:
+            raise SourceError('Recording transport failed.')
+        status, body, headers = _moshtix_envelope(bytes(output), response_bytes=response_bytes)
+        if 300 <= status < 400:
+            raise SourceError('Recording redirect refused.')
+        current()
+        if time.monotonic() >= io_end:
+            raise TimeoutError
+        return status, body, headers
+    except (OSError, subprocess.SubprocessError) as error:
+        if isinstance(error, (TimeoutError, subprocess.TimeoutExpired)):
+            raise TimeoutError from None
+        raise SourceError('Recording transport failed.') from None
+    finally:
+        cleanup_failed = False
+        if child is not None:
+            try:
+                if child.poll() is None:
+                    child.kill()
+                child.wait(timeout=max(0.001, end - time.monotonic()))
+            except (OSError, subprocess.SubprocessError):
+                cleanup_failed = True
+            finally:
+                try:
+                    child.stdout.close()
+                except Exception:
+                    cleanup_failed = True
+        if slot is not None:
+            try:
+                slot.finish(status, headers, now=datetime.now(timezone.utc))
+            except Exception:
+                cleanup_failed = True
+        if cleanup_failed:
+            raise SourceError('Recording child cleanup failed.') from None

@@ -1,8 +1,8 @@
 """Typed all-category API -> exact preview -> authorized inference coordinator.
 
 No route, persistent broker, transport or publication writer is registered here.
-Production composition needs the independently admitted durable I5/I7 host ports.
-The existing personal codec/transport capability barriers remain unchanged.
+Production composition authenticates the retained source seal and durable
+reservation independently; plain records never grant send authority.
 """
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -25,6 +25,8 @@ class PlannedEnhance:
     query_view: object = field(repr=False)
     snapshot_bytes: bytes = field(repr=False)
     events: tuple[StageEvent, ...]
+    source_plans: tuple = ()
+    source_views: tuple = ()
 
 
 @dataclass(frozen=True, repr=False)
@@ -102,7 +104,7 @@ class EnhanceCoordinator:
             raise EnhanceFault('CAPABILITY_UNAVAILABLE') from None
 
     @sensitive_variables()
-    def plan(self, query_view, registry, *, run_ref, client_key, refresh_nonce, inference_view=None):
+    def plan(self, query_view, registry, *, run_ref, client_key, refresh_nonce, inference_view=None, source_views=()):
         self._current(query_view, 'catalogue_lookup')
         require(type(registry) is RegistryView)
         snapshot = profile_snapshot.capture(query_view)
@@ -130,7 +132,21 @@ class EnhanceCoordinator:
             registry, now=self.now(), plan_ref=run_ref, bindings=bindings)
         self._current(query_view, 'catalogue_lookup')
         events = (self._event(run_ref, 'authorized'),)
-        return PlannedEnhance(intent, registry, plan, query_view, disclosure.canonical_bytes(snapshot), events)
+        plans = []
+        views = tuple(sorted(source_views, key=lambda view: view.connection_ref))
+        for view in views:
+            self._current(view, 'catalogue_lookup')
+            bound = EnhanceBindings(view.installation_id, view.actor_ref, view.profile_ref,
+                view.profile_revision_digest, view.policy_epoch, view.restriction_watermark,
+                registry.revision, view.context['config_revision'], digest(disclosure.canonical_bytes(view.grants)),
+                digest(disclosure.canonical_bytes(view.connection_binding)))
+            require(tuple(vars(bound).values())[:7] == tuple(vars(bindings).values())[:7], 'PREVIEW_STALE')
+            own = inference_body.serialize_catalogue(snapshot, view.grants, view.context, registry,
+                now=self.now(), plan_ref=run_ref, bindings=bound)
+            plans.append((view.connection_ref, own))
+        require(len({key for key, _ in plans}) == len(plans))
+        return PlannedEnhance(intent, registry, plan, query_view, disclosure.canonical_bytes(snapshot), events,
+                              tuple(plans), views)
 
     @sensitive_variables()
     def collect(self, planned, *, approved_query_digest):
@@ -144,7 +160,10 @@ class EnhanceCoordinator:
             events.append(self._event(run_ref, 'collecting'))
             # This ONE port settles initial retrieval AND enrichment for EVERY
             # enabled category. No inference path exists without its complete seal.
-            seal = self.catalogue.collect(planned.plan, planned.registry, self.budget)
+            arguments = {'source_plans': dict(planned.source_plans)} if planned.source_plans else {}
+            for view in planned.source_views:
+                self._current(view, 'catalogue_lookup')
+            seal = self.catalogue.collect(planned.plan, planned.registry, self.budget, **arguments)
             require(type(seal) is CollectionSeal)
             seal.verify(planned.plan, planned.registry, now=self.now())
             self._current(planned.query_view, 'catalogue_lookup')
@@ -178,7 +197,11 @@ class EnhanceCoordinator:
                  seal.bindings.snapshot_revision, seal.bindings.policy_epoch, seal.bindings.restriction_watermark), 'PREVIEW_STALE')
         seal.verify(planned.plan, planned.registry, now=self.now())
         snapshot = profile_snapshot.capture(inference_view)
-        encoded = inference_body.serialize(snapshot, inference_view.grants, inference_view.context, seal, now=self.now())
+        arguments = {} if inference_view.context.get('isolated_fixture') else dict(
+            producer=self.catalogue, plan=planned.plan, registry=planned.registry,
+            source_plans=dict(planned.source_plans), authority_view=inference_view)
+        encoded = inference_body.serialize(snapshot, inference_view.grants, inference_view.context, seal,
+                                           now=self.now(), **arguments)
         self._host_check(planned.intent, planned.plan, seal, encoded.body)
         event = self._event(planned.intent.run_ref, 'awaiting_preview', outcomes=seal.outcomes)
         return InferencePreview(collected, inference_view, encoded.body, digest(encoded.body),

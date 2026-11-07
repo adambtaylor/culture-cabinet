@@ -580,3 +580,16 @@ class RecentAuthIntegrationTests(ConnectionCase):
         self.assertIn(b'data-credential-configured="true"',page.content)
         self.assertNotIn(b'data-form="confirm"',page.content)
         self.assertNotIn('_portable_notice',self.http.session)
+
+
+class NormalEnhanceHostSourceTests(SimpleTestCase):
+    def test_runtime_composes_concrete_ports_without_policy_or_source_activation(self):
+        import ast
+        source = Path(runtime.__file__).read_text()
+        tree = ast.parse(source)
+        calls = [node for node in ast.walk(tree) if isinstance(node, ast.Call)
+                 and isinstance(node.func, ast.Attribute) and node.func.attr == 'compose'
+                 and isinstance(node.func.value, ast.Name) and node.func.value.id == 'EnhanceService']
+        self.assertEqual(len(calls), 1)
+        self.assertIn('policy_provider', {arg.arg for arg in calls[0].keywords})
+        self.assertNotIn('configure_source(', source)
