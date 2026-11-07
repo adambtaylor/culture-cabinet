@@ -4,6 +4,7 @@ from shelf import portable_setup_views as views
 from shelf import portable_connection_views as connections
 from shelf import onboarding_experience_views as experience
 from shelf import enhancement_views as enhance
+from shelf import portable_obtain_views as obtain
 from shelf import portable_source_views as sources
 
 urlpatterns = [
@@ -48,4 +49,20 @@ urlpatterns = [
     path('setup/login', views.login),
     path('setup/reauthenticate', views.reauthenticate),
     path('setup/logout', views.logout),
+]
+
+# Native portable routes deliberately do not concatenate the provider URLconf.
+urlpatterns += [
+    path('cabinet/saved/', obtain.index, name='portable_saved'),
+    path('cabinet/saved/select/', obtain.select, name='portable_saved_select'),
+    path('cabinet/saved/save/', obtain.save, name='portable_saved_save'),
+    path('cabinet/saved/<int:item_id>/remove/', obtain.remove, name='portable_saved_remove'),
+    path('cabinet/saved/<int:item_id>/search/', obtain.search, name='portable_saved_search'),
+    path('cabinet/saved/previews/<uuid:preview_ref>/', obtain.results, name='portable_obtain_results'),
+    path('cabinet/saved/previews/<uuid:preview_ref>/<uuid:result_ref>/review/', obtain.review, name='portable_obtain_review'),
+    path('cabinet/saved/previews/<uuid:preview_ref>/<uuid:result_ref>/confirm/', obtain.confirm, name='portable_obtain_confirm'),
+    path('cabinet/saved/jobs/<int:job_id>/', obtain.status, name='portable_obtain_status'),
+    path('cabinet/saved/jobs/<int:job_id>/submit/review/', obtain.submission_review, name='portable_obtain_submission_review'),
+    path('cabinet/saved/jobs/<int:job_id>/submit/', obtain.submit, name='portable_obtain_submit'),
+    path('cabinet/saved/jobs/<int:job_id>/cancel/', obtain.cancel, name='portable_obtain_cancel'),
 ]

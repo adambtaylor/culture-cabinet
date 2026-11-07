@@ -14,6 +14,7 @@ from django.utils import timezone
 
 from shelf import obtain_preview as preview, saved
 from shelf import completion_registry as registry
+from shelf.portable_saved_authority import effect_for
 from shelf.acquisition_contract import Blocked, ContractError, MAX_NZB_BYTES
 from shelf.acquisition_pipeline import (Checkpoint, Completion, Evidence, Pipeline,
                                         ProviderJob, Snapshot, StagedFile, verify_staging)
@@ -147,7 +148,10 @@ def review_submission(*, actor, profile_id, job_id, context, evidence, max_bytes
     source = retriever or UnavailableRetriever()
     # Runtime stores the exact reviewed bytes; injected legacy/test retrievers
     # retain their explicit retrieval contract. Confirmation never normalizes NZBs.
-    nzb = getattr(source, 'review', source.retrieve)(exact)
+    # Review can persist/prune descriptors: check live PA1 under its owner fence
+    # before the descriptor/transport effect, with no enclosing SQL transaction.
+    with effect_for(actor, profile_id):
+        nzb = getattr(source, 'review', source.retrieve)(exact)
     if type(nzb) is not RetrievedNZB:
         raise ContractError('Exact result NZB binding required')
     context.require(actor, profile_id)
@@ -231,19 +235,21 @@ def submit(*, actor, profile_id, job_id, context, token, confirmed, retriever=No
     if previous:
         if previous.binding != binding:
             raise ContractError('Submission binding conflict')
-        repair_registration(previous)
+        with effect_for(actor, profile_id):
+            repair_registration(previous)
         return previous  # includes unknown, failed and cancelled; never a retry
     if job.status != 'blocked_configuration':
         raise Blocked('Selection cancelled')
     if completion_intent is not None:
         check_completion_intent(binding, before_send=True)
     exact_result(job, fresh=True)
-    nzb = (retriever or UnavailableRetriever()).retrieve(exact)
+    with effect_for(actor, profile_id):
+        nzb = (retriever or UnavailableRetriever()).retrieve(exact)
     if type(nzb) is not RetrievedNZB or nzb.sha256(exact) != binding['nzb_sha256']:
         raise ContractError('Reviewed NZB changed')
     # Serialize with saved.cancel and competing submitters using the existing job.
     # No network operation occurs inside this durable transaction.
-    with transaction.atomic(durable=True):
+    with effect_for(actor, profile_id), transaction.atomic(durable=True):
         AcquisitionJob.objects.filter(pk=job.pk).update(reason=F('reason'))
         job = owned_job(actor, profile_id, job_id)
         current, current_receipt = exact_result(job, fresh=True)
@@ -258,23 +264,26 @@ def submit(*, actor, profile_id, job_id, context, token, confirmed, retriever=No
             if transfer.binding != binding:
                 raise ContractError('Submission binding conflict')
             return transfer
-    checkpoints = DjangoCheckpoints(transfer)
-    evidence = checkpoints.load(exact.snapshot.request_id).evidence
-    provider = backend.provider(actor_id=actor.pk, profile_id=profile_id,
-        snapshot=exact.snapshot, selection=evidence.selection, nzb=nzb.payload)
-    pipeline = Pipeline(job, checkpoints, provider, None, None)
-    context.require(actor, profile_id)
-    current_job = owned_job(actor, profile_id, job_id)
-    current, current_receipt = exact_result(current_job, fresh=True)
-    check_album_authorization(current_job, binding)
-    if (current != exact or str(current_receipt.nonce) != binding['nonce']
-            or current_receipt.version != binding['version']):
-        raise Blocked('Selection changed before dispatch')
-    if completion_intent is not None:
-        check_completion_intent(binding, before_send=True)
-    pipeline.dispatch(evidence)
-    transfer.refresh_from_db()
-    repair_registration(transfer)
+    # Hold the existing recovery/owner fence through provider construction, send
+    # and durable outcome. No SQL transaction encloses the external operation.
+    with effect_for(actor, profile_id):
+        checkpoints = DjangoCheckpoints(transfer)
+        evidence = checkpoints.load(exact.snapshot.request_id).evidence
+        provider = backend.provider(actor_id=actor.pk, profile_id=profile_id,
+            snapshot=exact.snapshot, selection=evidence.selection, nzb=nzb.payload)
+        pipeline = Pipeline(job, checkpoints, provider, None, None)
+        context.require(actor, profile_id)
+        current_job = owned_job(actor, profile_id, job_id)
+        current, current_receipt = exact_result(current_job, fresh=True)
+        check_album_authorization(current_job, binding)
+        if (current != exact or str(current_receipt.nonce) != binding['nonce']
+                or current_receipt.version != binding['version']):
+            raise Blocked('Selection changed before dispatch')
+        if completion_intent is not None:
+            check_completion_intent(binding, before_send=True)
+        pipeline.dispatch(evidence)
+        transfer.refresh_from_db()
+        repair_registration(transfer)
     return transfer
 
 

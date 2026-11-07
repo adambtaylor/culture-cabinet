@@ -43,6 +43,12 @@ def require_available():
 
 
 def authority(actor, profile_id, action='select'):
+    from shelf.portable_saved_authority import active_portable_access
+    access = active_portable_access()
+    if access is not None:
+        # An active refused/closed portable scope never falls back to provider
+        # authority. Legacy callers without a scope retain their original path.
+        return access.require(actor_id=actor.pk, profile_id=profile_id, action=action)
     from shelf.provider_views import _profiles
     if not _profiles(actor, action).filter(pk=profile_id).exists():
         raise Http404
@@ -95,6 +101,58 @@ def save_candidate(*, actor, profile_id, session, item_id, list_kind):
             defaults={'title': title, 'url': url, 'fetched_at': fetched})
     return item, created
 
+
+
+def save_publication_candidate(*, access, service, expected_publication_revision, candidate_key, list_kind):
+    """PS1 owns current/source-rights evidence; PA1 owns live human authority."""
+    from shelf.portable_saved_authority import active_portable_access
+    from shelf.portable_enhance_service import EnhanceService
+    from shelf.models import ProfileCabinetState, validate_publication_lineage
+    from shelf import grant_authority as ga
+    ga._require(active_portable_access() is access and type(service) is EnhanceService
+                and service.authority is access.authority)
+    identity = access.require(actor_id=access.identity.actor_id, profile_id=access.identity.profile_id, action='mutate')
+    evidence = service.resolve_saved_candidate(access.session_ref, profile_ref=identity.profile_ref,
+        expected_publication_revision=expected_publication_revision, candidate_key=candidate_key)
+    # read_current may commit privacy redaction. PS1 performs it BEFORE this
+    # transaction; its window retains the owner/recovery lock across this write.
+    with service.saved_candidate_window(access.session_ref, evidence=evidence) as current:
+        ga._require(current.schema == 'portable-saved-candidate/v1'
+            and (str(current.installation_ref), current.owner_revision, str(current.profile_ref), current.actor_id, current.profile_id) ==
+                (identity.installation_ref, identity.owner_revision, identity.profile_ref, identity.actor_id, identity.profile_id))
+        provider, medium, source_id = current.provider, current.medium, current.source_id
+        title, url = current.title, canonical_url(provider, medium, source_id, current.url)
+        fetched = parse_datetime(current.fetched_at) if type(current.fetched_at) is str else current.fetched_at
+        until = parse_datetime(current.source_valid_until) if type(current.source_valid_until) is str else current.source_valid_until
+        if (not url or url != current.url or type(title) is not str or not title.strip() or len(title) > 300
+                or fetched is None or timezone.is_naive(fetched) or until is None or timezone.is_naive(until)
+                or until <= access.authority.now()):
+            raise SavedError('Current source attribution is unavailable.', 409)
+        if not (list_kind == 'favorites' or list_kind == ('read' if medium == 'book' else 'watch')):
+            raise SavedError('List does not support this medium.')
+        lineage = {'schema': 'portable-saved-lineage/v1'}
+        for key in ('installation_ref', 'owner_revision', 'profile_ref', 'publication_ref',
+                    'publication_revision', 'run_ref', 'candidate_key', 'candidate_digest', 'source_evidence_digest'):
+            value = getattr(current, key)
+            lineage[key] = str(value) if key.endswith('_ref') else value
+        try:
+            validate_publication_lineage(lineage)
+        except (ValueError, TypeError, AttributeError):
+            raise SavedError('Current publication lineage is unavailable.', 409) from None
+        with ga.current_writer(access.authority, access.session_ref, identity.profile_ref), transaction.atomic(), ga.writer_window(access.actor, identity.profile_id):
+            before = ProfileCabinetState.objects.get(profile_id=identity.profile_id)
+            item, created = SavedItem.objects.get_or_create(actor_id=identity.actor_id, profile_id=identity.profile_id,
+                provider=provider, medium=medium, source_id=source_id, list_kind=list_kind,
+                defaults={'title': title, 'url': url, 'fetched_at': fetched, 'publication_lineage': lineage})
+            after = ProfileCabinetState.objects.get(profile_id=identity.profile_id)
+            # Save intentionally invalidates the old publication once via its
+            # existing floor triggers. Do not re-read that old binding after our
+            # own write; allow only this exact advancement, and no duplicate write.
+            ga._require((after.policy_epoch, after.restriction_watermark) ==
+                (before.policy_epoch + int(created), before.restriction_watermark + int(created)),
+                'REVISION_CONFLICT', 409)
+            access.require(actor_id=identity.actor_id, profile_id=identity.profile_id, action='mutate')
+        return item, created
 
 def owned_item(actor, profile_id, item_id, action='select'):
     authority(actor, profile_id, action)
