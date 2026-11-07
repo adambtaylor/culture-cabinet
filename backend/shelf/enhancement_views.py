@@ -512,12 +512,16 @@ _CATEGORY_COPY = {'fresh': 'Published picks', 'empty_bounded': 'No candidates wi
     'cancelled': 'Collection cancelled; no fresh picks.',
     'retained_previous_stale': 'Older picks retained by current policy; not refreshed by this round.'}
 _REASON_LABELS = {'explicit': 'Explicit taste', 'source': 'Source evidence', 'inferred': 'Inferred connection'}
+_SAVED_ATTRIBUTION_UNAVAILABLE = (
+    'Saving is unavailable because durable attribution permission is not established.')
 
 
 @sensitive_variables()
 def _cabinet_projection(current):
     """Allowlist a detached, display-only projection of current()'s filtered read.
 
+    RC1 suppression belongs to the filtered producer: missing reasons are never
+    rebuilt from retained personal/inferred text, including after Undo/replay.
     Never fill missing categories/cards/reasons from prior responses, run output
     or local caches. A refused/malformed publication is an error, not permission
     to reconstruct a previously visible card. This function grants no rights.
@@ -550,12 +554,14 @@ def _cabinet_projection(current):
         projected = {'category': category, 'label': _CATEGORY_LABELS.get(category, category),
             'state': row['state'], 'status': _CATEGORY_COPY[row['state']], 'code': row['code'], 'cards': []}
         if row['state'] == 'unavailable' and row['code'] == 'CAPABILITY_UNAVAILABLE':
-            projected['status'] = 'Unsupported by the current source connections.'
+            projected['status'] = 'Not available with the current connections or integration.'
         for card in row['cards']:
             require(type(card) is dict and card.get('category') == category)
             key = _display_text(card.get('key'), 300)
             require(key and key not in cards and len(cards) < 100)
-            item = {'title': _display_text(card.get('title'), 300), 'reasons': [], 'facts': []}
+            item = {'title': _display_text(card.get('title'), 300), 'reasons': [], 'facts': [],
+                    'candidate_key': key,
+                    'save_list_kind': {'book': 'read', 'movie': 'watch', 'tv': 'watch'}.get(category)}
             require(bool(item['title']))
             for name, limit in [('medium', 300), ('provider', 300), ('observed_at', 100), ('valid_until', 100)]:
                 item[name] = _display_text(card.get(name, ''), limit)
@@ -599,6 +605,26 @@ def _native_cabinet_html(request, context, *, status=200):
                         headers={'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff'})
 
 
+def render_portable_saved(request, *, template, context, status=200):
+    """Render N1's safe projection without request or authority in the template.
+
+    A selection token is command context, never cached permission. N1 rechecks
+    its live generation and PA1/PS1 boundaries on every command. The page
+    allowlist prevents a route value choosing a legacy authentication surface.
+    """
+    from django.http import HttpResponse
+    from django.middleware.csrf import get_token
+    from django.template import Engine
+    allowed = {'cabinet/portable_saved_items.html', 'cabinet/portable_obtain_preview.html',
+               'cabinet/portable_obtain_submission.html'}
+    if template not in allowed:
+        raise ValueError('Unsupported portable saved template')
+    values = {**context, 'csrf_token': get_token(request),
+              'enhancement_base': Engine.get_default().from_string(_PORTABLE_ENHANCE_BASE)}
+    return HttpResponse(render_to_string(template, values), status=status,
+                        headers={'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff'})
+
+
 @require_GET
 @_portable_errors
 def portable_entry(request):
@@ -636,7 +662,15 @@ def portable_cabinet(request):
         raise AuthorityFault('AUTHORITY_DENIED', 403)
     service, session_ref = _portable_service(request)
     context = {'entry': False, 'profile_label': profile['label'], 'profile_ref': profile_ref,
-               'connection_ref': connection_ref, 'categories': [], 'published': False}
+               'connection_ref': connection_ref, 'categories': [], 'published': False,
+               # C4: the current producer has no independent durable-attribution
+               # signal. Do not offer success until its accepted contract lands;
+               # backend refusal remains mandatory even for a fabricated POST.
+               'save_unavailable_reason': _SAVED_ATTRIBUTION_UNAVAILABLE}
+    from .portable_obtain_views import cabinet_saved_context
+    # GET navigation cannot select a profile. Only N1's fresh read-only PA1
+    # projection can supply command context for an already selected profile.
+    context.update(cabinet_saved_context(request, profile_ref=profile_ref))
     if connection_ref:
         context['enhance_url'] = '/enhance?' + urlencode({'profile_ref': profile_ref, 'connection_ref': connection_ref})
         context['inference_consent_url'] = '/cabinet/consent?' + urlencode({'profile_ref': profile_ref, 'connection_ref': connection_ref})

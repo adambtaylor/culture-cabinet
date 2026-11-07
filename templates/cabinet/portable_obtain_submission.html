@@ -1,0 +1,13 @@
+{% extends enhancement_base %}
+{% block content %}
+<header><p class="eyebrow">Obtain · {{ profile_label }}</p><h1>Review submission of this exact selection</h1><p><a href="/cabinet/saved/">Back to saved items for {{ profile_label }}</a></p></header>
+{% if error_message %}<p role="alert">{{ error_message }} Read the recorded request before taking further action. Nothing is resubmitted automatically.</p>{% endif %}
+{% if obtain_submission and selection_token and obtain_submit_form and obtain_submit_url %}
+<p>This separate confirmation can send one NZB to the configured downloader. Saving and selecting a listing did not authorize this send.</p>
+<dl><dt>Title</dt><dd>{{ acquisition_job.title }}</dd><dt>Exact edition</dt><dd>{{ obtain_submission.selection.edition }}</dd><dt>Exact listing</dt><dd>{{ obtain_submission.exact.result_id }} · {{ obtain_submission.exact.guid }}</dd><dt>Scope</dt><dd>{% if acquisition_job.scope == 'film' %}Full film{% elif acquisition_job.scope == 'audiobook' %}Full audiobook, never ebook{% elif acquisition_job.episode_code %}{{ acquisition_job.episode_code }} only{% else %}{{ acquisition_job.scope }}{% endif %}</dd><dt>Reported encoded size</dt><dd>{{ obtain_submission.exact.size }} bytes</dd><dt>Approved local maximum</dt><dd>{{ obtain_submission.max_bytes }} bytes</dd><dt>Storage</dt><dd>{{ obtain_submission.selection.storage }}</dd><dt>NZB SHA-256</dt><dd>{{ obtain_submission.nzb_sha256 }}</dd></dl>
+<p>Review expires after five minutes or sooner if the listing, selection or authority changes. Queued means accepted only; completion, library indexing and playback are separate.</p>
+<form method="post" action="{{ obtain_submit_url }}">{% csrf_token %}<input type="hidden" name="profile_ref" value="{{ profile_ref }}"><input type="hidden" name="selection_token" value="{{ selection_token }}">
+{{ obtain_submit_form.as_p }}<button type="submit">Confirm and submit this exact selection once</button></form>
+<p>If the outcome is unknown, do not resubmit. Read the same persisted receipt and ask the operator to reconcile it. No automatic retry follows.</p>
+{% else %}<p role="status">No fresh authorized submission review is available. Read your recorded request and explicitly prepare a new review only when offered. This page cannot start a send.</p>{% endif %}
+{% endblock %}

@@ -1,0 +1,38 @@
+{% extends enhancement_base %}
+{% block content %}
+<header><p class="eyebrow">Saved items · {{ profile_label }}</p><h1>Your saved items and Obtain requests</h1>
+<p>Save keeps an item for later. It does not record enjoyment, grant provider permission or start acquisition.</p>
+<p><a href="{{ cabinet_url }}">Return to {{ profile_label }}</a> · <a href="/setup/cabinet">Choose another cabinet</a></p></header>
+{% if message %}<p role="status">{{ message }}</p>{% endif %}
+{% if error_message %}<section role="alert"><h2>This action could not be completed</h2><p>{{ error_message }}</p><p>Reload the selected cabinet and open a fresh review. Nothing is resubmitted automatically.</p><a href="/setup">Review owner session and setup</a></section>{% endif %}
+{% if selection_token %}
+{% for list in saved_lists %}<section aria-labelledby="saved-list-{{ forloop.counter }}"><h2 id="saved-list-{{ forloop.counter }}">{{ list.label }}</h2>
+{% for item in list.items %}<article class="paper-panel"><h3>{{ item.title }}</h3><p>{{ item.medium_label }} · {{ item.provider_label }}</p>
+{% if item.fetched_at %}<p>Source observed {{ item.fetched_at }}. This is saved attribution, not a live availability check.</p>{% endif %}
+{% if item.url %}<p><a href="{{ item.url }}" rel="noreferrer noopener">Source record for {{ item.title }}</a></p>{% endif %}
+{% if item.obtain_preview_url %}<form method="post" action="{{ item.obtain_preview_url }}">{% csrf_token %}
+<input type="hidden" name="profile_ref" value="{{ profile_ref }}"><input type="hidden" name="selection_token" value="{{ selection_token }}">
+{% if item.is_tv %}<fieldset><legend>Choose one episode for {{ item.title }}</legend><p>Leave both fields blank for S01E01. Packs and full seasons are outside this request.</p>
+<label>Season (0–999) <input name="season" type="number" min="0" max="999" step="1"></label><label>Episode (1–999) <input name="episode" type="number" min="1" max="999" step="1"></label></fieldset>{% endif %}
+<button type="submit">Search Obtain listings for {{ item.title }}</button></form>
+<p>Search reviews listing claims; it does not enqueue a download. Books use full audiobooks, never ebooks.</p>{% else %}<p>Obtain is unavailable for this item.</p>{% endif %}
+{% if item.remove_url %}<form method="post" action="{{ item.remove_url }}">{% csrf_token %}<input type="hidden" name="profile_ref" value="{{ profile_ref }}"><input type="hidden" name="selection_token" value="{{ selection_token }}"><button type="submit">Remove {{ item.title }} from saved items</button></form><p>Removal does not cancel an existing Obtain request or record a reaction.</p>{% endif %}
+</article>{% empty %}<p>No items saved to this list.</p>{% endfor %}</section>{% endfor %}
+<section aria-labelledby="saved-jobs"><h2 id="saved-jobs">Recorded Obtain requests</h2>
+{% if acquisition_job %}
+<article class="paper-panel"><h3>{{ acquisition_job.title }}</h3>
+<p role="status">{% if acquisition_job.status == 'outcome_unknown' %}Enqueue outcome unknown. Do not resubmit; reconcile this recorded request with the operator.
+{% elif acquisition_job.status == 'queued' %}One job was accepted. Completion and local availability remain unknown until matching evidence is recorded.
+{% elif acquisition_job.status == 'local_verified' %}Local bytes verified; awaiting library indexing. This does not establish playable content, library import or playback.
+{% elif acquisition_job.status == 'failed' %}This request failed. Its receipt is retained; no automatic enqueue retry is available.
+{% elif acquisition_job.status == 'cancel_pending' %}Local cancellation recorded. Remote cancellation is unconfirmed.
+{% else %}{{ acquisition_job.status }}: {{ acquisition_job.reason }}{% endif %}</p>
+{% if acquisition_job.test_only %}<p>Synthetic test evidence only. No real acquisition or playback is verified.</p>{% endif %}
+<p>Edition: {{ acquisition_job.edition }} · Scope: {{ acquisition_job.scope }} · Storage: {{ acquisition_job.storage }}</p>
+{% if acquisition_job.submission_review_url and not acquisition_job.has_transfer and acquisition_job.status == 'blocked_configuration' %}<form method="post" action="{{ acquisition_job.submission_review_url }}">{% csrf_token %}<input type="hidden" name="profile_ref" value="{{ profile_ref }}"><input type="hidden" name="selection_token" value="{{ selection_token }}"><button type="submit">Prepare exact submission review</button></form><p>This retrieves the selected NZB for review. It does not enqueue; a separate explicit confirmation follows.</p>{% endif %}
+{% if acquisition_job.status_url %}<p><a href="{{ acquisition_job.status_url }}">Read this request’s recorded status</a></p>{% endif %}
+{% if acquisition_job.cancel_url %}<form method="post" action="{{ acquisition_job.cancel_url }}">{% csrf_token %}<input type="hidden" name="profile_ref" value="{{ profile_ref }}"><input type="hidden" name="selection_token" value="{{ selection_token }}"><button type="submit">Record local cancellation</button></form>{% endif %}
+</article>{% endif %}
+{% for job in acquisition_jobs %}<article class="paper-panel"><h3>{{ job.title }}</h3><p>{{ job.status }}: {{ job.reason }}</p>{% if job.status_url %}<a href="{{ job.status_url }}">View request {{ job.id }} for {{ job.title }}</a>{% endif %}</article>{% empty %}{% if not acquisition_job %}<p>No recorded Obtain requests. Saving an item does not create one.</p>{% endif %}{% endfor %}</section>
+{% else %}<p role="status">Select this cabinet before opening saved items or Obtain. An old form cannot establish the current selection.</p><a href="/setup/cabinet">Choose your cabinet</a>{% endif %}
+{% endblock %}
