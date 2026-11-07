@@ -518,6 +518,8 @@ _REASON_LABELS = {'explicit': 'Explicit taste', 'source': 'Source evidence', 'in
 def _cabinet_projection(current):
     """Allowlist a detached, display-only projection of current()'s filtered read.
 
+    RC1 suppression belongs to the filtered producer: missing reasons are never
+    rebuilt from retained personal/inferred text, including after Undo/replay.
     Never fill missing categories/cards/reasons from prior responses, run output
     or local caches. A refused/malformed publication is an error, not permission
     to reconstruct a previously visible card. This function grants no rights.
@@ -550,7 +552,7 @@ def _cabinet_projection(current):
         projected = {'category': category, 'label': _CATEGORY_LABELS.get(category, category),
             'state': row['state'], 'status': _CATEGORY_COPY[row['state']], 'code': row['code'], 'cards': []}
         if row['state'] == 'unavailable' and row['code'] == 'CAPABILITY_UNAVAILABLE':
-            projected['status'] = 'Unsupported by the current source connections.'
+            projected['status'] = 'Not available with the current connections or integration.'
         for card in row['cards']:
             require(type(card) is dict and card.get('category') == category)
             key = _display_text(card.get('key'), 300)

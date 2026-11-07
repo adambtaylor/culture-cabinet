@@ -1,12 +1,13 @@
 <section class="paper-panel enhancement" data-enhancement data-state="{{ enhancement.state }}" data-schema="{{ enhancement.schema }}" data-status-url="{{ enhancement.status_url }}" aria-labelledby="enhance-heading">
   <h2 id="enhance-heading">Enhance my picks</h2>
+  {% if portable_ui %}<p class="enhance-stage-link"><a href="#enhance-current-stage">Current stage and next action</a></p>{% endif %}
   <div role="status" aria-live="polite" aria-atomic="true"><p data-enhance-label>{% if enhancement.schema == 'enhance/v1' %}Enhance progress{% else %}{{ enhancement.label|default:'Supervised enhancement' }}{% endif %}</p><p data-enhance-explanation{% if enhancement.schema == 'enhance/v1' %} hidden{% endif %}>{{ enhancement.explanation|default:'Enhancement requires a manual, supervised Astra high model handoff. It does not run automatically.' }}</p></div>
   {% comment %}StageEvent.public is display data, not send authority. Keep stage copy here so initial HTML and client updates use the same words; no provider/source prose becomes markup.{% endcomment %}
   {% if enhancement.schema == 'enhance/v1' %}{{ enhancement|json_script:"enhance-stage-receipt" }}{% endif %}
   <div data-enhance-progress{% if enhancement.schema != 'enhance/v1' %} hidden{% endif %}>
     <p class="fine-print">One round covers every enabled category, whichever tab you are viewing.</p>
     <ol class="enhance-phases" aria-label="Enhance order"><li>Collect and enrich API candidates</li><li>Review and confirm inference</li><li>Validate and publish picks</li></ol>
-    <div data-enhance-stages role="status" aria-live="polite" aria-atomic="true">
+    <div data-enhance-stages id="enhance-current-stage" tabindex="-1" role="status" aria-live="polite" aria-atomic="true">
       <div data-enhance-stage="authorized"{% if enhancement.stage != 'authorized' %} hidden{% endif %}>
         <h3>Preparing this round</h3>
         {% if portable_ui %}
@@ -90,7 +91,7 @@
 {% if enhancement.code == 'UNAUTHENTICATED' %}Open owner setup to sign in or confirm your session, then review the existing round. Nothing is retried automatically.
 {% elif enhancement.code == 'AUTHORITY_DENIED' %}Review the selected profile’s permissions before continuing. No extra send is available here.
 {% elif enhancement.code == 'CREDENTIAL_REQUIRED' %}Review the connection that needs a credential before continuing. Nothing is retried automatically.
-{% elif enhancement.code == 'CAPABILITY_UNAVAILABLE' %}The current connections do not support this operation. Keep your existing picks.
+{% elif enhancement.code == 'CAPABILITY_UNAVAILABLE' %}This operation is not available with the current connections or integration. Keep your existing picks.
 {% elif enhancement.code == 'SOURCE_UNAVAILABLE' %}A source is unavailable. Review the affected categories below; do not treat this as an empty search.
 {% elif enhancement.code == 'RATE_LIMITED' %}A source has asked Cabinet to wait. This round will not retry automatically.
 {% elif enhancement.code == 'UNKNOWN_RECONCILIATION_REQUIRED' %}Reconcile the existing attempt before any further inference. Do not resend this round.
@@ -114,7 +115,7 @@
           {% if outcome.state == 'fresh' %}{{ outcome.candidate_count }} sourced candidate{{ outcome.candidate_count|pluralize }} collected; new picks are not confirmed by collection alone.
           {% elif outcome.state == 'empty_bounded' %}No candidates within this round’s collection limits.
           {% elif outcome.state == 'unavailable' %}
-            {% if outcome.code == 'CAPABILITY_UNAVAILABLE' %}Unsupported by the current source connections.{% else %}Source unavailable; no fresh result.{% endif %}
+            {% if outcome.code == 'CAPABILITY_UNAVAILABLE' %}Not available with the current connections or integration.{% else %}Source unavailable; no fresh result.{% endif %}
           {% elif outcome.state == 'failed' %}Collection failed; this is not an empty result.
           {% elif outcome.state == 'cancelled' %}Collection cancelled; no fresh result.
           {% elif outcome.state == 'retained_previous_stale' %}Older picks retained; not refreshed by this round.
@@ -123,7 +124,7 @@
 {% if outcome.code == 'UNAUTHENTICATED' %}Open owner setup to sign in or confirm your session, then review the existing round. Nothing is retried automatically.
 {% elif outcome.code == 'AUTHORITY_DENIED' %}Review the selected profile’s permissions before continuing. No extra send is available here.
 {% elif outcome.code == 'CREDENTIAL_REQUIRED' %}Review the connection that needs a credential before continuing. Nothing is retried automatically.
-{% elif outcome.code == 'CAPABILITY_UNAVAILABLE' %}The current connections do not support this operation. Keep your existing picks.
+{% elif outcome.code == 'CAPABILITY_UNAVAILABLE' %}This operation is not available with the current connections or integration. Keep your existing picks.
 {% elif outcome.code == 'SOURCE_UNAVAILABLE' %}A source is unavailable. Review the affected categories below; do not treat this as an empty search.
 {% elif outcome.code == 'RATE_LIMITED' %}A source has asked Cabinet to wait. This round will not retry automatically.
 {% elif outcome.code == 'UNKNOWN_RECONCILIATION_REQUIRED' %}Reconcile the existing attempt before any further inference. Do not resend this round.
