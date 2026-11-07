@@ -1,0 +1,34 @@
+{% extends 'base.html' %}
+{% block title %}Log in{% endblock %}
+{% block content %}
+<div class="login-layout">
+  <section class="intro" aria-labelledby="welcome">
+    <p class="eyebrow">The cabinet / entrance</p>
+    <h1 id="welcome">Come in.<br>Get curious.</h1>
+    <p class="lede">A paper sky. A train of gardens. A lagoon that keeps its own time.</p>
+    <p>Log in to choose your available profile and browse three invented works.</p>
+    <p class="margin-note">A small fictional collection, with a proper ending.</p>
+  </section>
+  <section class="paper-panel" aria-labelledby="login-heading">
+    <h2 id="login-heading">Log in to the demo</h2>
+    <p id="login-help">Use <strong>demo-curator</strong> and the disposable password chosen by your operator.</p>
+    <form method="post" action="{% url 'login' %}" aria-describedby="login-help">
+      {% csrf_token %}
+      {% if form.errors %}
+      <div class="error-summary" role="alert"><h3>We couldn’t log you in</h3>
+        {% if form.non_field_errors %}{{ form.non_field_errors }}{% else %}<p>Check the fields below and try again.</p>{% endif %}
+      </div>
+      {% endif %}
+      {% for field in form %}
+      <div class="field">
+        {{ field.label_tag }}
+        {{ field }}
+        {% if field.errors %}<div class="field-errors" id="{{ field.auto_id }}_error">{{ field.errors }}</div>{% endif %}
+      </div>
+      {% endfor %}
+      <button type="submit">Log in <span aria-hidden="true">→</span></button>
+    </form>
+    <p class="fine-print">Fictional inputs and disposable credentials only.</p>
+  </section>
+</div>
+{% endblock %}

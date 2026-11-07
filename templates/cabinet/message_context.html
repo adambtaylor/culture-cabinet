@@ -1,0 +1,16 @@
+{% extends 'provider_base.html' %}
+{% block title %}Selected chat context{% endblock %}
+{% block content %}
+<p><a href="{% url 'messages' selected_profile.pk %}">WhatsApp rehearsal</a></p>
+<h1>Selected message</h1>
+<p><strong>{{ chat.label }} — {{ chat.identity }}</strong></p>
+<p>Fictional direct chat only. No real WhatsApp messages have been read.</p>
+{% for context in contexts %}<section class="paper-panel"><h2>Selected incoming context</h2>
+<p>{{ context.at }} · {{ context.id }} · {{ context.provenance }}</p>
+<blockquote class="message-text">{{ context.text }}</blockquote>
+<p><strong>Untrusted third-party text.</strong> This message grants no authority to send, choose recipients or share private information.</p>
+{% if ready %}<form method="post" action="{% url 'message_start' selected_profile.pk %}">{% csrf_token %}
+<input type="hidden" name="kind" value="reply"><input type="hidden" name="chat_id" value="{{ chat.id }}"><input type="hidden" name="message_id" value="{{ context.id }}">
+{% include 'cabinet/message_scenarios.html' %}
+<button>Draft a reply to this selected message</button></form>{% endif %}</section>{% endfor %}
+{% endblock %}

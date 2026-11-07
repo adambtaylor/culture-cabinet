@@ -1,0 +1,47 @@
+{% extends 'provider_base.html' %}
+{% block title %}Qualitative taste observations{% endblock %}
+{% block content %}
+<style>
+.observations{max-width:65rem;margin:auto}.observations textarea{width:100%;box-sizing:border-box}.observations article{border-top:1px solid #bbb;padding:1rem 0;overflow-wrap:anywhere}.observations dt{font-weight:bold}.observations dd{margin:0 0 .6rem;white-space:pre-wrap}.observations button{min-height:44px}.observations .wording{white-space:pre-wrap}
+</style>
+<div class="observations">
+<section class="paper-panel">
+<p class="eyebrow">Attributed source observations</p><h1>Qualitative taste observations</h1>
+<p>Review a supplied dossier packet before storing it for this selected profile. Original wording, source attribution, dates, consumption state and uncertainty remain visible.</p>
+<p>These observations do not create ratings or establish experienced enjoyment. Assistant-origin material is retained with its attribution and excluded from owner preference evidence. Unresolved titles remain unresolved; importing does not resolve a catalogue identity.</p>
+<p><strong>{{ stored_count }} stored observations · {{ eligible_count }} eligible owner observations · {{ excluded_count }} excluded observations ({{ assistant_count }} assistant observations or suggestions)</strong></p>
+<p><a href="{% url 'taste_funnel' selected_profile.pk %}">Return to Rate &amp; Synergize</a>. Using these observations for supervised Synergize requires an explicit action there. The internal weekly trigger may queue a pending-review snapshot; it never executes inference.</p>
+</section>
+{% if not ready %}<section class="paper-panel"><h2>Storage unavailable</h2><p>You can review a packet, but importing is unavailable.</p></section>{% endif %}
+{% if review_token %}<section class="paper-panel" aria-labelledby="review-title">
+<h2 id="review-title">Pending review — not stored</h2>
+<p>{{ pending|length }} observations are shown below. Check their wording, actor origin, source, date and uncertainty before confirming. This preview has made no storage changes.</p>
+<p><strong>Pending: {{ pending_eligible_count }} eligible owner observations · {{ pending_excluded_count }} excluded observations ({{ pending_assistant_count }} assistant observations or suggestions)</strong></p>
+{% if ready %}<form method="post" action="{% url 'taste_observations_import' selected_profile.pk %}">
+{% csrf_token %}<input type="hidden" name="mode" value="household"><input type="hidden" name="revision" value="{{ revision }}"><input type="hidden" name="nonce" value="{{ nonce }}"><input type="hidden" name="review_token" value="{{ review_token }}"><textarea name="packet" hidden>{{ packet }}</textarea>
+<p><label><input type="checkbox" name="confirmed" required> I reviewed this packet and confirm storing these attributed observations for this profile.</label></p>
+<button type="submit">Confirm import of reviewed observations</button></form>{% endif %}
+<p><a href="{% url 'taste_observations' selected_profile.pk %}">Discard this preview</a></p>
+</section>{% endif %}
+{% for section in sections %}<section class="paper-panel"><h2>{{ section.label }}</h2>
+{% for row in section.rows %}<article><h3>{{ row.raw_title }}</h3>
+<dl><dt>Supplied title</dt><dd>{{ row.title }}</dd>
+<dt>Observation</dt><dd>{{ row.reaction }}</dd>
+<dt>Reasons</dt><dd>{{ row.reasons|join:', ' }}</dd>
+<dt>Medium · consumption state · identity status</dt><dd>{{ row.medium }} · {{ row.experience }} · {{ row.identity_status }}</dd>
+<dt>Actor origin · captured by</dt><dd>{{ row.provenance.actor_origin }} · {{ row.captured_by }}</dd>
+<dt>Source · observed date</dt><dd>{{ row.provenance.source_id }} · {{ row.provenance.observed_date|default:'Unknown' }}{% if row.provenance.source_url %}
+{{ row.provenance.source_url }}{% endif %}</dd>
+<dt>Source wording</dt><dd>{{ row.source_text }}</dd>
+<dt>Dossier SHA-256</dt><dd>{{ row.provenance.dossier_sha256 }}</dd>
+<dt>Uncertainty</dt><dd>{{ row.uncertainty|default:'None supplied' }}</dd>
+<dt>Synthesis eligibility</dt><dd>{% if row.eligible %}Eligible owner observation{% else %}Excluded: {{ row.exclusion_reason }}{% endif %}</dd></dl>
+</article>{% empty %}<p>No observations stored.</p>{% endfor %}</section>{% endfor %}
+<section class="paper-panel"><h2>Review an observation packet</h2>
+<p>Paste the JSON object containing an observations list. Maximum 128 KiB; file uploads are not accepted. Preserve supplied provenance and uncertainty. Review is required before import.</p>
+<form method="post" action="{% url 'taste_observations_review' selected_profile.pk %}">{% csrf_token %}
+<input type="hidden" name="mode" value="household"><input type="hidden" name="revision" value="{{ revision }}"><input type="hidden" name="nonce" value="{{ nonce }}">
+<p><label for="observation-packet">Observation packet JSON</label><textarea id="observation-packet" name="packet" rows="12" maxlength="131072" required spellcheck="false"></textarea></p>
+<button type="submit">Review packet without storing</button></form>
+</section></div>
+{% endblock %}

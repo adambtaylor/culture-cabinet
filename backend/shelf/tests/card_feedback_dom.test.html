@@ -1,0 +1,73 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Synthetic feedback DOM contract</title>
+<div id="feedback-status" role="status"></div>
+<article data-feedback-card data-card-key="synthetic:book:1" tabindex="-1">
+  <form id="choose" data-feedback-form method="post" action="/synthetic-choose/">
+    <input type="hidden" name="action" value="choose">
+    <input type="hidden" name="nonce" value="synthetic-nonce">
+    <textarea name="note">  Synthetic note
+雪  </textarea>
+    <button name="choice" value="intrigued">Intrigued</button>
+  </form>
+</article>
+<article data-feedback-card data-card-key="synthetic:book:2" tabindex="-1">
+  <form id="correct" data-feedback-form data-feedback-correction method="post" action="/synthetic-correct/">
+    <input type="hidden" name="action" value="correct">
+    <textarea name="note">Synthetic correction</textarea>
+    <button name="action" value="correct">Correct</button>
+  </form>
+</article>
+<pre id="result">PENDING</pre>
+<script>
+'use strict';
+window.syntheticRequests = [];
+window.fetch = async (url, options) => {
+  const action = options.body.get('action');
+  window.syntheticRequests.push({url: String(url), method: options.method,
+    action, choice: options.body.get('choice'), note: options.body.get('note')});
+  const correction = action === 'correct';
+  return new Response(JSON.stringify({ok: true,
+    submitted_key: correction ? 'synthetic:book:2' : 'synthetic:book:1',
+    operation: correction ? 'correct' : 'choose', revision: 2, nonce: 'synthetic-next',
+    replacement_html: correction ? '' : '<article data-feedback-card data-card-key="synthetic:book:next" tabindex="-1">Next synthetic card</article>'}),
+    {status: 200, headers: {'Content-Type': 'application/json'}});
+};
+</script>
+<script src="../../../static/card-feedback.js"></script>
+<script>
+(async () => {
+  const assert = (value, reason) => { if (!value) throw new Error(reason); };
+  const settled = async () => {
+    const end = performance.now() + 2000;
+    while (window.CabinetFeedback.isBusy() && performance.now() < end)
+      await new Promise(resolve => setTimeout(resolve, 10));
+    assert(!window.CabinetFeedback.isBusy(), 'Feedback did not settle');
+  };
+  const choose = document.getElementById('choose');
+  // A real browser must reproduce the named-control property collision.
+  assert(choose.action instanceof HTMLInputElement, 'Native DOM shadowing not reproduced');
+  choose.requestSubmit(choose.querySelector('button'));
+  await settled();
+  const first = window.syntheticRequests[0];
+  assert(first && first.url === '/synthetic-choose/', 'Wrong choose request URL');
+  assert(first.method === 'POST' && first.action === 'choose' && first.choice === 'intrigued', 'Choose payload changed');
+  assert(first.note === '  Synthetic note\n雪  ', 'Exact note changed');
+  assert(document.querySelector('[data-card-key="synthetic:book:next"]'), 'Confirmed choose did not replace card');
+  assert(document.getElementById('feedback-status').textContent === 'Response saved.', 'Choose status missing');
+  const correct = document.getElementById('correct');
+  assert(typeof correct.action !== 'string', 'Correction form must also expose native named controls');
+  correct.requestSubmit(correct.querySelector('button'));
+  await settled();
+  const second = window.syntheticRequests[1];
+  assert(second && second.url === '/synthetic-correct/' && second.action === 'correct', 'Correction URL/payload changed');
+  assert(second.note === 'Synthetic correction', 'Correction note changed');
+  assert(document.getElementById('correct'), 'Correction replaced its card');
+  assert(window.syntheticRequests.length === 2, 'Unexpected request count');
+  document.getElementById('result').textContent = 'PASS';
+  document.body.dataset.result = 'PASS';
+})().catch(error => {
+  document.getElementById('result').textContent = 'FAIL: ' + error.message;
+  document.body.dataset.result = 'FAIL';
+});
+</script>

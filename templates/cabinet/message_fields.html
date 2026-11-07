@@ -1,0 +1,4 @@
+{% csrf_token %}
+<input type="hidden" name="version" value="{{ draft.version }}">
+<input type="hidden" name="nonce" value="{{ draft.nonce }}">
+<input type="hidden" name="preview" value="{{ preview_digest }}">

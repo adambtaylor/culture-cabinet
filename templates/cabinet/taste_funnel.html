@@ -1,0 +1,37 @@
+{% extends 'provider_base.html' %}
+{% block title %}Your taste across the Cabinet{% endblock %}
+{% block content %}
+<div class="taste-funnel">
+<p class="eyebrow">{{ selected_profile.label }} · Round {{ projection.round|add:'1' }}</p>
+<h1>Your taste, across the Cabinet</h1>
+<p class="lede">A broad beginning, several interests, and space for something unexpected.</p>
+<p><a href="{% url 'nonfiction_discovery' selected_profile.pk %}">Explore your podcast and nonfiction topics</a>. Authored exploration requests inform the next shortlist and supervised synthesis separately from ratings.</p>
+<p><a href="{% url 'taste_observations' selected_profile.pk %}">Review qualitative book, screen and graphic-novel observations</a>. Preserve reasons and uncertainties separately from ratings.</p>
+<p>Rate films, series, books and graphic novels, music and events from 1 to 5. Choose anticipated interest or experienced enjoyment. Favourites are independent. A skip means “not this round”, not dislike. Travel, price and dates remain practical constraints.</p>
+<section class="paper-panel">
+<h2>Gather a broad round</h2>
+<p>Use the existing film/book catalogues, Triple R, PBS, Beat, Tribe and Sound Systems of Melbourne, plus artist radio from two existing music identities. These are sources of candidates, not inferred likes. Unconnected venues and guides remain visible below; no source has complete coverage.</p>
+<form method="post" action="{% url 'taste_fetch' selected_profile.pk %}">{% csrf_token %}<input type="hidden" name="revision" value="{{ revision }}"><input type="hidden" name="nonce" value="{{ nonce }}"><p><label><input type="checkbox" name="confirmed" required> Fetch this bounded set of public/catalogue sources now.</label></p><button>Gather current candidates</button></form>
+{% for result in source_results %}<p><strong>{{ result.name }}: {{ result.status }}</strong> · {{ result.detail }}</p>{% endfor %}
+<p><a href="{% url 'catalogue' %}">Search for a particular film, series or book</a> · <a href="{% url 'discovery' %}">Explore all event and music sources</a></p>
+</section>
+<section aria-label="Current rating round">
+<h2>Your next choices</h2>
+<p>Available media in this round: {{ selection.coverage|join:', '|default:'no current source candidates' }}. Different positive starting points retain their own lanes; lower-ranked exploration remains eligible.</p>
+<div class="provider-grid">{% for row in cards %}{% include 'cabinet/taste_card.html' %}{% empty %}<p>No unjudged candidates remain in the current source pool. Fetch current sources or search for something specific. Previously seen items do not recycle automatically.</p>{% endfor %}</div>
+{% if cards %}<form method="post" action="{% url 'taste_action' selected_profile.pk %}">{% include 'cabinet/taste_fields.html' %}<button name="operation" value="funnel_next">Next round — leave these remaining choices unrated</button></form>{% endif %}
+{% if projection.can_undo %}<form method="post" action="{% url 'taste_action' selected_profile.pk %}">{% include 'cabinet/taste_fields.html' %}<button name="operation" value="undo">Undo my last response or round change</button></form>{% endif %}
+</section>
+<section class="paper-panel">
+<h2>Synergize with Astra</h2>
+<p>Owner profile weekly review: Monday 08:00 Australia/Melbourne. First due 2 November 2026, 08:00 AEDT (1 November 21:00 UTC). The internal trigger can queue a snapshot for your review; it executes no model calls. This temporary runtime ends 6 November at 15:17:29 AEDT, before the next weekly slot. Staged packets are excluded until you sign in and import them.</p>
+<p>Bring your explicit signals together, look for several taste clusters, and explain possible connections across media. These will be inferences, not new ratings or facts about you.</p>
+<p>{{ snapshot.signals|length }} explicit signals are ready. Existing qualitative responses stay labelled as such; they are not silently converted into stars. No private social posts, messages, home address or ticket data is included.</p>
+{% if snapshot.signals %}<form method="post" action="{% url 'taste_synergize' selected_profile.pk %}">{% csrf_token %}<input type="hidden" name="expected_digest" value="{{ snapshot.input_digest }}"><p><label><input type="checkbox" name="confirmed" required> Request one high-reasoning Astra synthesis of these signals.</label></p><button>Synergize</button></form>{% endif %}
+<p>The supported route is supervised in Codex. This button queues a versioned request; the website has no backend Astra API grant. Ask Codex to process the queued request. “Complete” appears only after its actual result is recorded for this unchanged signal set.</p>
+{% for item in jobs %}<article><h3>{{ item.display.label }}</h3><p>Request <code>{{ item.run.pk }}</code> · {{ item.run.created_at }}</p>{% if item.display.output %}<p>Inferred associations from your explicit signals; these do not change your ratings.</p>{% for cluster in item.clusters %}<h4>{{ cluster.label }}</h4><p>{{ cluster.titles|join:' · ' }}</p><p>{{ cluster.explanation }}</p>{% endfor %}{% for link in item.links %}<p><strong>{{ link.from_title }} → {{ link.to_title }}</strong><br>{{ link.explanation }}</p>{% endfor %}<p>Synthesis recorded. You can continue with another round above.</p>{% endif %}</article>{% empty %}<p>No synthesis request yet.</p>{% endfor %}
+</section>
+<details{% if response_page > 1 %} open{% endif %}><summary>Your ratings and favourites — edit or clear (page {{ response_page }})</summary><div class="provider-grid">{% for row in responses %}{% include 'cabinet/taste_card.html' %}{% empty %}<p>No numeric responses on this page.</p>{% endfor %}</div><p>{% if previous_responses %}<a href="?responses={{ previous_responses }}">Newer responses</a>{% endif %} {% if next_responses %}<a href="?responses={{ next_responses }}">Older responses</a>{% endif %}</p></details>
+<section><h2>Many sources, visible gaps</h2><p>Beat is one source among many. Source access, freshness and coverage remain independent of your taste ratings. <a href="https://halftixmelbourne.com/all-events/" target="_blank" rel="noopener noreferrer">Check Halftix for cheaper options</a>; discounts and conditions vary, and Cabinet does not copy its restricted listings.</p>{% for source in sources %}<p><strong>{{ source.name }} · {{ source.status }}</strong><br>{{ source.detail }}</p>{% endfor %}</section>
+</div>
+{% endblock %}

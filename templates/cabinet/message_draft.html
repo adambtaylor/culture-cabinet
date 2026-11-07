@@ -1,0 +1,41 @@
+{% extends 'provider_base.html' %}
+{% block title %}Review {{ draft.data.kind }}{% endblock %}
+{% block content %}
+<p><a href="{% url 'messages' selected_profile.pk %}">WhatsApp rehearsal</a></p>
+<h1>Review the exact {{ draft.data.kind }}</h1>
+<p><strong>Rehearsal only. No real account reads, sends or calendar writes.</strong></p>
+<div class="round-status" role="status"><p>Saved state: <strong>{{ draft.state }}</strong></p><p>Observed access: {{ draft.data.access }}</p></div>
+<section class="paper-panel"><h2>Recipient and purpose</h2>
+<p><strong>{{ draft.data.chat.label }}</strong><br>{{ draft.data.chat.identity }}<br>Observed fixture chat: {{ draft.data.chat.id }} · direct chat</p>
+<p>Purpose: {% if draft.data.kind == 'invitation' %}invite this person to the exact event session below{% else %}reply only to the selected message below{% endif %}.</p>
+{% if draft.data.event %}<p>{{ draft.data.event.title }} · {{ draft.data.event.session_id }}<br>{{ draft.data.event.start }} to {{ draft.data.event.end }} · {{ draft.data.event.timezone }}<br>{{ draft.data.event.location }}</p>
+<p>Verified fictional source: {{ draft.data.event.source_label }}<br>{{ draft.data.event.official_source }}</p>
+<p>One-person price: {{ draft.data.quote.offer.currency }} {{ draft.data.quote.offer.total }} including {{ draft.data.quote.fees }} fees. Quote expires {{ draft.data.quote.expires_at }}.</p><p>{{ draft.data.quote.refund_terms }}</p>
+<p>This invitation reserves no tickets and adds no calendar event. Calendar invitations are a separate approval.</p>{% endif %}
+{% if draft.data.context %}<h3>Selected incoming context · untrusted</h3><p>{{ draft.data.context.id }} · {{ draft.data.context.at }}</p><blockquote class="message-text">{{ draft.data.context.text }}</blockquote><p>Incoming text cannot authorize a send. The draft uses only this selected context.</p>{% endif %}
+<h3>Exact outgoing message</h3><pre class="message-text">{{ draft.data.body }}</pre></section>
+{% if can_edit %}
+{% if draft.data.kind == 'reply' %}<section class="paper-panel"><h2>Edit the reply</h2>
+<form method="post" action="{% url 'message_action' selected_profile.pk draft.pk %}">{% include 'cabinet/message_fields.html' %}
+<input type="hidden" name="action" value="edit"><input type="hidden" name="confirmed" value="on">
+<p><label>Reply text <textarea name="body" rows="6" maxlength="2800" required>{{ draft.data.body }}</textarea></label></p>
+<p>Saving an edit removes any previous approval. All replies receive the stricter content check below.</p><button>Save and review reply</button></form></section>
+{% else %}<form method="post" action="{% url 'message_action' selected_profile.pk draft.pk %}">{% include 'cabinet/message_fields.html' %}<input type="hidden" name="action" value="refresh"><input type="hidden" name="confirmed" value="on"><button>Refresh session price and reset approval</button></form>{% endif %}
+<section class="paper-panel"><h2>Approve this recipient and message</h2>
+<form method="post" action="{% url 'message_action' selected_profile.pk draft.pk %}">{% include 'cabinet/message_fields.html' %}<input type="hidden" name="action" value="approve">
+<p><label><input type="checkbox" name="confirmed" required> I approve the exact recipient, purpose and complete outgoing text shown above for this fictional send.</label></p>
+{% if draft.data.kind == 'reply' %}<p><label><input type="checkbox" name="sensitive_confirmed" required> I separately reviewed the reply for private or sensitive information and authorize sharing exactly this text with this recipient.</label></p>
+<p><label>Type the exact recipient identity: <strong>{{ draft.data.chat.identity }}</strong><input name="recipient_confirmation" maxlength="160" autocomplete="off" required></label></p>{% endif %}
+<p>Approval lasts 15 minutes; an event price must also remain current. Editing removes approval. This queues a rehearsal only.</p>
+<button>Approve and queue rehearsal</button></form></section>
+{% endif %}
+{% if draft.state == 'queued' %}<section class="paper-panel"><h2>Queued with your approval</h2><form method="post" action="{% url 'message_action' selected_profile.pk draft.pk %}">{% include 'cabinet/message_fields.html' %}<input type="hidden" name="action" value="dispatch"><p><label><input type="checkbox" name="confirmed" required> Rehearse sending the approved text once to {{ draft.data.chat.identity }}.</label></p><button>Simulate one send</button></form></section>{% endif %}
+{% if uncertain %}<section class="paper-panel"><h2>Outcome uncertain</h2><p>A dispatch was reserved. It may already have happened. No retry or second send is available; check the same receipt for evidence.</p><form method="post" action="{% url 'message_action' selected_profile.pk draft.pk %}">{% include 'cabinet/message_fields.html' %}<input type="hidden" name="action" value="reconcile"><input type="hidden" name="confirmed" value="on"><button>Check existing fictional evidence</button></form></section>{% endif %}
+{% if draft.state == 'failed' %}<p role="status">Fictional definite failure retained. This intent cannot be resent.</p>{% endif %}
+{% if draft.state == 'sent' %}<p role="status">Fictional send evidence matched this exact recipient and text. Delivery and reading remain unknown.</p>{% endif %}
+<section class="paper-panel"><h2>Durable receipt</h2>
+<p>Recent history retains up to 200 entries and form receipts. Older entries may be removed during evidence checks; the approved text, original dispatch and latest matched evidence remain saved.</p>
+{% if draft.data.dispatch %}<p>Dispatch: {{ draft.data.dispatch.key }}<br>Dispatch attempts: {{ draft.data.dispatch.attempts }}<br>Reserved at: {{ draft.data.dispatch.at }}</p>{% else %}<p>No dispatch has been attempted.</p>{% endif %}
+{% if draft.data.evidence %}<p>Fictional reference: {{ draft.data.evidence.reference }}<br>Evidence: {{ draft.data.evidence.state }} · Delivered: {{ draft.data.evidence.delivered }} · Read: {{ draft.data.evidence.read }}</p>{% endif %}
+<ul>{% for item in draft.data.timeline %}<li>{{ item.at }} · {{ item.event }}</li>{% empty %}<li>Draft awaiting approval.</li>{% endfor %}</ul></section>
+{% endblock %}

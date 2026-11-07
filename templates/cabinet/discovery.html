@@ -1,0 +1,79 @@
+{% extends 'provider_base.html' %}
+{% block title %}Music &amp; events{% endblock %}
+{% block navigation %}<nav aria-label="Cabinet"><a href="{% url 'catalogue' %}">Film, series &amp; books</a> · <a href="{% url 'profiles' %}">Profiles</a></nav>{% endblock %}
+{% block content %}
+<h1>Music &amp; events</h1>
+{% include 'cabinet/enhancement_status.html' %}
+<p>{{ selected_profile.label }} · {% if mode == 'sample' %}<strong>FIXTURE SAMPLE — invented artists and events. No real inventory.</strong>{% else %}<strong>Household confirmation — reported seeds await your response.</strong>{% endif %}</p>
+<p><a href="?mode=household">Reported seeds</a> · <a href="?mode=sample">Play the isolated sample</a></p>
+<p>The five reactions describe anticipated interest. Historical enjoyment, interest, unknown and not-for-me responses keep their original meanings. Saves, opens and suggestions never become likes or listens. Only your explicit responses shape these lanes.</p>
+{% if not available %}<p role="status">Discovery history requires additive migration 0006. Read-only preview; no response can be stored yet.</p>{% endif %}
+<p>Revision {{ revision }}. Responses survive logout and restart. Correct a response below, undo the latest action, or restart the current choices while retaining local history. Sample choices never enter household preferences.</p>
+{% if available %}<form method="post" action="{{ action_url }}">{% include 'cabinet/discovery_fields.html' %}
+{% if can_undo %}<button name="operation" value="undo">Undo latest action</button>{% endif %}
+<button name="operation" value="restart">Restart choices in this mode</button></form>{% endif %}
+<h2>Your seed lanes</h2>
+{% for lane in lanes %}<p>{{ lane.title }} · {{ lane.choice }} · {{ lane.count }} matching candidates</p>
+{% empty %}<p>No confirmed positive seeds. Up to five independent lanes appear after a human enjoyment or interest response. Exploration remains available.</p>{% endfor %}
+<h2>Music</h2>
+<div data-feedback-deck="artist" tabindex="-1">
+{% for row in music %}{% include 'cabinet/discovery_card.html' %}{% empty %}<p>No music candidates in this local selection.</p>{% endfor %}
+</div>
+{% if queue != 'artist' %}
+<h2>Events &amp; places</h2>
+<p>For a real-source evening proposal, read Beat below, open a listing’s details, then choose <strong>Date night · explore</strong> or the evening/transport link. Optional cycle origins stay local until you open a clearly labelled Google Maps link.</p>
+<p><a href="{% url 'event_plans' selected_profile.pk %}">Try event planning, calendar and invitations</a> · fictional rehearsal. Live event booking awaits verified sessions and seller quotes.</p>
+{% if available and mode == 'household' %}
+<form method="post" action="{{ action_url }}">{% include 'cabinet/discovery_fields.html' %}
+<button name="operation" value="events">Read one public Moshtix event · next eight weeks in VIC</button></form>
+<form method="post" action="{{ action_url }}">{% include 'cabinet/discovery_fields.html' %}
+<button name="operation" value="rrr">Read Triple R events · up to nine listings</button></form>
+<form method="post" action="{{ action_url }}">{% include 'cabinet/discovery_fields.html' %}
+<button name="operation" value="pbs">Read PBS Events · up to nine leads</button></form>
+<form method="post" action="{{ action_url }}">{% include 'cabinet/discovery_fields.html' %}<button name="operation" value="tribe">Read Tribe RSS · up to nine announcements</button></form>
+<form method="post" action="{{ action_url }}">{% include 'cabinet/discovery_fields.html' %}<button name="operation" value="soundsystems">Read Sound Systems · underground dances and festivals</button></form>
+<p>Tribe publication dates are not event starts. Sound Systems locations marked TBA remain undisclosed. Neither source confirms tickets.</p>
+<p><a href="https://halftixmelbourne.com/all-events/" target="_blank" rel="noopener noreferrer">Check Halftix for cheaper options</a> · varied discounts; confirm session, fees and conditions. Publisher permission is needed before Cabinet can ingest its listings.</p>
+<p>PBS source notices and calendar dates do not confirm session times or available tickets. Reads share a ten-second interval.</p>
+{% endif %}
+{% if available and mode == 'household' %}
+<form method="post" action="{{ action_url }}">{% include 'cabinet/discovery_fields.html' %}
+<button name="operation" value="beat">Read Beat · up to nine single-date events in the next 14 days</button></form>
+{% endif %}
+{% for result in public_results %}<p role="status">{{ result.source }} · {{ result.outcome.status }} · {{ result.at }} · {{ result.outcome.message }}</p>{% endfor %}
+<p>{{ temporary_notice }}</p>
+<form method="get"><input type="hidden" name="mode" value="{{ mode }}"><label>Event interests <select name="category">
+{% for value,label in categories %}<option value="{{ value }}" {% if category == value %}selected{% endif %}>{{ label }}</option>{% endfor %}</select></label><button>Filter local examples</button></form>
+<p>Gallery coverage is bounded to the named public sources read below; it is not a complete gallery, openings or art-sale calendar. Coverage gaps: wider community festivals and regional winery/day-trip events remain coverage gaps. No home location is assumed. Distance and driving time are unknown. Venue preferences boost matches without excluding other sources.</p>
+<p>Artwork budget: strictly below AUD 2,500 all-in per individual artwork, including any required fees, tax, currency conversion, delivery, framing and installation. Unknown costs are not zero; a total of exactly AUD 2,500 fails this ceiling. Admission price is separate. Opening night and exhibition run are separate dates.</p>
+{% if available and mode == 'household' %}
+<form method="post" action="{{ action_url }}">{% include 'cabinet/discovery_fields.html' %}<button name="operation" value="gallery">Read gallery openings, exhibitions and sale leads · bounded public sources</button></form>
+{% endif %}
+{% if gallery_brief_note %}<p>{{ gallery_brief_note }}</p>{% endif %}
+{% for check in gallery_source_checks %}<p class="source-meta">{{ check.source }} · {{ check.status }}{% if check.stage %} · {{ check.stage }}{% endif %}<br>Checked {{ check.checked_at|default:'unknown' }} · <a href="{{ check.source_url }}" target="_blank" rel="noopener noreferrer">Source</a></p>{% endfor %}
+{% include 'cabinet/gallery_offers.html' %}
+{% for row in events %}{% include 'cabinet/discovery_card.html' %}{% empty %}<p>No event candidates for this filter. This does not establish that no events exist.</p>{% endfor %}
+{% if more_source_events %}<details open><summary>More from your source reads · {{ more_source_events|length }} remaining leads</summary><p>These are additional results from your current bounded reads, outside the recommendation selection. Each card retains its source; inclusion is not a taste recommendation.</p>
+{% for row in more_source_events %}{% include 'cabinet/discovery_card.html' %}{% endfor %}</details>{% endif %}
+<p>Confirm event date, timezone, cancellation status, price and availability on the official page, especially for stale listings. No tickets or scarcity claims are supplied.</p>
+{% endif %}
+<details><summary>Your responses and local discovery saves (including not-for-me)</summary>
+{% for row in responses %}{% include 'cabinet/discovery_card.html' %}{% empty %}<p>No choices yet.</p>{% endfor %}</details>
+{% if queue != 'artist' %}
+<h2>Source status</h2>
+{% for source in sources %}<section class="paper-panel"><h3>{{ source.name }} — {{ source.status }}</h3><p>{{ source.detail }}</p></section>{% endfor %}
+<p>Labels: live-automated means a provider response; manual-attributed means a reported source/seed; fixture means synthetic; blocked means a missing prerequisite; unvalidated means coverage or behavior is unconfirmed. Loading this page makes no source requests. Only explicit public-read buttons request sources; choices and saves stay local.</p>
+<h2>Reported event source registry</h2>
+{% for source in registry.event_sources %}<p><strong>{{ source.raw_label }}</strong> · {{ source.kind }} · {{ source.verification|default:'manual-attributed' }}
+{% if source.name %} · {{ source.name }}{% endif %}
+{% if source.official_url %} · <a href="{{ source.official_url }}" rel="noopener noreferrer" target="_blank">Official reference</a>{% endif %}
+{% if source.candidate_mapping %} · Candidate mapping: {{ source.candidate_mapping }} (unconfirmed; not auto-mapped){% endif %}
+{% if source.provider_ID_status %} · {{ source.provider_ID_status }}{% endif %}</p>{% endfor %}
+<h2>Verified official-page references</h2>
+<p>Manual-attributed research references. A verified website is not verified event inventory, an API integration, or a human taste confirmation. Inferred-adjacent sources remain exploration.</p>
+{% for source in registry.sources %}<p><a href="{{ source.url }}" rel="noopener noreferrer" target="_blank">{{ source.label }}</a> · {{ source.kind }} · {{ source.attribution }} · {{ source.verification }}</p>{% endfor %}
+{% for item in registry.provider_ids %}<p>{{ item.venue }} · {{ item.provider }} venue ID {{ item.venue_id }} · {{ item.verification }}</p>{% endfor %}
+{% for item in registry.seasonality %}<p>{{ item.source }} · {{ item.season2026 }} {{ item.year_round }} {{ item.next }}</p>{% endfor %}
+<p>Fringe Common Rooms is a separate year-round program. Halftix is a discount overlay, not an event provider. Sound Systems adds limited community dance/festival coverage; it does not cover all community calendars. Regional references do not establish a radius or drive time.</p>
+{% endif %}
+{% endblock %}

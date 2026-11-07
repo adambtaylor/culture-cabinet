@@ -1,0 +1,26 @@
+{% extends 'provider_base.html' %}
+{% block title %}Acquired files{% endblock %}
+{% block content %}
+<p class="eyebrow">The cabinet / {{ selected_profile.label }}</p>
+<h1>Acquired files</h1>
+<p>Postprocessing verification checks local file bytes. Final download status, repair checks, album identity and playback remain unverified. Remote progress is unavailable.</p>
+{% for row in rows %}
+<section class="paper-panel">
+  <h2>{{ row.job.title }}</h2>
+  <p>Selected release: {{ row.job.edition }}</p>
+  <p role="status">{{ row.state }}</p>
+  {% for file in row.files %}
+  <dl>
+    <dt>File</dt><dd>{{ file.relative_path }}</dd>
+    <dt>Size</dt><dd>{{ file.size }} bytes</dd>
+    <dt>SHA-256</dt><dd>{{ file.sha256 }}</dd>
+    <dt>Verified at</dt><dd>{{ file.verified_at }}</dd>
+    <dt>Acquired at</dt><dd>{{ file.acquired_at|default_if_none:'Unknown' }}</dd>
+  </dl>
+  {% endfor %}
+  {% if row.handoff_url %}<p><a href="{{ row.handoff_url }}">Export verified file entries</a></p>{% endif %}
+</section>
+{% empty %}<p>No submitted downloads in this profile.</p>{% endfor %}
+{% if page.has_previous %}<a href="?page={{ page.previous_page_number }}">Previous</a>{% endif %}
+{% if page.has_next %}<a href="?page={{ page.next_page_number }}">Next</a>{% endif %}
+{% endblock %}

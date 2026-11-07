@@ -1,0 +1,685 @@
+{
+  "artists": [
+    {
+      "name": "Linkin Park",
+      "mbid": "f59c5520-5f46-4d2c-b2c4-822eabf53419"
+    },
+    {
+      "name": "In Hearts Wake",
+      "mbid": "d16f9fc8-fbba-4276-9b30-86b8f5ef5938"
+    },
+    {
+      "name": "The Amity Affliction",
+      "mbid": "0bfb9d2b-e732-4f28-b2fe-e1d3db9665f1"
+    },
+    {
+      "name": "Bullet for My Valentine",
+      "mbid": "d530dbf9-69b1-404f-98f2-0431104f5a1e"
+    }
+  ],
+  "manual_artists": [
+    {
+      "slug": "mindbuffer",
+      "name": "MindBuffer",
+      "url": "https://mindbuffer.net/works/",
+      "source": "Example curator-confirmed AV studio/performance seed; development example, not preference evidence",
+      "confirmation": {
+        "by": "Example curator",
+        "at": "2026-01-01T00:00:00Z",
+        "quote": "Illustrative public studio/performance reference; no personal relationship or preference evidence.",
+        "scope": "Synthetic development confirmation; no experienced enjoyment or attendance confirmed."
+      },
+      "studio_reference": {
+        "url": "https://mindbuffer.net/studio/",
+        "founders": [
+          "Joshua Batty",
+          "Mitchell Nordine"
+        ]
+      },
+      "past_production_reference": {
+        "url": "https://www.melbournerecital.com.au/whats-on/past-productions/radiohead-for-solo-piano",
+        "credit": "Josh Cohen: piano; Joshua Batty of MindBuffer: realtime AV",
+        "status": "Past production; not a future listing or attendance evidence"
+      },
+      "unresolved_friend": {
+        "raw_label": "Unresolved example person",
+        "mapping_confirmed": false,
+        "note": "Synthetic unresolved-person marker; no mapping or relationship claim."
+      }
+    }
+  ],
+  "event_sources": [
+    {
+      "raw_label": "the forum",
+      "kind": "venue",
+      "name": "Forum Melbourne",
+      "official_url": "https://forummelbourne.com.au/shows",
+      "provider_ID_status": "Ticketmaster web155687 and Discovery KovZpafaje require current validation; Moshtix coverage unverified",
+      "verification": "official website verified by parent research; not an API integration or scrape permission",
+      "attribution": "explicit"
+    },
+    {
+      "raw_label": "bar open",
+      "kind": "venue",
+      "verification": "official website verified by parent research; not an API integration or scrape permission",
+      "name": "Bar Open",
+      "official_url": "https://baropen.com.au/",
+      "attribution": "explicit"
+    },
+    {
+      "raw_label": "triple R event page",
+      "kind": "radio_editorial",
+      "verification": "official website verified by parent research; not an API integration or scrape permission",
+      "name": "Triple R events",
+      "official_url": "https://www.rrr.org.au/events",
+      "attribution": "explicit"
+    },
+    {
+      "raw_label": "Northcote theater",
+      "kind": "venue",
+      "verification": "official website verified by parent research; not an API integration or scrape permission",
+      "name": "Northcote Theatre",
+      "official_url": "https://northcotetheatre.com/",
+      "attribution": "explicit"
+    },
+    {
+      "raw_label": "deribin theater",
+      "kind": "venue",
+      "candidate_mapping": "Darebin Arts",
+      "verification": "unconfirmed-do-not-auto-map"
+    },
+    {
+      "raw_label": "PBS event page",
+      "kind": "radio_editorial",
+      "verification": "bounded public Events reader; explicit source dates and notices; ticket availability unverified",
+      "name": "PBS events",
+      "official_url": "https://www.pbsfm.org.au/news/pbs-events",
+      "attribution": "explicit"
+    },
+    {
+      "raw_label": "fringe festival",
+      "kind": "festival",
+      "verification": "official website verified by parent research; not an API integration or scrape permission",
+      "name": "Melbourne Fringe",
+      "official_url": "https://www.melbournefringe.com.au/whats-on",
+      "attribution": "explicit"
+    },
+    {
+      "raw_label": "Moshtix",
+      "kind": "public_API",
+      "official_url": "https://developer.moshtix.com/docs/authentication/"
+    },
+    {
+      "raw_label": "halftix",
+      "kind": "discount_overlay",
+      "verification": "official link only; automatic ingestion requires publisher permission; discounts and conditions vary",
+      "name": "Halftix",
+      "official_url": "https://halftixmelbourne.com/all-events/",
+      "attribution": "explicit"
+    },
+    {
+      "raw_label": "thornbury theater",
+      "kind": "venue",
+      "verification": "official website verified by parent research; not an API integration or scrape permission",
+      "name": "Thornbury Theatre",
+      "official_url": "https://thornburytheatre.com/",
+      "attribution": "explicit"
+    },
+    {
+      "raw_label": "Tribe Soundsystem",
+      "kind": "grassroots_music",
+      "name": "Tribe Soundsystem",
+      "official_url": "https://www.tribesoundsystem.com/events",
+      "verification": "bounded public RSS announcements; event times unknown; automated ICS disallowed",
+      "attribution": "explicit"
+    },
+    {
+      "raw_label": "Sound Systems of Melbourne",
+      "kind": "grassroots_music",
+      "name": "Sound Systems of Melbourne",
+      "official_url": "https://soundsystemsofmelbourne.com.au/shows/",
+      "verification": "bounded public HTML reader; source dates and unconfirmed clock labels; TBA locations preserved",
+      "attribution": "explicit"
+    }
+  ],
+  "additional_event_lanes": [
+    "gallery openings",
+    "affordable art fairs/sales",
+    "community events/festivals",
+    "regional winery/day-trip events"
+  ],
+  "preference_status": "Human-attributed seeds, not fabricated historical ratings. Source preference is not artist/event enjoyment and not exclusive filtering.",
+  "verified_updates": [
+    {
+      "sources": [
+        {
+          "label": "Forum Melbourne",
+          "kind": "venue",
+          "url": "https://forummelbourne.com.au/shows",
+          "attribution": "explicit",
+          "verification": "official website verified by parent research; not an API integration or scrape permission"
+        },
+        {
+          "label": "Bar Open",
+          "kind": "venue",
+          "url": "https://baropen.com.au/",
+          "attribution": "explicit",
+          "verification": "official website verified by parent research; not an API integration or scrape permission"
+        },
+        {
+          "label": "Make It Up Club",
+          "kind": "program",
+          "url": "https://baropen.com.au/make-it-up-club/",
+          "attribution": "inferred-adjacent",
+          "verification": "official website verified by parent research; not an API integration or scrape permission"
+        },
+        {
+          "label": "Triple R events",
+          "kind": "radio_editorial",
+          "url": "https://www.rrr.org.au/events",
+          "attribution": "explicit",
+          "verification": "official website verified by parent research; not an API integration or scrape permission"
+        },
+        {
+          "label": "Northcote Theatre",
+          "kind": "venue",
+          "url": "https://northcotetheatre.com/",
+          "attribution": "explicit",
+          "verification": "official website verified by parent research; not an API integration or scrape permission"
+        },
+        {
+          "label": "Darebin Arts calendar",
+          "kind": "council_arts",
+          "url": "https://arts.darebin.vic.gov.au/Whats-on/Event-calendar",
+          "attribution": "candidate-for-unconfirmed-deribin",
+          "verification": "official website verified by parent research; not an API integration or scrape permission"
+        },
+        {
+          "label": "PBS events",
+          "kind": "radio_editorial",
+          "url": "https://www.pbsfm.org.au/news/pbs-events",
+          "attribution": "explicit",
+          "verification": "official website verified by parent research; not an API integration or scrape permission"
+        },
+        {
+          "label": "PBS Presents",
+          "kind": "radio_editorial",
+          "url": "https://www.pbsfm.org.au/news/pbs-presents",
+          "attribution": "explicit",
+          "verification": "official website verified by parent research; not an API integration or scrape permission"
+        },
+        {
+          "label": "Melbourne Fringe",
+          "kind": "festival",
+          "url": "https://www.melbournefringe.com.au/whats-on",
+          "attribution": "explicit",
+          "verification": "official website verified by parent research; not an API integration or scrape permission"
+        },
+        {
+          "label": "Fringe Common Rooms",
+          "kind": "venue_program",
+          "url": "https://www.melbournefringe.com.au/common-rooms",
+          "attribution": "inferred-adjacent",
+          "verification": "official website verified by parent research; not an API integration or scrape permission"
+        },
+        {
+          "label": "Halftix",
+          "kind": "discount_overlay",
+          "url": "https://halftixmelbourne.com/all-events/",
+          "attribution": "explicit",
+          "verification": "official website verified by parent research; not an API integration or scrape permission"
+        },
+        {
+          "label": "Thornbury Theatre",
+          "kind": "venue",
+          "url": "https://thornburytheatre.com/",
+          "attribution": "explicit",
+          "verification": "official website verified by parent research; not an API integration or scrape permission"
+        },
+        {
+          "label": "Howler",
+          "kind": "venue",
+          "url": "https://www.howlerbrunswick.com/gigs-events",
+          "attribution": "inferred-adjacent",
+          "verification": "official website verified by parent research; not an API integration or scrape permission"
+        },
+        {
+          "label": "Arts House",
+          "kind": "arts_venue",
+          "url": "https://www.artshouse.com.au/whats-on/",
+          "attribution": "inferred-adjacent",
+          "verification": "official website verified by parent research; not an API integration or scrape permission"
+        },
+        {
+          "label": "The Substation",
+          "kind": "arts_venue",
+          "url": "https://thesubstation.org.au/whats-on/",
+          "attribution": "inferred-adjacent",
+          "verification": "official website verified by parent research; not an API integration or scrape permission"
+        },
+        {
+          "label": "Northcote Social Club",
+          "kind": "venue",
+          "url": "https://www.northcotesocialclub.com/",
+          "attribution": "inferred-adjacent",
+          "verification": "official website verified by parent research; not an API integration or scrape permission"
+        },
+        {
+          "label": "La Mama",
+          "kind": "theatre",
+          "url": "https://www.lamama.com.au/whats-on",
+          "attribution": "inferred-adjacent",
+          "verification": "official website verified by parent research; not an API integration or scrape permission"
+        },
+        {
+          "label": "Dancehouse",
+          "kind": "dance_venue",
+          "url": "https://www.dancehouse.com.au/whats-on/",
+          "attribution": "inferred-adjacent",
+          "verification": "official website verified by parent research; not an API integration or scrape permission"
+        },
+        {
+          "label": "The Toff",
+          "kind": "venue",
+          "url": "https://thetoff.com.au/gigs/",
+          "attribution": "inferred-adjacent",
+          "verification": "official website verified by parent research; not an API integration or scrape permission"
+        },
+        {
+          "label": "Brunswick Ballroom",
+          "kind": "venue",
+          "url": "https://brunswickballroom.com.au/whats-on/",
+          "attribution": "inferred-adjacent",
+          "verification": "official website verified by parent research; not an API integration or scrape permission"
+        },
+        {
+          "label": "Smith St Hotel",
+          "kind": "venue",
+          "url": "https://smithsthotel.com.au/",
+          "attribution": "inferred-adjacent",
+          "verification": "official website verified by parent research; not an API integration or scrape permission"
+        },
+        {
+          "label": "Malthouse",
+          "kind": "theatre",
+          "url": "https://www.malthousetheatre.com.au/",
+          "attribution": "inferred-adjacent",
+          "verification": "official website verified by parent research; not an API integration or scrape permission"
+        },
+        {
+          "label": "West Space",
+          "kind": "gallery",
+          "url": "https://westspace.org.au/whats-on/",
+          "attribution": "inferred-adjacent",
+          "verification": "official website verified by parent research; not an API integration or scrape permission"
+        },
+        {
+          "label": "Gertrude",
+          "kind": "gallery",
+          "url": "https://gertrude.org.au/",
+          "attribution": "inferred-adjacent",
+          "verification": "official website verified by parent research; not an API integration or scrape permission"
+        },
+        {
+          "label": "Linden",
+          "kind": "gallery",
+          "url": "https://www.lindenarts.org/public-programs/events/",
+          "attribution": "inferred-adjacent",
+          "verification": "official website verified by parent research; not an API integration or scrape permission"
+        },
+        {
+          "label": "Affordable Art Fair Melbourne",
+          "kind": "art_fair",
+          "url": "https://affordableartfair.com/fairs/Melbourne/",
+          "attribution": "inferred-adjacent",
+          "verification": "official website verified by parent research; not an API integration or scrape permission"
+        },
+        {
+          "label": "Yarra Valley",
+          "kind": "regional_calendar",
+          "url": "https://www.visityarravalley.com.au/events",
+          "attribution": "inferred-adjacent",
+          "verification": "official website verified by parent research; not an API integration or scrape permission"
+        },
+        {
+          "label": "Mornington Peninsula",
+          "kind": "regional_calendar",
+          "url": "https://www.visitmorningtonpeninsula.org/whats-on",
+          "attribution": "inferred-adjacent",
+          "verification": "official website verified by parent research; not an API integration or scrape permission"
+        },
+        {
+          "label": "Macedon Ranges",
+          "kind": "regional_calendar",
+          "url": "https://www.visitmacedonranges.com/whats-on/",
+          "attribution": "inferred-adjacent",
+          "verification": "official website verified by parent research; not an API integration or scrape permission"
+        },
+        {
+          "label": "Geelong and Bellarine",
+          "kind": "regional_calendar",
+          "url": "https://www.visitgeelongbellarine.com.au/whats-on",
+          "attribution": "inferred-adjacent",
+          "verification": "official website verified by parent research; not an API integration or scrape permission"
+        }
+      ],
+      "provider_ids": [
+        {
+          "venue": "Thornbury Theatre",
+          "provider": "moshtix",
+          "venue_id": 2362,
+          "url": "https://www.moshtix.com.au/v2/venues/thornbury-theatre/2362",
+          "verification": "verified by parent research"
+        }
+      ],
+      "unconfirmed": [
+        {
+          "raw": "deribin theater",
+          "candidate": "Darebin Arts",
+          "mapping_confirmed": false
+        },
+        {
+          "venue": "Forum Melbourne",
+          "moshtix_coverage": "unverified"
+        },
+        {
+          "kind": "community councils",
+          "labels": [
+            "Merri-bek",
+            "Yarra",
+            "Darebin",
+            "Maribyrnong"
+          ],
+          "official_calendar_urls": "not provided; pending verification"
+        }
+      ],
+      "seasonality": [
+        {
+          "source": "Melbourne Fringe",
+          "season2026": "finished",
+          "year_round": "Common Rooms separate"
+        },
+        {
+          "source": "Affordable Art Fair Melbourne",
+          "next": "August 2027; not current"
+        }
+      ],
+      "artwork_budget": {
+        "currency": "AUD",
+        "maximum_exclusive": 2500,
+        "per": "individual artwork",
+        "admission_price_is_not_art_price": true,
+        "unknown_price_is_not_affordable": true,
+        "no_purchase_authority": true
+      }
+    }
+  ],
+  "sources": [
+    {
+      "label": "Forum Melbourne",
+      "kind": "venue",
+      "url": "https://forummelbourne.com.au/shows",
+      "attribution": "explicit",
+      "verification": "official website verified by parent research; not an API integration or scrape permission"
+    },
+    {
+      "label": "Bar Open",
+      "kind": "venue",
+      "url": "https://baropen.com.au/",
+      "attribution": "explicit",
+      "verification": "official website verified by parent research; not an API integration or scrape permission"
+    },
+    {
+      "label": "Make It Up Club",
+      "kind": "program",
+      "url": "https://baropen.com.au/make-it-up-club/",
+      "attribution": "inferred-adjacent",
+      "verification": "official website verified by parent research; not an API integration or scrape permission"
+    },
+    {
+      "label": "Triple R events",
+      "kind": "radio_editorial",
+      "url": "https://www.rrr.org.au/events",
+      "attribution": "explicit",
+      "verification": "official website verified by parent research; not an API integration or scrape permission"
+    },
+    {
+      "label": "Northcote Theatre",
+      "kind": "venue",
+      "url": "https://northcotetheatre.com/",
+      "attribution": "explicit",
+      "verification": "official website verified by parent research; not an API integration or scrape permission"
+    },
+    {
+      "label": "Darebin Arts calendar",
+      "kind": "council_arts",
+      "url": "https://arts.darebin.vic.gov.au/Whats-on/Event-calendar",
+      "attribution": "candidate-for-unconfirmed-deribin",
+      "verification": "official website verified by parent research; not an API integration or scrape permission"
+    },
+    {
+      "label": "PBS events",
+      "kind": "radio_editorial",
+      "url": "https://www.pbsfm.org.au/news/pbs-events",
+      "attribution": "explicit",
+      "verification": "bounded public Events reader; explicit source dates and notices; ticket availability unverified"
+    },
+    {
+      "label": "PBS Presents",
+      "kind": "radio_editorial",
+      "url": "https://www.pbsfm.org.au/news/pbs-presents",
+      "attribution": "explicit",
+      "verification": "public page researched; navigation only; no connected reader; advertised RSS returned no items"
+    },
+    {
+      "label": "Melbourne Fringe",
+      "kind": "festival",
+      "url": "https://www.melbournefringe.com.au/whats-on",
+      "attribution": "explicit",
+      "verification": "official website verified by parent research; not an API integration or scrape permission"
+    },
+    {
+      "label": "Fringe Common Rooms",
+      "kind": "venue_program",
+      "url": "https://www.melbournefringe.com.au/common-rooms",
+      "attribution": "inferred-adjacent",
+      "verification": "official website verified by parent research; not an API integration or scrape permission"
+    },
+    {
+      "label": "Halftix",
+      "kind": "discount_overlay",
+      "url": "https://halftixmelbourne.com/all-events/",
+      "attribution": "explicit",
+      "verification": "official website verified by parent research; not an API integration or scrape permission"
+    },
+    {
+      "label": "Thornbury Theatre",
+      "kind": "venue",
+      "url": "https://thornburytheatre.com/",
+      "attribution": "explicit",
+      "verification": "official website verified by parent research; not an API integration or scrape permission"
+    },
+    {
+      "label": "Howler",
+      "kind": "venue",
+      "url": "https://www.howlerbrunswick.com/gigs-events",
+      "attribution": "inferred-adjacent",
+      "verification": "official website verified by parent research; not an API integration or scrape permission"
+    },
+    {
+      "label": "Arts House",
+      "kind": "arts_venue",
+      "url": "https://www.artshouse.com.au/whats-on/",
+      "attribution": "inferred-adjacent",
+      "verification": "official website verified by parent research; not an API integration or scrape permission"
+    },
+    {
+      "label": "The Substation",
+      "kind": "arts_venue",
+      "url": "https://thesubstation.org.au/whats-on/",
+      "attribution": "inferred-adjacent",
+      "verification": "official website verified by parent research; not an API integration or scrape permission"
+    },
+    {
+      "label": "Northcote Social Club",
+      "kind": "venue",
+      "url": "https://www.northcotesocialclub.com/",
+      "attribution": "inferred-adjacent",
+      "verification": "official website verified by parent research; not an API integration or scrape permission"
+    },
+    {
+      "label": "La Mama",
+      "kind": "theatre",
+      "url": "https://www.lamama.com.au/whats-on",
+      "attribution": "inferred-adjacent",
+      "verification": "official website verified by parent research; not an API integration or scrape permission"
+    },
+    {
+      "label": "Dancehouse",
+      "kind": "dance_venue",
+      "url": "https://www.dancehouse.com.au/whats-on/",
+      "attribution": "inferred-adjacent",
+      "verification": "official website verified by parent research; not an API integration or scrape permission"
+    },
+    {
+      "label": "The Toff",
+      "kind": "venue",
+      "url": "https://thetoff.com.au/gigs/",
+      "attribution": "inferred-adjacent",
+      "verification": "official website verified by parent research; not an API integration or scrape permission"
+    },
+    {
+      "label": "Brunswick Ballroom",
+      "kind": "venue",
+      "url": "https://brunswickballroom.com.au/whats-on/",
+      "attribution": "inferred-adjacent",
+      "verification": "official website verified by parent research; not an API integration or scrape permission"
+    },
+    {
+      "label": "Smith St Hotel",
+      "kind": "venue",
+      "url": "https://smithsthotel.com.au/",
+      "attribution": "inferred-adjacent",
+      "verification": "official website verified by parent research; not an API integration or scrape permission"
+    },
+    {
+      "label": "Malthouse",
+      "kind": "theatre",
+      "url": "https://www.malthousetheatre.com.au/",
+      "attribution": "inferred-adjacent",
+      "verification": "official website verified by parent research; not an API integration or scrape permission"
+    },
+    {
+      "label": "West Space",
+      "kind": "gallery",
+      "url": "https://westspace.org.au/whats-on/",
+      "attribution": "inferred-adjacent",
+      "verification": "official website verified by parent research; not an API integration or scrape permission"
+    },
+    {
+      "label": "Gertrude",
+      "kind": "gallery",
+      "url": "https://gertrude.org.au/",
+      "attribution": "inferred-adjacent",
+      "verification": "official website verified by parent research; not an API integration or scrape permission"
+    },
+    {
+      "label": "Linden",
+      "kind": "gallery",
+      "url": "https://www.lindenarts.org/public-programs/events/",
+      "attribution": "inferred-adjacent",
+      "verification": "official website verified by parent research; not an API integration or scrape permission"
+    },
+    {
+      "label": "Affordable Art Fair Melbourne",
+      "kind": "art_fair",
+      "url": "https://affordableartfair.com/fairs/Melbourne/",
+      "attribution": "inferred-adjacent",
+      "verification": "official website verified by parent research; not an API integration or scrape permission"
+    },
+    {
+      "label": "Yarra Valley",
+      "kind": "regional_calendar",
+      "url": "https://www.visityarravalley.com.au/events",
+      "attribution": "inferred-adjacent",
+      "verification": "official website verified by parent research; not an API integration or scrape permission"
+    },
+    {
+      "label": "Mornington Peninsula",
+      "kind": "regional_calendar",
+      "url": "https://www.visitmorningtonpeninsula.org/whats-on",
+      "attribution": "inferred-adjacent",
+      "verification": "official website verified by parent research; not an API integration or scrape permission"
+    },
+    {
+      "label": "Macedon Ranges",
+      "kind": "regional_calendar",
+      "url": "https://www.visitmacedonranges.com/whats-on/",
+      "attribution": "inferred-adjacent",
+      "verification": "official website verified by parent research; not an API integration or scrape permission"
+    },
+    {
+      "label": "Geelong and Bellarine",
+      "kind": "regional_calendar",
+      "url": "https://www.visitgeelongbellarine.com.au/whats-on",
+      "attribution": "inferred-adjacent",
+      "verification": "official website verified by parent research; not an API integration or scrape permission"
+    }
+  ],
+  "provider_ids": [
+    {
+      "venue": "Thornbury Theatre",
+      "provider": "moshtix",
+      "venue_id": 2362,
+      "url": "https://www.moshtix.com.au/v2/venues/thornbury-theatre/2362",
+      "verification": "verified by parent research"
+    }
+  ],
+  "unconfirmed": [
+    {
+      "raw": "deribin theater",
+      "candidate": "Darebin Arts",
+      "mapping_confirmed": false
+    },
+    {
+      "venue": "Forum Melbourne",
+      "moshtix_coverage": "unverified"
+    },
+    {
+      "kind": "community councils",
+      "labels": [
+        "Merri-bek",
+        "Yarra",
+        "Darebin",
+        "Maribyrnong"
+      ],
+      "official_calendar_urls": "not provided; pending verification"
+    }
+  ],
+  "seasonality": [
+    {
+      "source": "Melbourne Fringe",
+      "season2026": "finished",
+      "year_round": "Common Rooms separate"
+    },
+    {
+      "source": "Affordable Art Fair Melbourne",
+      "next": "August 2027; not current"
+    }
+  ],
+  "guards": [
+    "Admission price is not artwork price",
+    "Opening night is not exhibition run",
+    "Source preference is not taste feedback",
+    "Explicit user seeds differ from inferred adjacent sources",
+    "Bounded explicit readers: Moshtix, Triple R, Beat and PBS Events; other references do not imply connected inventory"
+  ],
+  "artwork_budget": {
+    "currency": "AUD",
+    "maximum_exclusive": 2500,
+    "per": "individual artwork",
+    "admission_price_is_not_art_price": true,
+    "unknown_price_is_not_affordable": true,
+    "no_purchase_authority": true
+  }
+}

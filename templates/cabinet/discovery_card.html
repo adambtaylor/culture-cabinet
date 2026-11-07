@@ -1,0 +1,76 @@
+<article class="paper-panel" id="catalogue-card-{{ row.card.key }}" data-feedback-card data-card-key="{{ row.card.key }}" tabindex="-1">
+  <p class="eyebrow">{% if row.card.kind == 'artist' %}Band / artist{% else %}{{ row.card.kind }}{% endif %}</p>
+  <h3>{{ row.card.title }}</h3>
+  <p class="for-you"><strong>For you</strong> · <span data-for-you data-version="{{ row.for_you.version }}">{% if row.for_you.text %}{{ row.for_you.text }}{% else %}An exploratory pick from {{ row.card.source }}. Your response can help shape future picks.{% endif %}</span></p>
+  <details><summary>Selection and source details</summary><p>Snapshot: {{ row.for_you.version }} · Sources: {{ row.for_you.source_keys }}</p>
+  <p>Provenance: {{ row.card.provenance }} · Source: {{ row.card.source }} · Source rank {{ row.card.rank }}<br>
+  Retrieval: {{ row.card.retrieved_at|default:'unknown' }} · {{ row.freshness }}</p>
+  <p><small>Identity: {{ row.card.key }}</small></p>
+  {% for why in row.why %}<p>Why this: {{ why }}</p>{% endfor %}
+  </details>
+  {% if row.card.publication_label %}<p>Announcement published: {{ row.card.publication_label }}. This is not an event start.</p>{% endif %}
+  {% if row.card.feed_build_label %}<p>Feed updated: {{ row.card.feed_build_label }}</p>{% endif %}
+  {% if row.card.location_status == 'undisclosed' %}<p>Location undisclosed; no precise venue has been inferred.</p>{% endif %}
+  {% for attribute,wording in row.card.source_attributes %}<p>Source describes {{ attribute }}: “{{ wording }}”.</p>{% endfor %}
+  {% if row.card.referenced_post %}<p><a href="{{ row.card.referenced_post }}" target="_blank" rel="noopener noreferrer">Organiser post linked by the source</a> · not read by Cabinet.</p>{% endif %}
+  {% if row.card.artist_key %}<p>Source artist identity: {{ row.card.artist_key }}</p>{% endif %}
+  {% for seed,position in row.card.lineage %}<p>Artist-seeded radio: {{ seed }} · Source position {{ position }}</p>{% endfor %}
+  {% if row.card.social_evidence %}
+  <p><strong>Reviewed social announcement; independently unverified.</strong> An import is not a taste response, confirmed session or available ticket.</p>
+  {% for evidence in row.card.social_evidence %}<p>{{ evidence.source_label }} · {{ evidence.provenance }} · Captured {{ evidence.captured_at }}<br>
+  Source publication: {{ evidence.published_at|default:'unknown' }} · Source date wording: {{ evidence.listed_when|default:'unknown' }}<br>
+  {% if evidence.actor_origin %}Action origin: {{ evidence.actor_origin }} · Observed signal: {{ evidence.signal_type }} · Confidence: {{ evidence.confidence }}<br>
+  Observed {{ evidence.observed_at }} · Timezone {{ evidence.timezone_name }} · Lineage {{ evidence.lineage_ref }}<br>
+  Organizer: {{ evidence.organizer|default:'unknown' }} · Observed public venue: {{ evidence.venue|default:'unknown' }}<br>
+  {% if evidence.conflicts %}Conflicting observations: {{ evidence.conflicts|join:', ' }}. Check the source before planning.<br>{% endif %}{% endif %}
+  <a href="{{ evidence.post_url }}" target="_blank" rel="noopener noreferrer">Original announcement</a>{% if evidence.event_url %} · <a href="{{ evidence.event_url }}" target="_blank" rel="noopener noreferrer">Linked official event</a>{% endif %}</p>{% endfor %}
+  {% endif %}
+  {% if row.card.kind == 'event' %}
+  {% if row.card.gallery_data %}{% include 'cabinet/gallery_detail.html' with event=row.card %}{% else %}
+  <p>{{ row.card.starts_at|default:'Date unknown' }} · {{ row.date_status }}<br>
+  {{ row.card.venue }} · Locality: {{ row.card.locality|default:'unknown' }}<br>
+  Distance unknown — coordinates unavailable. Price and availability are not guaranteed.</p>
+  <p>{{ row.card.artwork_label }}. Entry fee: {{ row.card.entry_fee|default:'unknown; check official source' }}.</p>
+  {% endif %}
+  {% if row.card.source_id == 'beat' %}{% include 'cabinet/beat_detail.html' with event=row.card %}{% endif %}
+  {% if row.card.source_id == 'rrr' %}
+  {% include 'cabinet/rrr_detail.html' with event=row.card %}
+  {% if available and mode == 'household' %}
+  <form method="post" action="{{ action_url }}">{% include 'cabinet/discovery_fields.html' %}
+    <input type="hidden" name="key" value="{{ row.card.key }}">
+    <button name="operation" value="rrr_detail">Read this event’s Triple R details</button>
+  </form>
+  {% endif %}
+  {% endif %}
+  {% endif %}
+  {% if row.card.url %}<p><a href="{{ row.card.url }}" rel="noopener noreferrer" target="_blank">Deep dive: official source page</a></p>
+  {% else %}<p>Deep-dive link unavailable for this {% if mode == 'sample' %}fixture{% else %}identity{% endif %}.</p>{% endif %}
+  {% if row.card.kind == 'recording' %}<p>Listening link unavailable — source identity is not licensed audio or verified playback.</p>{% endif %}
+  {% if row.choice %}<p>Your current response: {{ row.choice }}. Respond again to correct it.</p>{% endif %}
+  {% if row.saved %}<p>Saved locally for later; this is not enjoyment or a listen.</p>{% endif %}
+  {% if available %}
+  {% if queue != 'artist' and mode == 'household' and row.card.kind == 'artist' and row.card.provenance == 'manual-attributed' and row.card.key|slice:':19' == 'musicbrainz:artist:' %}
+  <form method="post" action="{{ action_url }}">{% include 'cabinet/discovery_fields.html' %}
+    <input type="hidden" name="key" value="{{ row.card.key }}">
+    <label>Radio mode <select name="radio_mode"><option value="easy">Easy</option><option value="medium" selected>Medium</option><option value="hard">Hard</option></select></label>
+    <button name="operation" value="radio">Read public ListenBrainz artist radio</button>
+  </form>
+  {% endif %}
+  <form data-feedback-form {% if row.choice %}data-feedback-correction="respond"{% endif %} method="post" action="{{ action_url }}">
+    {% include 'cabinet/discovery_fields.html' %}
+    <input type="hidden" name="key" value="{{ row.card.key }}">
+    {% if not row.choice %}<input type="hidden" name="operation" value="respond">{% endif %}
+    <label>Optional note (up to 500 characters)<textarea name="note" maxlength="500" rows="2">{{ row.note }}</textarea></label>
+    {% if row.choice %}
+    <label>Response <select name="choice">{% for value,label in choice_options %}<option value="{{ value }}"{% if value == row.choice %} selected{% endif %}>{{ label }}</option>{% endfor %}</select></label>
+    <button type="submit" name="operation" value="respond">Update response</button>
+    {% else %}<fieldset><legend>{% if mode == 'sample' %}Sample response only{% else %}Anticipated interest{% endif %}</legend>
+    {% for value,label in reaction_options %}<button type="submit" name="choice" value="{{ value }}">{{ label }}</button>{% endfor %}</fieldset><p><button class="quiet" name="choice" value="unknown">Don’t know it</button> <button class="quiet" name="choice" value="skipped">Skip this pick</button></p>{% endif %}
+  </form>
+  <form method="post" action="{{ action_url }}">
+    {% include 'cabinet/discovery_fields.html' %}<input type="hidden" name="key" value="{{ row.card.key }}">
+    {% if row.saved %}<button name="operation" value="unsave">Remove local discovery save</button>
+    {% else %}<button name="operation" value="save">Save locally for later</button>{% endif %}
+  </form>
+  {% endif %}
+</article>

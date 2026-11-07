@@ -1,0 +1,27 @@
+{% extends 'base.html' %}
+{% block title %}Export fictional feedback{% endblock %}
+{% block navigation %}
+<nav aria-label="Cabinet">
+<a href="{% url 'profile_catalogue' selected_profile.pk %}">Back to catalogue</a>
+<a href="{% url 'profiles' %}">Choose a profile</a>
+<form method="post" action="{% url 'logout' %}">{% csrf_token %}<button class="quiet" type="submit">Log out</button></form>
+</nav>
+{% endblock %}
+{% block content %}
+<p class="eyebrow">A copy for you / fictional feedback</p>
+<h1>Take your statements with you.</h1>
+<p class="context">Export for <strong>{{ selected_profile.label }}</strong></p>
+<p class="lede">Choose a format, then download this profile's fictional feedback. Nothing downloads until you submit this form.</p>
+<dl class="statements">
+<div><dt>Markdown</dt><dd>A human-readable document for reading your statements and their context.</dd></div>
+<div><dt>JSON</dt><dd>Structured data for software to process, preserving separate feedback signals.</dd></div>
+<div><dt>CSV</dt><dd>Tabular data for a spreadsheet or another data tool.</dd></div>
+</dl>
+<p>The copy covers only this authorized profile, without login secrets or other profiles. It is prepared for this download; no saved export or upload is created. A downloaded copy remains with you when feedback later changes.</p>
+<form class="paper-panel export-form" method="post" action="{% url 'feedback_export' selected_profile.pk %}">
+{% csrf_token %}
+{% if form.errors %}<div class="error-summary" role="alert"><h2>Choose a valid format</h2>{{ form.non_field_errors }}{{ form.format.errors }}</div>{% endif %}
+<div class="field">{{ form.format.label_tag }}{{ form.format }}</div>
+<button type="submit">Download fictional feedback</button>
+</form>
+{% endblock %}

@@ -1,0 +1,88 @@
+{% extends 'base.html' %}
+{% block title %}Feedback · {{ target.title }}{% endblock %}
+{% block navigation %}
+<nav aria-label="Cabinet">
+  <a href="{% url 'profile_catalogue' selected_profile.pk %}">Back to catalogue</a>
+  <a href="{% url 'profiles' %}">Choose a profile</a>
+  <form method="post" action="{% url 'logout' %}">{% csrf_token %}<button class="quiet" type="submit">Log out</button></form>
+</nav>
+{% endblock %}
+{% block content %}
+<p class="eyebrow">Fictional {{ target.category }} / {{ target.kind }}</p>
+<h1>{{ target.title }}</h1>
+<p class="context">Feedback for <strong>{{ selected_profile.label }}</strong></p>
+<p class="lede">Record each statement separately. Enjoyment is your rating after experiencing the work; future interest is what you anticipate. Saving, skipping or opening a work never records enjoyment.</p>
+{% if is_hidden %}<p class="margin-note">Hidden for this profile. This page remains available by its direct address. Hiding an item also hides its sessions; change the parent item's visibility to show those sessions again.</p>{% endif %}
+{% if message %}<div class="error-summary" role="alert"><h2>Review your feedback</h2><p>{{ message }}</p><p>If this form is out of date, <a href="{% url 'feedback_detail' selected_profile.pk target.pk %}">refresh the feedback page</a>, review the current statements and submit a fresh form. For a temporary failure, retry the submitted form below.</p></div>{% endif %}
+<section aria-labelledby="statements-heading">
+<h2 id="statements-heading">Current statements</h2>
+<dl class="statements">
+{% for signal in signals %}
+  <div><dt>{{ signal.label }}</dt><dd>
+  {% if signal.value == None %}
+    {% if signal.revision %}No current value.{% else %}Not recorded.{% endif %}
+  {% elif signal.name == 'enjoyment' %}
+    {{ signal.value.value }} out of 5 · Enjoyment after experience. Numeric scale 1–5.
+  {% elif signal.name == 'legacy_rating' %}
+    {{ signal.value.value }} out of 5 · Basis unknown. Original numeric scale 1–5: {{ signal.value.labels.hint }}. This is not a statement of experienced enjoyment.
+  {% elif signal.name == 'interest' %}
+    {{ signal.value.value|capfirst }} · Anticipated interest.
+  {% elif signal.name == 'constraint' %}
+    {{ signal.value.text }}
+  {% elif signal.name == 'seed_statement' %}
+    {{ signal.value.text }} — {{ signal.value.attribution }} · Attributed statement; enjoyment basis unknown.
+  {% elif signal.name == 'saved' or signal.name == 'skipped' or signal.name == 'opened' %}
+    {{ signal.value.value|yesno:'Yes,No' }}
+  {% elif signal.name == 'completion' and signal.value.value == 'not_started' %}Not started
+  {% elif signal.name == 'completion' and signal.value.value == 'in_progress' %}In progress
+  {% else %}{{ signal.value.value|capfirst }}{% endif %}
+  </dd></div>
+{% endfor %}
+</dl>
+</section>
+{% if can_mutate %}
+<section aria-labelledby="record-heading">
+<h2 id="record-heading">Record or correct feedback</h2>
+<p>Each button submits only its own statement. A new value corrects the current statement of that kind. Ratings keep the numeric 1–5 scale without added verbal meanings. Leave practical constraint text empty to clear it.</p>
+<p>Visibility applies to this {{ target.kind }} for this profile. Hiding an item also hides its sessions. Keep this page's address if you want to return and show it again.</p>
+<div class="feedback-forms">
+{% for form in forms %}
+<form class="paper-panel feedback-form" method="post" action="{% url 'feedback_mutate' selected_profile.pk target.pk %}">
+  {% csrf_token %}
+  <fieldset><legend>{{ form.signal_label }}</legend>
+  {% for field in form.hidden_fields %}<input type="hidden" name="{{ field.html_name }}" value="{{ field.value|default_if_none:'' }}">{% endfor %}
+  {% if form.errors %}<div class="error-summary" role="alert" id="form-errors-{{ forloop.counter }}"><p>This statement was not accepted.</p>{{ form.non_field_errors }}{% for field in form.visible_fields %}{% if field.errors %}<p>{{ field.label }}: {{ field.errors|striptags }}</p>{% endif %}{% endfor %}{% for field in form.hidden_fields %}{% if field.errors %}<p>This form could not be verified. Refresh the feedback page before submitting again.</p>{% endif %}{% endfor %}<p><a href="{% url 'feedback_detail' selected_profile.pk target.pk %}">Refresh and review current feedback</a> if this form is out of date.</p></div>{% endif %}
+  {% for field in form.visible_fields %}
+    <div class="field">
+    <label for="feedback-{{ forloop.parentloop.counter }}-{{ field.name }}">{{ field.label }}</label>
+    {% if field.name == 'text' %}
+      <textarea id="feedback-{{ forloop.parentloop.counter }}-{{ field.name }}" name="{{ field.html_name }}" maxlength="500" rows="4"{% if form.errors %} aria-invalid="true" aria-describedby="form-errors-{{ forloop.parentloop.counter }}"{% endif %}>{{ field.value|default_if_none:'' }}</textarea>
+    {% else %}
+      <select id="feedback-{{ forloop.parentloop.counter }}-{{ field.name }}" name="{{ field.html_name }}" required{% if form.errors %} aria-invalid="true" aria-describedby="form-errors-{{ forloop.parentloop.counter }}"{% endif %}>
+        <option value="">Choose a value</option>
+        {% for value, label in field.field.choices %}<option value="{{ value }}"{% if field.value|stringformat:'s' == value|stringformat:'s' %} selected{% endif %}>{{ label }}</option>{% endfor %}
+      </select>
+    {% endif %}
+    </div>
+  {% endfor %}
+  <button type="submit">{% if form.operation.value == 'reverse' %}Undo{% else %}Record or correct{% endif %} {{ form.signal_label }}</button>
+  </fieldset>
+</form>
+{% endfor %}
+</div>
+</section>
+{% if undo_forms %}
+<section aria-labelledby="undo-heading" class="undo-section">
+<h2 id="undo-heading">Undo a statement</h2>
+<p>Undo withdraws the selected statement and may reveal an earlier value. The current value above shows the result. Eligible statements are listed newest first. Each button withdraws one statement; review the result before undoing another.</p>
+{% for form in undo_forms %}
+<form class="undo-form" method="post" action="{% url 'feedback_mutate' selected_profile.pk target.pk %}">
+{% csrf_token %}{% for field in form.hidden_fields %}<input type="hidden" name="{{ field.html_name }}" value="{{ field.value|default_if_none:'' }}">{% endfor %}
+<button class="quiet" type="submit">Undo {{ form.statement_label }} · statement {{ forloop.revcounter }}</button>
+</form>
+{% endfor %}
+</section>
+{% endif %}
+{% else %}<p class="margin-note">You can read feedback for this profile. Recording, correcting and undoing feedback are unavailable with your current permission.</p>{% endif %}
+{% if can_export %}<p class="export-link"><a href="{% url 'feedback_export' selected_profile.pk %}">Export this profile's fictional feedback</a></p>{% endif %}
+{% endblock %}

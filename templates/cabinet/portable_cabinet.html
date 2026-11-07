@@ -1,0 +1,101 @@
+{% extends enhancement_base %}
+{% block content %}
+{% if consent %}
+<section class="paper-panel cabinet-consent" aria-labelledby="inference-consent-heading">
+  <h1 id="inference-consent-heading">Inference permission</h1>
+  <p>{{ profile_label }} · destination {{ consent_destination }}</p>
+  <p>This permission covers only the selected model connection. It does not authorize API collection, change source rights or send a request. Each actual request still needs its exact preview and confirmation.</p>
+  {% if consent_active %}<p role="status">Current inference permission is active until {{ consent_expires }}.</p>{% elif consent_record_active %}<p role="status">The saved permission is expired or no longer matches this connection. Revoke it before explicitly granting new permission.</p>{% else %}<p role="status">No current inference permission is active.</p>{% endif %}
+  {% if consent_groups %}<p>Previously selected groups:</p><ul>{% for group in consent_groups %}<li>{{ group }}</li>{% endfor %}</ul>{% endif %}
+  <form method="post" action="/cabinet/consent/change">{% csrf_token %}
+    <input type="hidden" name="profile_ref" value="{{ profile_ref }}"><input type="hidden" name="connection_ref" value="{{ connection_ref }}"><input type="hidden" name="expected_revision" value="{{ consent_revision }}">
+    {% if consent_record_active %}
+    <input type="hidden" name="action" value="revoke">
+    <p>Revocation invalidates affected previews and future use under this permission. It does not undo a request already sent to a processor.</p>
+    <label class="cabinet-check"><input type="checkbox" name="confirmed" value="yes" required autocomplete="off"> Revoke this inference permission.</label>
+    <button type="submit">Revoke inference permission</button>
+    {% else %}
+    <input type="hidden" name="action" value="{{ consent_action }}">
+    <fieldset><legend>Choose data groups explicitly</legend>{% for choice in inference_choices %}<label class="cabinet-check"><input type="checkbox" name="allow_{{ choice.code }}" value="yes" autocomplete="off"> {{ choice.label }}</label>{% endfor %}</fieldset>
+    <p>Notes and inferred traits start unchecked. A trait also needs permission for its original inputs; allowing a trait cannot bypass a denied note. Unsupported or unattributed history remains excluded, not a no-history cold start.</p>
+    <p>Permission lasts up to five minutes or the current owner session’s end, whichever comes first. Exact body review remains separate.</p>
+    <label class="cabinet-check"><input type="checkbox" name="confirmed" value="yes" required autocomplete="off"> Allow only the selected groups for this connection and time window.</label>
+    <button type="submit">Grant inference permission</button>
+    {% endif %}
+  </form>
+  <p><a href="{{ cabinet_url }}">Return to your cabinet</a></p>
+</section>
+{% elif entry %}
+<section class="paper-panel cabinet-entry" aria-labelledby="cabinet-choose-heading">
+  <h1 id="cabinet-choose-heading">Your cabinet</h1>
+  <p>Choose the cabinet and model connection you want to use. A saved connection does not establish consent, supported sources or working inference.</p>
+  {% if profiles %}
+  <form method="get" action="/cabinet" data-cabinet-select>
+    <label for="cabinet-choice">Cabinet</label>
+    <select id="cabinet-choice" name="profile_ref" required><option value="">Choose a cabinet</option>{% for profile in profiles %}<option value="{{ profile.profile_ref }}"{% if profile.profile_ref == selected_profile_ref %} selected{% endif %}>{{ profile.label }}</option>{% endfor %}</select>
+    {% if connections %}
+    <label for="cabinet-connection">Model connection for Enhance</label>
+    <select id="cabinet-connection" name="connection_ref" required><option value="">Choose a connection</option>{% for connection in connections %}<option value="{{ connection.connection_ref }}">Saved connection {{ forloop.counter }} · {{ connection.model }} · revision {{ connection.revision }}</option>{% endfor %}</select>
+    {% else %}<p>No eligible model connection is available. You can open your cabinet now; configure a connection in <a href="/setup">Your model</a> before considering Enhance.</p>{% endif %}
+    <button type="submit">Open selected cabinet</button>
+  </form>
+  {% elif can_create %}
+  <h2>Create your cabinet</h2>
+  <p>This installation has no profiles. Creating a cabinet binds a new owner profile; it does not import private history, grant data sharing or run Enhance.</p>
+  <form method="post" action="/setup/cabinet/create" data-cabinet-create>{% csrf_token %}<input type="hidden" name="expected_owner_revision" value="{{ owner_revision }}"><button type="submit">Create my cabinet</button></form>
+  {% elif bind_profiles %}
+  <h2>Bind an existing synthetic profile</h2>
+  <p>Only profiles already authorized in this identified synthetic installation are listed. Binding preserves original ratings, notes, IDs and lineage; it does not grant external use. Actual private-history adoption remains held for separate owner authority.</p>
+  <form method="post" action="/setup/cabinet/bind">{% csrf_token %}
+    <label for="existing-cabinet">Existing profile</label><select id="existing-cabinet" name="profile_id" required><option value="">Choose explicitly</option>{% for profile in bind_profiles %}<option value="{{ profile.profile_id }}">{{ profile.label }}</option>{% endfor %}</select>
+    <label class="cabinet-check"><input type="checkbox" name="confirmed" value="yes" required autocomplete="off"> Bind only the selected existing synthetic profile without copying or replacing its history.</label>
+    <button type="submit">Bind selected synthetic profile</button>
+  </form>
+  {% else %}<p>No authorized bound cabinet is available. Existing profiles will not be adopted or recreated automatically. Review the current owner and permissions.</p>{% endif %}
+</section>
+{% else %}
+<header class="cabinet-header">
+  <p class="eyebrow">Your current publication</p><h1>{{ profile_label }}</h1>
+  <p><a href="/setup/cabinet">Choose a cabinet or connection</a></p>
+  {% if round_blocks_start %}<p>Continue the recorded round using its status link below. An unfinished or uncertain attempt must not be replaced by a new round.</p>
+  {% elif enhance_url %}<p><a class="cabinet-action" href="{{ enhance_url }}">Enhance this cabinet</a></p><p>Enhance checks every enabled category using this cabinet’s permitted ratings and notes, whichever category you are viewing. Requests need separate explicit approvals.</p>
+  {% else %}<p>Choose a model connection before considering Enhance. Sources, consent and working inference must also be available.</p>{% endif %}
+  {% if inference_consent_url %}<p><a href="{{ inference_consent_url }}">Review inference permission</a>. Source collection permission remains separate.</p>{% endif %}
+  {% if round_url %}<p><a href="{{ round_url }}">Review this round’s recorded status</a>{% if round_pending %}. Pending, failed or uncertain work does not replace the publication shown below.{% endif %}</p>{% endif %}
+</header>
+{% if read_code %}
+<section class="error-summary" role="status"><h2>Current picks cannot be shown</h2>
+  {% if read_code == 'PREVIEW_STALE' or read_code == 'RUN_STALE' %}<p>The publication no longer matches the current evidence, permissions or source freshness. No older copy has been restored.</p>
+  {% elif read_code == 'AUTHORITY_DENIED' %}<p>Current permissions do not allow these picks to be displayed. No older copy has been restored.</p>
+  {% elif read_code == 'CAPABILITY_UNAVAILABLE' %}<p>The current publication service is unavailable. Required source, permission or inference integration is still missing.</p>
+  {% else %}<p>The current publication could not be verified. No previous response has been substituted.</p>{% endif %}
+</section>
+{% elif not published %}
+<section class="paper-panel"><h2>No published picks yet</h2><p>An authorized collection, inference and publication must complete before new picks appear. Opening this page does not start that work.</p></section>
+{% else %}
+<p class="cabinet-publication">Publication revision {{ publication_revision }}. These are the currently permitted picks; source times below describe their evidence, not a new live availability check.</p>
+<nav class="cabinet-categories" aria-label="Cabinet categories"><a href="{{ all_url }}"{% if not active_category %} aria-current="page"{% endif %}>All categories</a>{% for category in categories %}<a href="{{ category.url }}"{% if category.category == active_category %} aria-current="page"{% endif %}>{{ category.label }}</a>{% endfor %}</nav>
+{% for category in categories %}{% if category.visible %}
+<section class="cabinet-category" aria-labelledby="category-{{ forloop.counter }}">
+  <h2 id="category-{{ forloop.counter }}">{{ category.label }}</h2><p class="cabinet-category-status">{{ category.status }}</p>
+  <div class="cabinet-cards">
+  {% for card in category.cards %}
+    <article class="paper-panel cabinet-card">
+      <h3>{{ card.title }}</h3>{% if card.medium %}<p>{{ card.medium }}</p>{% endif %}
+      <dl class="cabinet-provenance">
+        {% if card.provider %}<div><dt>Source</dt><dd>{{ card.provider }}</dd></div>{% endif %}
+        {% if card.observed_at %}<div><dt>Observed</dt><dd>{{ card.observed_at }}</dd></div>{% endif %}
+        {% if card.valid_until %}<div><dt>Evidence valid until</dt><dd>{{ card.valid_until }}</dd></div>{% endif %}
+      </dl>
+      {% if card.source_url %}<p><a href="{{ card.source_url }}" rel="noreferrer noopener">View source record</a></p>{% else %}<p>No validated source link is available.</p>{% endif %}
+      {% if card.facts %}<dl class="cabinet-facts">{% for fact in card.facts %}<div><dt>{{ fact.name }}</dt><dd>{{ fact.value }}</dd></div>{% endfor %}</dl>{% endif %}
+      {% if card.reasons %}<h4>For you</h4>{% for reason in card.reasons %}<p><strong>{{ reason.label }}:</strong> {{ reason.text }} <span class="cabinet-evidence">{% if reason.evidence_count %}{{ reason.evidence_count }} evidence reference{{ reason.evidence_count|pluralize }}.{% else %}No evidence references supplied.{% endif %}</span></p>{% endfor %}{% endif %}
+    </article>
+  {% empty %}<p>No fresh cards in this category. {{ category.status }}</p>{% endfor %}
+  </div>
+</section>
+{% endif %}{% endfor %}
+{% endif %}
+<p class="fine-print">Ratings and reactions are not connected on this native page yet. No response, Save, Obtain or provider action is inferred from viewing a card.</p>
+{% endif %}
+{% endblock %}

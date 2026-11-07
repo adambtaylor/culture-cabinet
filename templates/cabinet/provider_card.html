@@ -1,0 +1,28 @@
+<article class="card provider-card" id="catalogue-card-{{ card.key }}" data-feedback-card data-card-key="{{ card.key }}" tabindex="-1">
+  <p class="eyebrow">{% if card.medium == 'movie' %}Film{% elif card.medium == 'tv' %}Series{% elif card.book_metadata.category.status == 'present' %}{{ card.book_metadata.category.label }} · Book{% else %}Book{% endif %}</p>
+  <h3>{{ card.title }}</h3>
+  <p class="for-you"><strong>For you</strong> · <span data-for-you data-version="{{ card.for_you.version }}">{% if card.for_you.text %}{{ card.for_you.text }}{% else %}An exploratory pick from {{ card.provider }}. Your response can help shape future picks.{% endif %}</span></p>
+  <details><summary>Selection and source details</summary><p>{{ card.lane_label }} · {{ card.selection_reason }}</p><p>Identity: {{ card.key }} · Snapshot: {{ card.for_you.version }} · Sources: {{ card.for_you.source_keys }}</p></details>
+  {% if card.book_metadata %}<p class="synopsis">{% if card.book_metadata.synopsis.status == 'present' %}{{ card.description }}{% elif card.book_metadata.synopsis.status == 'invalid' %}Synopsis unavailable: invalid source value.{% elif card.book_metadata.synopsis.status == 'absent' %}No synopsis supplied.{% else %}Synopsis unknown: not included in this source snapshot.{% endif %}</p>{% else %}<p class="synopsis">{{ card.description|default:'No synopsis supplied. Open the source page for details.' }}</p>{% endif %}
+  {% if card.medium == 'book' %}{% include 'cabinet/book_details.html' %}{% endif %}
+  {% if card.origin == 'neighbor' %}<details><summary>Provider-neighbor provenance</summary><p class="fine-print">Provider-neighbor provenance, in order: original human positive {{ card.root }} → {% if card.provider == 'hardcover' %}Hardcover cached similar books{% else %}TMDB recommendations{% endif %} → {{ card.title }}. Unjudged suggestion; no population co-like or cross-media fact verified.</p></details>{% endif %}
+  <p class="source-meta">Source: {% if card.provider == 'tmdb' %}TMDB{% elif card.provider == 'hardcover' %}Hardcover{% else %}{{ card.provider }}{% endif %}<br>Fetched: <time datetime="{{ card.fetched_at }}">{{ card.fetched_at }}</time></p>
+  <div class="card-links">
+    <p><a href="{{ card.url }}" target="_blank" rel="noopener noreferrer" aria-label="{{ card.title }}: {% if card.medium == 'book' %}synopsis on Hardcover{% else %}details on TMDB{% endif %} (opens a new tab)">{% if card.medium == 'book' %}Read synopsis on Hardcover{% else %}Explore on TMDB{% endif %} <span aria-hidden="true">↗</span></a></p>
+    {% if card.medium != 'book' %}<p class="fine-print">{{ card.trailer_status|default:'Trailer unavailable: no verified trailer link.' }}</p>{% endif %}
+  </div>
+  <form {% if not search_result %}data-feedback-form{% endif %} class="taste-form" method="post" action="{{ action_url }}">
+    {% csrf_token %}{% include 'cabinet/provider_round_fields.html' %}<input type="hidden" name="candidate_id" value="{{ card.key }}">
+    {% if search_result %}<button type="submit" name="action" value="add">Add {{ card.title }} to this round</button><p class="fine-print">No enjoyment or interest recorded by adding.</p>
+    {% else %}<input type="hidden" name="action" value="choose">
+    <label>Optional note about {{ card.title }} (up to 500 characters)<textarea name="note" maxlength="500" rows="2"></textarea></label>
+    <fieldset><legend>Anticipated interest in {{ card.title }}</legend><p class="fine-print">How does this sound? This does not record experience or add a favourite.</p><div class="taste-buttons">
+    {% for value,label in reaction_options %}<button type="submit" name="choice" value="{{ value }}">{{ label }}</button>{% endfor %}
+    </div></fieldset><p><button class="quiet" type="submit" name="choice" value="unknown">Don’t know it</button> <button class="quiet" type="submit" name="choice" value="skipped">Skip this pick</button></p><p class="fine-print">Unfamiliar and skipped are separate from interest, not a midpoint or a dislike.</p>{% endif %}
+  </form>
+  {% if saved_available and card.save_url %}<form class="save-form" method="post" action="{{ card.save_url }}">
+    {% csrf_token %}<input type="hidden" name="item_id" value="{{ card.key }}">
+    <label>Save {{ card.title }} to<select name="list_kind">{% if card.medium == 'book' %}<option value="read">To read</option>{% else %}<option value="watch">To watch</option>{% endif %}<option value="favorites">Favourites</option></select></label>
+    <button class="quiet" type="submit"><span aria-hidden="true">♡</span> Save item</button><p class="fine-print">Saving records intent, not enjoyment or a like.</p>
+  </form>{% endif %}
+</article>

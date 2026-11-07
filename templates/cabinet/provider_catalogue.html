@@ -1,0 +1,112 @@
+{% extends 'provider_base.html' %}
+{% block title %}Explore the catalogue{% endblock %}
+{% block navigation %}
+<nav aria-label="Cabinet"><a href="{% url 'profiles' %}">Choose profile</a>
+  {% if saved_available and saved_url %}<a href="{{ saved_url }}">Saved items</a>{% endif %}
+  <form method="post" action="{% url 'logout' %}">{% csrf_token %}<button class="quiet" type="submit">Log out</button></form>
+</nav>
+{% endblock %}
+{% block content %}
+<p class="eyebrow">The cabinet / {{ selected_profile.label }}</p>
+<h1>A few doors to open.</h1>
+<p class="lede">Tell us how each pick sounds. Anticipated interest guides exploration; experience and favourites stay separate.</p>
+{% include 'cabinet/enhancement_status.html' %}
+<div class="round-status" aria-label="Discovery progress">
+  <p><strong>Current round · {{ cards|length }} titles</strong></p>
+  <p><strong data-feedback-response-count>{{ response_count }}</strong> current human responses {% if durable_active %}in this run{% else %}in this temporary session{% endif %}</p>
+  <details><summary>Round details</summary><p>Revision {{ revision }} · Selector {{ selector_version }}</p></details>
+</div>
+<details><summary>Historical response counts</summary><p class="fine-print">Enjoyed: {{ choice_counts.enjoyed }} · Not for me: {{ choice_counts.not_for_me }} · Interested: {{ choice_counts.interested }} · Don’t know: {{ choice_counts.unknown }}</p></details>
+{% if durable_available %}<form data-feedback-latest-undo method="post" action="{{ durable_action_url }}">{% csrf_token %}{% include 'cabinet/provider_round_fields.html' %}<input type="hidden" name="run_id" value="{{ run_id }}"><button class="quiet" type="submit" name="action" value="undo"{% if not undo_available %} disabled{% endif %}>Clear latest response (undo)</button></form>{% endif %}
+{% if durable_active %}
+<section class="paper-panel" aria-labelledby="run-heading">
+<h2 id="run-heading">Your local discovery run</h2>
+<p>Human responses and minimal judged-source provenance survive logout and restart. Provider metadata, descriptions and the unjudged pool expire after one hour. No source is fetched by opening this page.</p>
+<p>Current run {{ run_id }} · {% if current_run.archived_at %}Archived{% else %}Active{% endif %} · {{ human_history|length }} history events.</p>
+<p>Refresh explicitly refetches a broad metadata deck, preserving your human history. Choices, corrections and expansions recalculate the round; each card explains its selection. <details><summary>Historical selector details</summary>Enjoyed +3, interested +1, not for me −3, unknown 0; lower-weight lanes retain exploration space when available.</details></p>
+<form method="post" action="{{ durable_action_url }}">{% csrf_token %}{% include 'cabinet/provider_round_fields.html' %}<input type="hidden" name="run_id" value="{{ run_id }}"><button type="submit" name="action" value="continue">Continue current run</button> <button class="quiet" type="submit" name="action" value="refresh">Refresh source metadata — keep history</button> <button class="quiet" type="submit" name="action" value="export">Export human history (JSON)</button></form>
+<p>Undo clears a response; it does not restore the previous correction. Earlier events remain in history.</p>
+</section>
+{% elif durable_available %}
+<section class="paper-panel"><h2>Continue with local human history</h2><p>{{ temporary_notice }}</p><p>Continue starts a durable run without recording a response. Canonical source choices can then persist locally; metadata remains temporary.</p><form method="post" action="{{ durable_action_url }}">{% csrf_token %}{% include 'cabinet/provider_round_fields.html' %}<button type="submit" name="action" value="continue">Continue with durable intake</button></form></section>
+{% else %}<p class="fine-print">{{ temporary_notice }} Durable history requires operator preparation.</p>{% endif %}
+{% if message or form.errors %}<div class="error-summary" role="alert"><h2>That request could not finish</h2><p>Review your title and medium, then try again. If a source is unavailable, try another medium or ask your operator to check it. Reload the catalogue if this form is out of date.</p>{% if message %}<p>{{ message }}</p>{% endif %}{% if form.errors %}<p>Please complete the required fields using one of the choices shown.</p>{% endif %}</div>{% endif %}
+{% if provider_failures %}<aside class="notices" aria-label="Source availability"><p>Some catalogue sources are unavailable. Available results remain below.</p><p>Search another medium, or use the explicit refresh control when available to retry. If this continues, ask your operator to check source access.</p></aside>{% endif %}
+{% if not started %}
+<section class="paper-panel" aria-labelledby="start-heading"><h2 id="start-heading">Open a broad first round</h2><p>Fetch a mix of real films, series and books from the available sources. Searching a favourite below also works before you start.</p>
+  <form method="post" action="{{ action_url }}">{% csrf_token %}{% include 'cabinet/provider_round_fields.html' %}<button type="submit" name="action" value="start">Start discovery</button></form>
+</section>
+{% endif %}
+<div class="discovery-tools">
+  <section class="paper-panel" aria-labelledby="graphic-novels-heading">
+    <h2 id="graphic-novels-heading">Graphic novels</h2>
+    <p>Browse Hardcover’s graphic novel category, including any styles its catalogue supplies. This category is not limited to superheroes. The optional title filter applies only to the fetched category page, not the full provider catalogue.</p>
+    <p>Fetch up to nine books at a time, popular first. Each fetch reads one category-filtered page; up to ten pages are available in this browse window. This is a partial catalogue view, not a complete inventory.</p>
+    <form method="post" action="{{ action_url }}">
+      {% csrf_token %}{% include 'cabinet/provider_round_fields.html' %}
+      <input type="hidden" name="book_category" value="graphic_novels">
+      <input type="hidden" name="page" value="1">
+      <div class="field"><label for="graphic-title">Title contains (this page only)</label><input id="graphic-title" name="query" type="search" maxlength="100" value="{{ browse.query }}"></div>
+      <button type="submit" name="action" value="browse">Fetch graphic novels</button>
+    </form>
+    <p class="fine-print">Fetching and opening source links do not record a like. Book title search below includes all book categories.</p>
+  </section>
+  <section class="paper-panel" aria-labelledby="search-heading">
+    <h2 id="search-heading">Bring a favourite</h2>
+    <p>Search a title directly, including an obscure favourite. Finding or adding it does not count as liking it.</p>
+    <form method="post" action="{{ action_url }}">
+      {% csrf_token %}{% include 'cabinet/provider_round_fields.html' %}
+      <div class="search-fields">
+        <div class="field"><label for="title-query">Title to find</label><input id="title-query" name="query" type="search" value="{{ form.query.value|default_if_none:'' }}" maxlength="100" required></div>
+        <div class="field"><label for="search-medium">Medium</label><select id="search-medium" name="medium">
+          <option value="movie"{% if form.medium.value == 'movie' %} selected{% endif %}>Film</option>
+          <option value="tv"{% if form.medium.value == 'tv' %} selected{% endif %}>Series</option>
+          <option value="book"{% if form.medium.value == 'book' %} selected{% endif %}>Book</option>
+        </select></div>
+      </div>
+      <button type="submit" name="action" value="search">Search catalogue</button>
+    </form>
+  </section>
+  <aside aria-labelledby="explore-heading"><h2 id="explore-heading">Several paths, still open</h2>
+    <p>Rounds keep room for different media and lower-weight lanes when titles are available. Your enjoyment and interest guide narrowing separately.</p>
+    <p>{{ crossmedia_notice }}</p>
+    <p>{{ neighbor_notice }} A source suggestion is never recorded as your like.</p>
+    <p class="fine-print">{{ identity_notice }}</p>
+  </aside>
+</div>
+{% if search_results %}
+<section aria-labelledby="search-results-heading"><div class="section-rule"><h2 id="search-results-heading">{% if browse %}Graphic novels · page {{ browse.page }}{% else %}Title search results{% endif %}</h2></div><p>Add a result to the round, then tell us your response. Adding is not a taste statement.</p>
+  {% if result_series %}<aside class="paper-panel" aria-label="Series in these results"><h3>Series in these results</h3><p>Grouped by Hardcover series identity; each volume or compilation keeps its own book and response.</p><ul>{% for series in result_series %}<li>{{ series.name|default:'Series name unknown' }} · Hardcover series {{ series.id }}<ul>{% for work in series.works %}<li><a href="#catalogue-card-{{ work.key }}">{{ work.title }}</a></li>{% endfor %}</ul></li>{% endfor %}</ul></aside>{% endif %}
+  <div class="provider-grid">{% for card in search_results %}{% include 'cabinet/provider_card.html' with search_result=True %}{% endfor %}</div>
+</section>
+{% else %}
+<section class="empty-state" aria-labelledby="search-results-heading"><h2 id="search-results-heading">{% if browse %}Graphic novels · page {{ browse.page }}{% else %}Title search results{% endif %}</h2><p>{% if browse %}No unjudged graphic novels are available in this fetched page and temporary cache. This does not establish that the full catalogue is exhausted. Try another title filter or explicitly fetch a new window.{% else %}No search results to show. Search a title above; if you already searched, try a shorter title, another spelling or another medium.{% endif %} Titles you have already answered are not repeated.</p></section>
+{% endif %}
+{% if browse %}<p class="fine-print">Category supplied by Hardcover: Graphic Novel (4). Page boundaries may shift as source popularity changes. The temporary cache holds at most 120 candidates; refreshing clears its unjudged pool while keeping durable history.</p>{% if browse.next_page %}<form method="post" action="{{ action_url }}">{% csrf_token %}{% include 'cabinet/provider_round_fields.html' %}<input type="hidden" name="book_category" value="graphic_novels"><input type="hidden" name="query" value="{{ browse.query }}"><input type="hidden" name="page" value="{{ browse.next_page }}"><button class="quiet" type="submit" name="action" value="browse">Fetch next graphic novels page</button></form>{% else %}<p class="fine-print">No next page offered in this bounded window. Other filters or future source updates may return more books.</p>{% endif %}{% endif %}
+<section aria-labelledby="round-heading">
+  <div class="section-rule"><h2 id="round-heading">This round’s collection</h2></div>
+  <p>Love it, Intrigued, Mildly interested, Sounds boring and Hate it describe anticipated interest. Historical responses keep their original meaning.</p>
+  <div class="provider-grid" data-feedback-deck="catalogue" tabindex="-1">
+  {% for card in cards %}{% include 'cabinet/provider_card.html' with search_result=False %}
+  {% empty %}<div class="paper-panel empty-state"><h3>{% if exhausted %}You’ve reached the end of this pool{% elif started %}No titles available{% else %}Your first round is waiting{% endif %}</h3><p>{% if started %}Search a title above or explore an available positive root below. {% if durable_active %}Refresh source metadata to refetch a deck while keeping history, or start a separate new run below.{% else %}Reset and start broad again to retry the temporary pool.{% endif %} If a source is unavailable, ask your operator to check it.{% else %}Start discovery above or search a favourite to add it to the round.{% endif %}</p></div>{% endfor %}
+  </div>
+</section>
+{% if positive_roots %}<section aria-labelledby="roots-heading"><h2 id="roots-heading">Explore from your choices</h2><p>These roots come from your explicit enjoyment or interest. Neighbor results remain unjudged until you respond. Film, series and book lanes remain independent. Each original positive root allows one expansion attempt per temporary deck, including failed attempts.</p>
+  <div class="profile-list">{% for root in positive_roots %}
+    {% if root.can_expand and root.key not in expanded_roots %}
+    <form class="paper-panel" method="post" action="{{ action_url }}">{% csrf_token %}{% include 'cabinet/provider_round_fields.html' %}<input type="hidden" name="candidate_id" value="{{ root.key }}"><p>{{ root.title }}</p><button class="quiet" type="submit" name="action" value="neighbors">Explore {{ root.provider_label }} neighbors of {{ root.title }}</button></form>
+    {% endif %}
+  {% endfor %}</div>
+</section>{% endif %}
+{% if durable_active %}
+<section aria-labelledby="history-heading"><h2 id="history-heading">Responses in this run</h2><p>Correct an already judged title, or clear its response. A saved heart is separate from every response here.</p>
+{% for item in human_choices %}<article class="paper-panel" data-feedback-card data-card-key="{{ item.key }}" id="catalogue-history-{{ item.key }}" tabindex="-1"><form data-feedback-form data-feedback-correction method="post" action="{{ durable_action_url }}">{% csrf_token %}{% include 'cabinet/provider_round_fields.html' %}<input type="hidden" name="run_id" value="{{ run_id }}"><input type="hidden" name="candidate_id" value="{{ item.key }}"><h3>{{ item.title }}</h3><label>Response to {{ item.title }} <select name="choice">{% for value, label in choice_options %}<option value="{{ value }}"{% if value == item.choice %} selected{% endif %}>{{ label }}</option>{% endfor %}</select></label><label>Optional note (up to 500 characters)<textarea name="note" maxlength="500" rows="2">{{ item.note }}</textarea></label><button class="quiet" type="submit" name="action" value="correct">Correct response</button></form><form method="post" action="{{ durable_action_url }}">{% csrf_token %}{% include 'cabinet/provider_round_fields.html' %}<input type="hidden" name="run_id" value="{{ run_id }}"><input type="hidden" name="candidate_id" value="{{ item.key }}"><button class="quiet" type="submit" name="action" value="undo">Clear this response</button></form></article>{% empty %}<p>No current responses in this run. Searching, expanding and saving hearts do not create one.</p>{% endfor %}
+<details><summary>Human history · {{ human_history|length }} events</summary><ol>{% for event in human_history %}<li>{{ event.card.title }} · {{ event.operation }} · {% if event.choice %}{% for value, label in choice_options %}{% if value == event.choice %}{{ label }}{% endif %}{% endfor %}{% else %}Response cleared{% endif %} · {% if event.responded_at %}{{ event.responded_at }}{% else %}Original response time unknown{% endif %} · {{ event.provenance }}</li>{% empty %}<li>No human history yet.</li>{% endfor %}</ol></details>
+</section>
+{% endif %}
+{% if durable_available %}
+<section class="session-actions" aria-labelledby="runs-heading"><h2 id="runs-heading">Separate discovery histories</h2><p>New run archives the current history and opens an empty run. Nothing is merged or erased. Archived runs remain in the JSON history export; only nonarchived runs can be resumed.</p>
+<form method="post" action="{{ durable_action_url }}">{% csrf_token %}{% include 'cabinet/provider_round_fields.html' %}{% if run_id %}<input type="hidden" name="run_id" value="{{ run_id }}">{% endif %}<button class="quiet" type="submit" name="action" value="new_run">Archive current history and start new run</button></form>
+<ul>{% for run in intake_runs %}<li>Run {{ run.id }} · created {{ run.created_at }} · revision {{ run.revision }} · {% if run.archived_at %}Archived {{ run.archived_at }}{% elif run.id|stringformat:'s' == run_id %}Current active run{% else %}Available to resume{% if resume_available %}<form method="post" action="{{ durable_action_url }}">{% csrf_token %}{% include 'cabinet/provider_round_fields.html' %}<input type="hidden" name="run_id" value="{{ run.id }}"><button class="quiet" type="submit" name="action" value="resume">Resume this separate run</button></form>{% endif %}{% endif %}</li>{% empty %}<li>No local runs yet.</li>{% endfor %}</ul></section>
+{% else %}<div class="session-actions"><form method="post" action="{{ action_url }}">{% csrf_token %}{% include 'cabinet/provider_round_fields.html' %}<button class="quiet" type="submit" name="action" value="reset">Reset temporary discovery</button></form><p>Without prepared durable storage, reset clears this temporary session’s choices with no undo. Start again to fetch a broad round. Durable feedback is separate.</p></div>{% endif %}
+{% endblock %}

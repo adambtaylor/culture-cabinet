@@ -1,0 +1,62 @@
+{% extends 'provider_base.html' %}
+{% block title %}Your event plan{% endblock %}
+{% block content %}
+<p><a href="{% url 'event_plans' selected_profile.pk %}">All event plans</a></p>
+<h1>{{ event.title }}</h1>
+<p role="status"><strong>REHEARSAL — every response below is simulated. No payment, booking, calendar change or invitation has occurred.</strong></p>
+<section class="paper-panel"><h2>Session and attendees</h2>
+<p>{{ event.start }} to {{ event.end }} · {{ event.timezone }} · {{ event.location }}</p>
+<p>Source: {{ event.source_label }}. Current event status: {{ event.status }}.</p>
+<p>{{ ticket.offer.quantity }} tickets, including yourself.</p>
+{% for recipient in recipients %}<p>{{ recipient.label }} — {{ recipient.address }}</p>{% empty %}<p>No friends selected.</p>{% endfor %}
+<p>Ticket quantity and attendees stay fixed. An unapproved session may change through the restaurant alternatives below; submitted purchases are retained.</p></section>
+{% include 'cabinet/restaurant_plan.html' %}
+<section class="paper-panel"><h2>Quote and purchase approval</h2>
+<p>{{ ticket.offer.seller_label }} · verified within the fictional fixture only.</p>
+<p>Original quoted session: {{ ticket.offer.event.start }} to {{ ticket.offer.event.end }} · {{ ticket.offer.event.timezone }}. Organizer changes appear in the current session above.</p>
+<p>Seller reference: <code>{{ ticket.offer.official_seller_url }}</code> (fictional, cannot buy tickets).</p>
+<p>{{ ticket.offer.quantity }} × {{ ticket.offer.currency }} {{ quote.unit_price }} + {{ ticket.offer.currency }} {{ quote.fees }} fees = <strong>{{ ticket.offer.currency }} {{ ticket.offer.total }} total</strong>.</p>
+<p>{{ quote.refund_terms }}</p><p>Quoted {{ quote.quoted_at }} · expires {{ quote.expires_at }}. {% if not quote_current %}<strong>Expired — review a new quote before proceeding.</strong>{% endif %}</p>
+<p>Purchase state: <strong>{{ ticket.purchase_state }}</strong>{% if ticket.submission_outcome %} · {{ ticket.submission_outcome }}{% endif %} (simulated).</p>
+{% if ticket.purchase_state == 'requested' or ticket.purchase_state == 'approved' %}
+<form method="post" action="{% url 'event_plan_action' selected_profile.pk plan.pk %}">{% include 'cabinet/event_plan_fields.html' with consent='Refresh the fictional quote and discard earlier purchase approval.' %}<button name="action" value="refresh_quote">Refresh quote</button></form>
+{% if quote_current %}
+{% if ticket.purchase_state == 'requested' %}<form method="post" action="{% url 'event_plan_action' selected_profile.pk plan.pk %}">{% include 'cabinet/event_plan_fields.html' with consent='I have reviewed this exact session, seller, quantity, attendees, currency, total, fees and refund terms.' %}<button name="action" value="approve_purchase">Approve fictional purchase details</button></form>
+{% else %}<form method="post" action="{% url 'event_plan_action' selected_profile.pk plan.pk %}">{% include 'cabinet/event_plan_fields.html' with consent='Rehearse the separate human checkout handoff for these approved details.' %}<button name="action" value="handoff">Rehearse checkout handoff</button></form>{% endif %}
+{% endif %}
+{% elif ticket.purchase_state == 'submitted' %}
+<p>The handoff is reserved; outcome is unknown. Opening a seller page never confirms an order. Check the existing order before any further purchase.</p>
+<form method="post" action="{% url 'event_plan_action' selected_profile.pk plan.pk %}">{% include 'cabinet/event_plan_fields.html' with consent='Check existing fictional seller evidence without submitting another purchase.' %}<button name="action" value="reconcile_purchase">Check booking evidence</button></form>
+{% elif ticket.purchase_state == 'confirmed' %}<p>Simulated seller order and ticket issuance confirmed. Receipt: {{ ticket.order_reference }}.</p>
+{% elif ticket.purchase_state == 'failed' %}<p>Simulated seller failure confirmed. No automatic retry. Receipt retained: {{ ticket.failure_reference }}.</p>{% endif %}
+<p>Wallet pass: unavailable. Only an actual issuer-provided pass or Wallet link can be offered; adding it would remain your choice.</p></section>
+{% include 'cabinet/outing_packet.html' %}
+<section class="paper-panel"><h2>Your calendar and friend invitations</h2>
+<p>Target: {{ target.label }}. Private event, {{ calendar.event.start }} to {{ calendar.event.end }} ({{ event.timezone }}), {{ event.location }}. {% if outing %}This is the full outing block; the concert times remain distinct above.{% endif %}</p>
+<p>Invitation recipients may see the event details and other attendees. Each named mailbox requires its own approval. Invitations request an RSVP; they do not confirm attendance or guarantee an entry appears in a friend’s calendar.</p>
+{% if outing and not outing_current %}<p>Rebuild the stale outing packet before calendar updates.</p>
+{% elif ticket.purchase_state == 'confirmed' %}
+{% for command in commands %}
+<h3>{% if command.recipient %}{{ command.recipient.label }} — {{ command.recipient.address }}{% else %}Your calendar{% endif %}</h3>
+<p>{{ command.preview.change }} · {{ command.state }} (simulated){% if command.recipient %} · RSVP unknown{% endif %}.</p>
+{% if not command.receipt %}
+{% if command.preview.blockers %}<p>{{ command.preview.blockers|join:'; ' }}</p>
+{% elif command.recipient and not owner_current %}<p>Confirm your calendar change first.</p>
+{% else %}<form method="post" action="{% url 'event_plan_action' selected_profile.pk plan.pk %}">
+{% include 'cabinet/event_plan_fields.html' with consent='Approve this exact calendar change and the displayed recipient, event details and privacy consequences in rehearsal.' %}
+{% if command.recipient %}<input type="hidden" name="recipient" value="{{ command.recipient.recipient_id }}">{% endif %}
+<button name="action" value="calendar">Rehearse {{ command.preview.change }}{% if command.recipient %} invitation to {{ command.recipient.address }}{% else %} on your calendar{% endif %}</button></form>{% endif %}
+{% elif command.receipt.state == 'failed' %}<p>Definite simulated failure; retained receipt prevents an automatic retry.</p>{% endif %}
+{% endfor %}
+{% else %}<p>Calendar actions wait for confirmed booking evidence.</p>{% endif %}
+{% for receipt in unknown_receipts %}<form method="post" action="{% url 'event_plan_action' selected_profile.pk plan.pk %}">
+<p>Unknown outcome: {% if receipt.recipient %}{{ receipt.recipient.address }}{% else %}your calendar{% endif %}.</p>
+{% include 'cabinet/event_plan_fields.html' with consent='Check existing calendar evidence without sending this change again.' %}
+<input type="hidden" name="receipt" value="{{ receipt.key }}"><button name="action" value="reconcile_calendar">Reconcile calendar outcome</button></form>{% endfor %}
+</section>
+{% if ticket.purchase_state == 'confirmed' and event.status != 'cancelled' %}<details class="paper-panel"><summary>Rehearse an organizer update</summary>
+<p>A source update retains the original purchase evidence and calendar identity. Review and approve the calendar update and each invitation update separately. Cancellation does not claim a refund.</p>
+<form method="post" action="{% url 'event_plan_action' selected_profile.pk plan.pk %}">{% include 'cabinet/event_plan_fields.html' with consent='Simulate a verified organizer moving this session one hour later.' %}<button name="action" value="reschedule">Simulate reschedule</button></form>
+<form method="post" action="{% url 'event_plan_action' selected_profile.pk plan.pk %}">{% include 'cabinet/event_plan_fields.html' with consent='Simulate verified organizer cancellation; do not cancel a real order or claim a refund.' %}<button name="action" value="cancel_event">Simulate event cancellation</button></form>
+</details>{% endif %}
+{% endblock %}

@@ -1,0 +1,29 @@
+{% if gallery_offers %}
+<section aria-labelledby="gallery-offers-heading">
+  <h2 id="gallery-offers-heading">Artwork sale leads</h2>
+  <p>These are seller observations, separate from gallery events and your taste responses. A listed item price is not a complete purchase total. No purchase is authorised.</p>
+  {% for row in gallery_offers %}
+  <article class="paper-panel">
+    <h3>{{ row.offer.title|default:'Artwork offer' }}</h3>
+    {% for reason in row.why %}<p>{{ reason }}</p>{% endfor %}
+    <p>{{ row.offer.artist|default:'Artist unknown' }} · {{ row.offer.seller|default:'Seller unknown' }}<br>
+    Object / edition: {{ row.offer.medium|default:'unknown' }}{% if row.offer.edition %} · {{ row.offer.edition }}{% endif %}<br>
+    Stock status: {{ row.offer.availability|default:'unconfirmed' }} · Source checked: {{ row.offer.checked_at|default:'unknown' }}.</p>
+    <dl>
+    {% for name,component in row.offer.components.items %}
+      <dt>{% if name == 'artwork' %}Listed item price{% else %}{{ name|capfirst }}{% endif %}</dt>
+      <dd>{{ component.status|default:'unknown' }}{% if component.status == 'known' %} · {{ row.offer.currency|default:'currency unknown' }} {{ component.amount|default_if_none:'unknown' }}{% endif %}{% if component.source_basis %} · {{ component.source_basis }}{% endif %}</dd>
+    {% empty %}<dt>Listed item price and required extras</dt><dd>Unknown; a complete cost breakdown is unavailable.</dd>{% endfor %}
+    </dl>
+    {% if row.cost_gate.qualified %}
+    <p>Current cost and stock screening: strictly below AUD 2,500 all-in. Complete observed total: AUD {{ row.cost_gate.total_aud }}. This is not purchase authorisation; confirm the exact object and seller terms before any decision.</p>
+    {% else %}
+    <p><strong>Unqualified purchase lead.</strong> A complete, current all-in total strictly below AUD 2,500 and confirmed stock are required. Unknown required extras remain unknown.</p>
+    {% if row.cost_gate.total_aud %}<p>Observed complete total: AUD {{ row.cost_gate.total_aud }}.</p>{% else %}<p>Complete all-in total: unknown.</p>{% endif %}
+    {% endif %}
+    {% for reason in row.cost_gate.reasons %}<p>{{ reason }}</p>{% endfor %}
+    {% if row.offer.offer_url %}<p><a href="{{ row.offer.offer_url }}" target="_blank" rel="noopener noreferrer" referrerpolicy="no-referrer">Inspect the seller’s source listing</a></p>{% endif %}
+  </article>
+  {% endfor %}
+</section>
+{% endif %}

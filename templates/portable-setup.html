@@ -1,0 +1,100 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{% if state == 'claim' %}Your local cabinet{% elif state == 'login' %}Log in{% else %}Your model{% endif %} · Culture Cabinet</title>
+  <link rel="stylesheet" href="/setup/style.css">
+</head>
+<body data-state="{{ state }}" data-configured="{{ configured|yesno:'true,false' }}" data-connection-ready="{{ connection_ready|yesno:'true,false' }}" data-run-ready="false" data-credential-configured="{{ credential_configured|yesno:'true,false' }}">
+<a class="skip-link" href="#setup-main">Skip to setup</a>
+<header class="masthead"><p class="wordmark">Culture Cabinet</p><p class="edition">Portable developer preview</p></header>
+<main id="setup-main" tabindex="-1">
+  {% if success_notice %}<p id="setup-status" class="status" role="status">{{ success_notice }}</p>{% endif %}
+  {% if notice %}<section id="setup-notice" class="notice" role="alert" tabindex="-1" autofocus><h2>Check your setup</h2><p>{{ notice }}</p></section>{% endif %}
+  {% if state == 'claim' %}
+  <section class="task" aria-labelledby="claim-heading">
+    <p class="eyebrow">Your cabinet, on your computer</p>
+    <h1 id="claim-heading">Make this cabinet yours.</h1>
+    <p>Use the one-time code shown in your local terminal, then choose an owner passphrase.</p>
+    <form method="post" action="{{ actions.claim }}" data-form="claim" autocomplete="off">
+      <input type="hidden" name="csrfmiddlewaretoken" value="{{ csrf_token }}">
+      <label for="claim-code">Terminal code</label><input id="claim-code" type="password" name="code" autocomplete="one-time-code" minlength="32" maxlength="32" required aria-describedby="code-help"><p id="code-help" class="help">This short-lived code stays in your terminal; it is never part of a link.</p>
+      <label for="claim-passphrase">Choose an owner passphrase</label><input id="claim-passphrase" type="password" name="passphrase" autocomplete="new-password" minlength="12" maxlength="256" required aria-describedby="passphrase-help"><p id="passphrase-help" class="help">Use at least 12 characters. You will need this passphrase to log in again.</p>
+      <button type="submit">Create local owner</button>
+    </form>
+  </section>
+  {% elif state == 'login' %}
+  <section class="task" aria-labelledby="login-heading">
+    <h1 id="login-heading">Welcome back.</h1><p>Log in to manage your model connection on this computer.</p>
+    <form method="post" action="{{ actions.login }}" data-form="login">
+      <input type="hidden" name="csrfmiddlewaretoken" value="{{ csrf_token }}">
+      <label for="login-passphrase">Owner passphrase</label><input id="login-passphrase" type="password" name="passphrase" autocomplete="current-password" minlength="12" maxlength="256" required>
+      <button type="submit">Log in</button>
+    </form>
+    <p class="help">Your saved model configuration remains. Session-only API keys must be entered again when their session ends.</p>
+  </section>
+  {% else %}
+  <section class="cabinet-entry-link" aria-labelledby="cabinet-entry-heading">
+    <h2 id="cabinet-entry-heading">Your cabinet</h2>
+    <p>Choose an authorized cabinet and model connection, or explicitly create a cabinet for a new empty installation. No existing private profile is adopted.</p>
+    <p><a href="/setup/cabinet">Choose or create your cabinet</a></p>
+  </section>
+  <div class="model-layout">
+    <section class="task" aria-labelledby="model-heading">
+      <p class="eyebrow">Connection setup</p><h1 id="model-heading">Your model</h1>
+      <p>Use your own OpenAI API connection. Saving settings or a key does not establish working inference.</p>
+      {% if reauthentication_required %}
+      <section class="notice" aria-labelledby="reauthentication-heading">
+        <h2 id="reauthentication-heading">Confirm your owner passphrase</h2>
+        <p id="reauthentication-help">Your session is still open. Confirm your passphrase to continue changing this connection. Saved configuration and any existing session-only key are retained. Then retry the action you intended; enter any unsaved key again. Nothing is resubmitted automatically.</p>
+        <form method="post" action="{{ actions.reauthenticate }}" data-form="reauthenticate">
+          <input type="hidden" name="csrfmiddlewaretoken" value="{{ csrf_token }}">{% if configured %}<input type="hidden" name="connection_ref" value="{{ connection_ref }}">{% endif %}
+          <label for="confirm-passphrase">Owner passphrase</label><input id="confirm-passphrase" type="password" name="passphrase" autocomplete="current-password" minlength="12" maxlength="256" required aria-describedby="reauthentication-help">
+          <button type="submit">Confirm passphrase</button>
+        </form>
+      </section>
+      {% endif %}
+      <dl class="configuration"><div><dt>Provider</dt><dd>OpenAI Responses API</dd></div><div><dt>Model</dt><dd>gpt-6-astra · high reasoning</dd></div><div><dt>Destination</dt><dd>https://api.openai.com/v1/responses</dd></div></dl>
+      {% if connections|length > 1 %}
+      <form method="get" action="/setup" data-form="select">
+        <label for="connection-choice">Choose a saved connection</label><select id="connection-choice" name="connection_ref" required>{% for choice in connections %}<option value="{{ choice.connection_ref }}"{% if choice.connection_ref == connection_ref %} selected{% endif %}>Saved connection {{ forloop.counter }} · gpt-6-astra · revision {{ choice.revision }}</option>{% endfor %}</select><button type="submit" class="secondary">Open selected connection</button>
+      </form>
+      {% endif %}
+      {% if selection_required %}<p class="status">Select an owned connection above to continue. No connection has been chosen automatically.</p>{% endif %}
+      {% if not configured and not selection_required %}
+      <form method="post" action="{{ actions.configure }}" data-form="configure">
+        <input type="hidden" name="csrfmiddlewaretoken" value="{{ csrf_token }}"><input type="hidden" name="adapter" value="openai_responses"><input type="hidden" name="model" value="gpt-6-astra"><input type="hidden" name="reasoning" value="high">
+        <button type="submit"{% if reauthentication_required %} disabled{% endif %}>Save model configuration</button>
+      </form>
+      {% endif %}
+      {% if configured %}
+      <p class="status">Configuration saved. {{ status_text }}</p>
+      <form method="post" action="{{ actions.credential }}" data-form="credential" autocomplete="off">
+        <input type="hidden" name="csrfmiddlewaretoken" value="{{ csrf_token }}"><input type="hidden" name="connection_ref" value="{{ connection_ref }}"><input type="hidden" name="revision" value="{{ revision }}">
+        <label for="model-secret">{% if credential_configured %}Replace session-only API key{% else %}Session-only API key{% endif %}</label><input id="model-secret" type="password" name="secret" autocomplete="off" maxlength="8192" required{% if reauthentication_required %} disabled{% endif %} aria-describedby="secret-help"><p id="secret-help" class="help">The local backend keeps this key in memory only and uses it to authenticate with the selected provider. It is not included in a model prompt.</p>
+        <button type="submit"{% if reauthentication_required %} disabled{% endif %}>{% if credential_configured %}Replace session-only key{% else %}Use key for this session{% endif %}</button>
+      </form>
+      {% if credential_configured %}
+      <div class="connection-actions">
+        <form method="post" action="{{ actions.preview }}" data-form="preview"><input type="hidden" name="csrfmiddlewaretoken" value="{{ csrf_token }}"><input type="hidden" name="connection_ref" value="{{ connection_ref }}"><input type="hidden" name="revision" value="{{ revision }}"><button type="submit" class="secondary"{% if unknown_outcome or reauthentication_required %} disabled{% endif %}>Preview connection test</button></form>
+        <form method="post" action="{{ actions.remove }}" data-form="remove"><input type="hidden" name="csrfmiddlewaretoken" value="{{ csrf_token }}"><input type="hidden" name="connection_ref" value="{{ connection_ref }}"><input type="hidden" name="revision" value="{{ revision }}"><button type="submit" class="secondary"{% if reauthentication_required %} disabled{% endif %}>Remove session key</button></form>
+      </div>
+      {% endif %}
+      {% endif %}
+    </section>
+    <aside class="scope" aria-labelledby="scope-heading"><h2 id="scope-heading">A connection, not a cabinet run</h2><p>Personal Run is unavailable. Working inference, current data-sharing consent and supported source integration are still required. Selecting a cabinet or saving a connection does not satisfy those gates.</p><p>No paid test runs automatically. A connection test sends neutral synthetic input only, with a separate explicit confirmation.</p><p>Optional catalogue sources and personal taste entry are outside this preview. Existing Cabinet installations are unchanged.</p></aside>
+  </div>
+  {% if preview %}
+  <section class="test-preview" aria-labelledby="test-heading"><h2 id="test-heading">Review the connection test</h2><p>Destination: <strong>https://api.openai.com/v1/responses</strong>. Maximum output: <strong>2048 tokens</strong>. At most <strong>one potentially paid send</strong>, with <strong>no automatic retry</strong>. Actual charges may be unknown. No personal taste or API key appears in this body.</p>
+    <details open><summary>Exact neutral request body</summary><pre>{{ preview.body }}</pre></details>
+    <form method="post" action="{{ actions.confirm }}" data-form="confirm"><input type="hidden" name="csrfmiddlewaretoken" value="{{ csrf_token }}"><input type="hidden" name="preview_ref" value="{{ preview.preview_ref }}"><input type="hidden" name="intent_ref" value="{{ preview.intent_ref }}"><label class="confirmation"><input type="checkbox" name="confirm_billable_test" value="yes" required> I approve this one potentially paid connection test.</label><button type="submit"{% if unknown_outcome %} disabled{% endif %}>Send one connection test</button></form>
+  </section>
+  {% endif %}
+  <details class="cabinet-entry-link"><summary>Trusted restart and restore are different</summary><p>A trusted same-installation restart assumes the original local root has not been rolled back. It cannot prove freshness after a whole-root rollback or authorize an import/restore. Real activation needs separate owner acceptance of that limitation; this setup page does not activate it. Existing sessions, previews and credentials must not become fresh authority merely because the app restarts.</p></details>
+  <form method="post" action="{{ actions.logout }}" data-form="logout" class="logout"><input type="hidden" name="csrfmiddlewaretoken" value="{{ csrf_token }}"><button type="submit" class="secondary">Log out</button></form>
+  {% endif %}
+</main>
+<footer><p>This local setup does not provide an offline model. No source lookup or model send occurs merely by opening this page.</p></footer>
+</body>
+</html>

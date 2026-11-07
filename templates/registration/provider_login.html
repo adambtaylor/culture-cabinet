@@ -1,0 +1,24 @@
+{% extends 'provider_base.html' %}
+{% block title %}Log in{% endblock %}
+{% block content %}
+<div class="login-layout">
+  <section aria-labelledby="welcome">
+    <p class="eyebrow">The cabinet / entrance</p>
+    <h1 id="welcome">Follow your curiosity.</h1>
+    <p class="lede">Start with films, series and books. Bring an obscure favourite, or let a broad first round open a few doors.</p>
+    <p>Log in, choose your profile, then tell us what you have enjoyed and what you might try. Those are different things.</p>
+    <p class="margin-note">A local research and development catalogue with real sources. Choose a profile to see storage availability.</p>
+  </section>
+  <section class="paper-panel" aria-labelledby="login-heading">
+    <h2 id="login-heading">Log in to explore</h2>
+    <p id="login-help">Use the local <strong>demo-curator</strong> account and the password supplied by your operator. There is no default password.</p>
+    <form method="post" action="{% url 'login' %}" aria-describedby="login-help">
+      {% csrf_token %}
+      {% if form.errors %}<div class="error-summary" role="alert"><h3>We couldn’t log you in</h3>
+      {% if form.non_field_errors %}{{ form.non_field_errors }}{% else %}<p>Check the fields below and try again.</p>{% endif %}</div>{% endif %}
+      {% for field in form %}<div class="field">{{ field.label_tag }}{{ field }}{% if field.errors %}<div class="field-errors">{{ field.errors }}</div>{% endif %}</div>{% endfor %}
+      <button type="submit">Log in</button>
+    </form>
+  </section>
+</div>
+{% endblock %}

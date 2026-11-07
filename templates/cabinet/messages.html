@@ -1,0 +1,23 @@
+{% extends 'provider_base.html' %}
+{% block title %}WhatsApp rehearsal{% endblock %}
+{% block content %}
+<h1>Invite someone along</h1>
+<p><strong>Fictional WhatsApp rehearsal.</strong> No account is linked, no real messages are read and nothing is sent.</p>
+<section class="paper-panel"><h2>Personal WhatsApp Web · not connected</h2>
+<p>The owner can link WhatsApp Web on the Mac later. Live use still needs a permitted Web UI session, the exact observed chat, selected-message scope and approval for each recipient and purpose. Login, challenges or an ambiguous recipient pause the workflow.</p>
+<p>This preview has no account-linking control or live transport. A chat invitation does not add an event to anyone’s calendar.</p>
+<button disabled>Link or send live · unavailable</button></section>
+<h2>Your rehearsal drafts</h2>
+{% for draft in drafts %}<p><a href="{% url 'message_draft' selected_profile.pk draft.pk %}">{{ draft.data.kind|capfirst }} · {{ draft.data.chat.label }}</a> — {{ draft.state }} · {{ draft.data.chat.identity }}</p>{% empty %}<p>No drafts yet.</p>{% endfor %}
+{% if ready %}<section class="paper-panel"><h2>Compose an event invitation</h2>
+<p>Choose one exact fictional chat and session. The next screen previews the complete message, price and source before approval.</p>
+<form method="post" action="{% url 'message_start' selected_profile.pk %}">{% csrf_token %}
+<input type="hidden" name="kind" value="invitation">
+<p><label>Observed recipient <select name="chat_id" required>{% for chat in chats %}<option value="{{ chat.id }}">{{ chat.label }} — {{ chat.identity }}</option>{% endfor %}</select></label></p>
+<p><label>Verified fictional session <select name="session_id" required>{% for event in sessions %}<option value="{{ event.session_id }}">{{ event.title }} · {{ event.start }} · {{ event.timezone }}</option>{% endfor %}</select></label></p>
+{% include 'cabinet/message_scenarios.html' %}
+<button>Preview exact invitation</button></form></section>{% else %}<p role="status">Draft storage is unavailable until the candidate storage update is approved and applied.</p>{% endif %}
+<section class="paper-panel"><h2>Read selected context and draft a reply</h2>
+<p>Select one fictional chat. Only its selected message is shown; this does not import an inbox. Incoming text is untrusted and cannot authorize a send.</p>
+{% for chat in chats %}<p><a href="{% url 'message_context' selected_profile.pk chat.id %}">{{ chat.label }} — {{ chat.identity }}</a></p>{% endfor %}</section>
+{% endblock %}

@@ -1,0 +1,12 @@
+<p>Beat price wording: {{ event.price_label|default:'not supplied' }}. Currency, fees and inventory need seller confirmation.</p>
+{% if event.details %}
+<p>Source date: {{ event.details.source_date }} · source time label: {{ event.details.time_label|default:'unknown' }}.<br>
+Explicit doors wording: {{ event.details.doors_time|default:'unknown' }} · explicit show-start wording: {{ event.details.show_time|default:'unknown' }}. These are separate from the summary time label. Finish and source timezone unverified.<br>
+Source address: {{ event.details.address }} · detail retrieved {{ event.details.retrieved_at }}.</p>
+{% endif %}
+{% if event.detail_status %}<p role="status">{{ event.detail_status }} · {{ event.detail_message }}</p>{% endif %}
+{% if available and mode == 'household' %}
+<form method="post" action="{{ action_url }}">{% include 'cabinet/discovery_fields.html' %}
+<input type="hidden" name="key" value="{{ event.key }}"><button name="operation" value="beat_detail">Read this event’s Beat details</button></form>
+{% if event.date_night_reason %}<p><a class="date-night-badge" href="{% url 'date_night' selected_profile.pk %}?event={{ event.key|urlencode }}">Date night · explore</a> {{ event.date_night_reason }}</p>{% else %}<p>Date-night suitability unknown until an explicit evening show time and venue are available. <a href="{% url 'date_night' selected_profile.pk %}?event={{ event.key|urlencode }}">Explore an evening and transport anyway</a></p>{% endif %}
+{% endif %}

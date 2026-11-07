@@ -1,0 +1,175 @@
+[
+  {
+    "key": "fixture:artist:paper-kites",
+    "title": "SAMPLE: Paper Satellites",
+    "kind": "artist",
+    "source": "Synthetic discovery fixture",
+    "provenance": "fixture",
+    "rank": 1,
+    "retrieved_at": "2026-10-01T00:00:00+00:00"
+  },
+  {
+    "key": "fixture:artist:quiet-tide",
+    "title": "SAMPLE: Quiet Tide",
+    "kind": "artist",
+    "source": "Synthetic discovery fixture",
+    "provenance": "fixture",
+    "rank": 2,
+    "retrieved_at": "2026-10-01T00:00:00+00:00"
+  },
+  {
+    "key": "fixture:venue:lantern-room",
+    "title": "SAMPLE: Lantern Room",
+    "kind": "venue",
+    "source": "Synthetic discovery fixture",
+    "provenance": "fixture",
+    "rank": 1,
+    "retrieved_at": "2026-10-01T00:00:00+00:00",
+    "category": "all"
+  },
+  {
+    "key": "fixture:recording:recording-1",
+    "title": "SAMPLE: Invented recording 1",
+    "kind": "recording",
+    "source": "Synthetic discovery fixture",
+    "provenance": "fixture",
+    "rank": 3,
+    "retrieved_at": "2026-10-01T00:00:00+00:00",
+    "roots": [
+      "fixture:artist:paper-kites"
+    ]
+  },
+  {
+    "key": "fixture:recording:recording-2",
+    "title": "SAMPLE: Invented recording 2",
+    "kind": "recording",
+    "source": "Synthetic discovery fixture",
+    "provenance": "fixture",
+    "rank": 4,
+    "retrieved_at": "2026-10-01T00:00:00+00:00",
+    "roots": [
+      "fixture:artist:quiet-tide"
+    ]
+  },
+  {
+    "key": "fixture:recording:recording-3",
+    "title": "SAMPLE: Invented recording 3",
+    "kind": "recording",
+    "source": "Synthetic discovery fixture",
+    "provenance": "fixture",
+    "rank": 5,
+    "retrieved_at": "2026-10-01T00:00:00+00:00",
+    "roots": [
+      "fixture:artist:paper-kites",
+      "fixture:artist:quiet-tide"
+    ]
+  },
+  {
+    "key": "fixture:recording:recording-4",
+    "title": "SAMPLE: Invented recording 4",
+    "kind": "recording",
+    "source": "Synthetic discovery fixture",
+    "provenance": "fixture",
+    "rank": 6,
+    "retrieved_at": "2026-10-01T00:00:00+00:00",
+    "roots": [
+      "fixture:artist:quiet-tide"
+    ]
+  },
+  {
+    "key": "fixture:recording:recording-5",
+    "title": "SAMPLE: Invented recording 5",
+    "kind": "recording",
+    "source": "Synthetic discovery fixture",
+    "provenance": "fixture",
+    "rank": 7,
+    "retrieved_at": "2026-10-01T00:00:00+00:00",
+    "roots": [
+      "fixture:artist:paper-kites"
+    ]
+  },
+  {
+    "key": "fixture:recording:recording-6",
+    "title": "SAMPLE: Invented recording 6",
+    "kind": "recording",
+    "source": "Synthetic discovery fixture",
+    "provenance": "fixture",
+    "rank": 8,
+    "retrieved_at": "2026-10-01T00:00:00+00:00",
+    "roots": [
+      "fixture:artist:quiet-tide"
+    ]
+  },
+  {
+    "key": "fixture:event:event-1",
+    "title": "SAMPLE: Invented music event",
+    "kind": "event",
+    "source": "Synthetic discovery fixture",
+    "provenance": "fixture",
+    "rank": 3,
+    "retrieved_at": "2026-10-01T00:00:00+00:00",
+    "category": "music",
+    "starts_at": "2027-01-10T18:00:00+11:00",
+    "venue": "SAMPLE: Lantern Room",
+    "venue_key": "fixture:venue:lantern-room",
+    "roots": [
+      "fixture:artist:paper-kites"
+    ]
+  },
+  {
+    "key": "fixture:event:event-2",
+    "title": "SAMPLE: Invented gallery event",
+    "kind": "event",
+    "source": "Synthetic discovery fixture",
+    "provenance": "fixture",
+    "rank": 4,
+    "retrieved_at": "2026-10-01T00:00:00+00:00",
+    "category": "gallery",
+    "starts_at": "2027-01-10T18:00:00+11:00",
+    "venue": "SAMPLE: Lantern Room",
+    "venue_key": "fixture:venue:lantern-room",
+    "roots": []
+  },
+  {
+    "key": "fixture:event:event-3",
+    "title": "SAMPLE: Invented art fair event",
+    "kind": "event",
+    "source": "Synthetic discovery fixture",
+    "provenance": "fixture",
+    "rank": 5,
+    "retrieved_at": "2026-10-01T00:00:00+00:00",
+    "category": "art_fair",
+    "starts_at": "2027-01-10T18:00:00+11:00",
+    "venue": "SAMPLE: Another place",
+    "venue_key": null,
+    "roots": []
+  },
+  {
+    "key": "fixture:event:event-4",
+    "title": "SAMPLE: Invented community event",
+    "kind": "event",
+    "source": "Synthetic discovery fixture",
+    "provenance": "fixture",
+    "rank": 6,
+    "retrieved_at": "2026-10-01T00:00:00+00:00",
+    "category": "community",
+    "starts_at": "2027-01-10T18:00:00+11:00",
+    "venue": "SAMPLE: Another place",
+    "venue_key": null,
+    "roots": []
+  },
+  {
+    "key": "fixture:event:event-5",
+    "title": "SAMPLE: Invented regional day trip event",
+    "kind": "event",
+    "source": "Synthetic discovery fixture",
+    "provenance": "fixture",
+    "rank": 7,
+    "retrieved_at": "2026-10-01T00:00:00+00:00",
+    "category": "regional_day_trip",
+    "starts_at": null,
+    "venue": "SAMPLE: Another place",
+    "venue_key": null,
+    "roots": []
+  }
+]

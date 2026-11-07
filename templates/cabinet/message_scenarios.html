@@ -1,0 +1,4 @@
+<details><summary>Fictional response controls</summary>
+<p><label>Delivery evidence <select name="scenario">{% for scenario in scenarios %}<option>{{ scenario }}</option>{% endfor %}</select></label></p>
+<p><label>Observed Web access <select name="access">{% for state in access_states %}<option>{{ state }}</option>{% endfor %}</select></label></p>
+<p>“unknown_then_sent” needs an evidence check, never a second send. Access blocks pause approval and dispatch; they do not open a login screen.</p></details>

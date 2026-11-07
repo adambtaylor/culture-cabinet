@@ -1,0 +1,14 @@
+<div class="gallery-details">
+  <p><strong>Gallery opening:</strong> {{ event.opening_date|default:'date unknown' }}<br>
+  Opening start: {{ event.starts_at|default:'unknown; no exact start inferred' }}<br>
+  Source time wording: {{ event.opening_wording|default:'unknown; no opening time inferred' }}<br>
+  Opening end: {{ event.opening_ends_at|default:'unknown; do not assume a closing time' }}<br>
+  Precision: {{ event.date_precision|default:'unknown' }} · Timezone: {{ event.timezone|default:'unknown' }}.</p>
+  <p><strong>Exhibition run:</strong> {{ event.exhibition_starts_on|default:'start date unknown' }} to {{ event.exhibition_ends_on|default:'end date unknown' }}.<br>
+  {% if event.run_wording %}Source run wording: {{ event.run_wording }}.<br>{% endif %}
+  Run dates are not daily opening hours or a confirmed session.</p>
+  <p>{{ event.venue|default:'Venue unknown' }} · Locality: {{ event.locality|default:'unknown' }}.<br>
+  Distance and travel time unknown. Admission: {{ event.entry_fee|default:'unknown; check official source' }}.<br>
+  Source checked: {{ event.checked_at|default:'unknown' }}. Dates, access and currentness require confirmation before a visit.</p>
+  {% if event.source_url %}<p><a href="{{ event.source_url }}" target="_blank" rel="noopener noreferrer" referrerpolicy="no-referrer">Gallery source and current programme</a></p>{% endif %}
+</div>

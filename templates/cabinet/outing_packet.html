@@ -1,0 +1,33 @@
+<section class="paper-panel"><h2>Map the whole outing</h2>
+<p>Choose cycling, public transport, bike + train, Uber/rideshare or driving separately for each direction and participant. These are public example origins and supplied estimates. No routing request, rideshare quote or booking is made.</p>
+<p>Use the restaurant selection above first if you want its exact meal window included. Otherwise the meal is an allowance with no venue. The example map destination is Federation Square; it does not assert that the fictional concert or restaurant exists there. Bike + train map links open transit directions and still need cycling, carriage, transfer and last-service checks.</p>
+<details {% if not outing %}open{% endif %}><summary>Travel, dinner and buffers</summary>
+<form method="post" action="{% url 'outing_configure' selected_profile.pk plan.pk %}">{% csrf_token %}{{ outing_form.as_p }}<button>Build the full outing packet</button></form></details>
+{% if outing %}
+<p role="status"><strong>{% if outing_current %}Current rehearsal packet — no live delivery.{% else %}Packet is stale. Rebuild after the booking, meal, ticket or attendee change before approving any delivery.{% endif %}</strong></p>
+<p>One shared master busy block: <strong>{{ outing.occupied_start }} to {{ outing.occupied_end }}</strong> ({{ event.timezone }}). It spans the earliest departure to the latest return. Event start remains {{ event.start }}, with finish {{ event.end }}; doors unknown.</p>
+<p>{{ outing.meal_label }} · {{ outing.dinner_start }}–{{ outing.dinner_end }}. Return travel begins {{ outing.return_departure }}.</p>
+<table><thead><tr><th>Participant</th><th>Outward</th><th>Return</th><th>Estimate and storage</th></tr></thead><tbody>
+{% for person in outing.people %}<tr><td>{{ person.label }}<br>{{ person.origin_label }}</td><td>{{ person.out_label }}<br>{{ person.depart }}<br>{{ person.out_minutes }} min + {{ person.handling_minutes }} handling</td><td>{{ person.return_label }}<br>Home {{ person.home }}<br>{{ person.return_minutes }} min + {{ person.handling_minutes }} handling</td><td>AUD {{ person.fare|default:'unknown' }} — estimate, not quote.<br>{{ person.parking|default:'Parking/storage unverified' }}{% if person.park_bike %}<br>Collect bike at the same origin station.{% endif %}<br><a href="{{ person.out_map }}" target="_blank" rel="noopener noreferrer">Map outward example</a> · <a href="{{ person.return_map }}" target="_blank" rel="noopener noreferrer">Map return example</a></td></tr>{% endfor %}
+</tbody></table>
+<h3>Shared calendar preview</h3>
+<p>Every invitee receives the same shared description. Private origins, individual map links, booking references and ticket QR/barcodes are excluded. The same calendar identity is updated or cancelled, preserving the existing receipt history and one busy block.</p>
+<pre style="white-space:pre-wrap">{{ outing.shared }}</pre>
+<p>Disruption checks remain inactive. The two-hour outward and return windows will require a dated saved journey, live data coverage, durable scheduling and a verified delivery channel.</p>
+{% for row in packet_emails %}<details><summary>Private email packet for {{ row.person.label }} — {{ row.preview.to }}</summary>
+<p><strong>Only this recipient sees this addressed supplement.</strong> Other participants’ origins, mailboxes and ticket links are absent. This is a preview in your Cabinet; it has not been emailed.</p>
+<p>Subject: {{ row.preview.subject }}</p><pre style="white-space:pre-wrap">{{ row.preview.body }}</pre>
+{% for item in row.preview.attachments %}<p>Verified issuer metadata: {{ item.filename }} · {{ item.mime }} · {{ item.bytes }} bytes · expires {{ item.expires_at }}. <a href="{{ item.url }}" target="_blank" rel="noopener noreferrer">Open this recipient’s issuer PDF link</a>. No PDF bytes have been copied or attached by Cabinet.</p>{% empty %}<p>Ticket PDFs unavailable for this recipient. No generated ticket, barcode or Wallet pass.</p>{% endfor %}
+{% if row.receipt %}<p>Email outcome: {{ row.receipt.state }} (simulated). A retained failure or unknown outcome is not retried automatically.</p>
+{% elif owner_current and ticket.purchase_state == 'confirmed' %}<form method="post" action="{% url 'event_plan_action' selected_profile.pk plan.pk %}">
+{% include 'cabinet/event_plan_fields.html' with consent='Rehearse sending only this displayed private packet to this exact fictional mailbox.' %}
+<input type="hidden" name="recipient" value="{{ row.person.id }}"><input type="hidden" name="packet_digest" value="{{ row.preview.digest }}"><button name="action" value="packet_email">Rehearse email packet to {{ row.preview.to }}</button></form>
+{% else %}<p>Confirm the booking and current master calendar block in rehearsal first.</p>{% endif %}
+</details>{% endfor %}
+{% for receipt in packet_email_unknown %}<form method="post" action="{% url 'event_plan_action' selected_profile.pk plan.pk %}">
+<p>Uncertain email outcome for {{ receipt.payload.to }}. Check this existing delivery; do not send again.</p>
+{% include 'cabinet/event_plan_fields.html' with consent='Read existing fictional delivery evidence without sending another email.' %}
+<input type="hidden" name="receipt" value="{{ receipt.key }}"><button name="action" value="reconcile_email">Reconcile email outcome</button></form>{% endfor %}
+{% endif %}
+<p>Live Gmail/Google Calendar backend access is not connected. Account connectors in the assistant do not grant this web app OAuth access. Live ticket files, recipient permissions and a selected outing still need verification; no calendar/email action or reservation follows from editing this packet.</p>
+</section>

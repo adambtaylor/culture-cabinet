@@ -1,0 +1,25 @@
+/* Native cabinet and disclosure presentation; no script or external asset. */
+.cabinet-entry-link { margin-block: 1.25rem 2rem; padding: 1rem; border: 1px solid #b7ac94; }
+.cabinet-entry h1, .cabinet-header h1 { font-size: clamp(2rem, 5vw, 3.5rem); }
+.cabinet-entry label { margin-top: 1rem; }
+.cabinet-entry button { margin-top: 1rem; }
+.cabinet-action { display: inline-block; border: 2px solid var(--green); padding: .65rem 1rem; font-weight: bold; }
+.cabinet-categories { margin: 1.5rem 0; gap: .5rem 1rem; border-block: 1px solid var(--line); padding-block: .5rem; }
+.cabinet-categories [aria-current] { font-weight: bold; text-decoration-thickness: .2em; }
+.cabinet-category { margin-block: 2rem; }
+.cabinet-category-status { max-width: 48rem; }
+.cabinet-cards { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 1.25rem; }
+.cabinet-card { min-width: 0; overflow-wrap: anywhere; }
+.cabinet-card h3 { margin: 0 0 .5rem; font-size: 1.5rem; }
+.cabinet-card h4 { margin-bottom: .5rem; }
+.cabinet-provenance, .cabinet-facts { font-size: 1rem; }
+.cabinet-provenance > div, .cabinet-facts > div { margin-bottom: .65rem; }
+.cabinet-provenance dd, .cabinet-facts dd { white-space: normal; }
+.cabinet-evidence { font-size: .95rem; }
+.enhancement input[type="checkbox"] { width: 1.25rem; min-height: 1.25rem; margin-right: .5rem; vertical-align: middle; }
+.enhancement textarea[readonly] { overflow-wrap: anywhere; }
+@media (max-width: 48rem) { .cabinet-cards { grid-template-columns: minmax(0, 1fr); } }
+
+.cabinet-check { display: block; font-size: 1rem; margin-block: .75rem; }
+.cabinet-check input[type="checkbox"] { width: 1.25rem; min-height: 1.25rem; margin-right: .5rem; vertical-align: middle; }
+.cabinet-consent fieldset { margin-block: 1.25rem; }

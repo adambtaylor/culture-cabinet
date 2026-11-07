@@ -1,0 +1,7 @@
+<nav class="media-sidebar" aria-label="Browse media">
+  <a href="{% url 'profile_catalogue' selected_profile.pk %}?queue=all"{% if queue == 'all' %} aria-current="page"{% endif %}>All</a>
+  <a href="{% url 'profile_catalogue' selected_profile.pk %}?queue=book"{% if queue == 'book' %} aria-current="page"{% endif %}>Books</a>
+  <a href="{% url 'profile_catalogue' selected_profile.pk %}?queue=movie"{% if queue == 'movie' %} aria-current="page"{% endif %}>Movies</a>
+  <a href="{% url 'profile_catalogue' selected_profile.pk %}?queue=tv"{% if queue == 'tv' %} aria-current="page"{% endif %}>Series</a>
+  <a href="{% url 'discovery_profile' selected_profile.pk %}?mode=household&amp;queue=artist"{% if queue == 'artist' %} aria-current="page"{% endif %}>Music (Bands)</a>
+</nav>

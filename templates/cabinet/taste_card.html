@@ -1,0 +1,24 @@
+<article class="paper-panel provider-card">
+<p class="eyebrow">{{ row.card.medium }} · {{ row.card.source }}</p>
+<h3>{{ row.card.title }}</h3>
+{% if row.why %}<ul>{% for reason in row.why %}<li>{{ reason }}</li>{% endfor %}</ul>{% endif %}
+{% if row.card.date_label %}<p>{{ row.card.date_label }} · {{ row.card.source_date|default_if_none:'date unknown' }} · {{ row.card.venue }}</p>{% endif %}
+{% if row.card.source_publication %}<p>Announcement published: {{ row.card.source_publication }}. This is not the event date.</p>{% endif %}
+{% if row.card.source_build %}<p>Feed updated: {{ row.card.source_build }}</p>{% endif %}
+{% if row.card.source_freshness %}<p>{{ row.card.source_freshness }}</p>{% endif %}
+{% if row.card.location_status == 'undisclosed' %}<p>Location undisclosed; check the organiser's public announcement.</p>{% endif %}
+{% for attribute,wording in row.card.source_attributes %}<p>Source describes {{ attribute }}: “{{ wording }}”.</p>{% endfor %}
+{% if row.card.availability %}<p>{{ row.card.availability }}</p>{% endif %}
+<p>Interest: <strong>{{ row.ratings.interest|default:'not rated' }}</strong> · Enjoyment: <strong>{{ row.ratings.enjoyment|default:'not rated' }}</strong> · {% if row.saved %}Favourited{% else %}Not favourited{% endif %}</p>
+<form method="post" action="{% url 'taste_action' selected_profile.pk %}">
+{% include 'cabinet/taste_fields.html' %}<input type="hidden" name="operation" value="rate"><input type="hidden" name="key" value="{{ row.card.key }}">
+<label>What this rating means <select name="basis"><option value="interest">Anticipated interest</option><option value="enjoyment">Experienced enjoyment</option></select></label>
+<p><label><input type="checkbox" name="experienced"> I have experienced this — attended it, if it is an event. Required for enjoyment.</label></p>
+<p class="rating-scale-label">1 = low · 5 = high</p>
+<div class="rating-scale" role="group" aria-label="Rate {{ row.card.title }} from one to five">{% for number in '12345' %}<button name="value" value="{{ number }}" aria-label="{{ number }} out of 5 for {{ row.card.title }}">{{ number }}</button>{% endfor %}</div>
+<button name="value" value="">Clear selected rating</button>
+</form>
+<form method="post" action="{% url 'taste_action' selected_profile.pk %}">{% include 'cabinet/taste_fields.html' %}<input type="hidden" name="key" value="{{ row.card.key }}"><button name="operation" value="{% if row.saved %}unsave{% else %}save{% endif %}">{% if row.saved %}Remove favourite{% else %}Favourite independently{% endif %}</button> <button name="operation" value="funnel_skip">Skip for this round</button></form>
+{% if row.card.url %}<p><a href="{{ row.card.url }}" target="_blank" rel="noopener noreferrer" referrerpolicy="no-referrer">Explore the source</a></p>{% endif %}
+<p class="source-meta">{{ row.card.provenance }} · source read {{ row.card.fetched_at|default_if_none:'unknown' }}. A rating is your statement, not a claim of current availability.</p>
+</article>

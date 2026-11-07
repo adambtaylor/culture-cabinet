@@ -1,0 +1,9 @@
+{% extends enhancement_base|default:'provider_base.html' %}
+{% block title %}Enhance my picks{% endblock %}
+{% block content %}
+<h1>Enhance my picks</h1>
+{% include 'cabinet/enhancement_status.html' %}
+{% if enhancement.schema == 'enhance/v1' %}<p>API collection and enrichment come before reviewed inference. A pending stage is not a changed Cabinet; category outcomes show partial coverage and older retained picks.</p>{% else %}<p>Queued or awaiting an authorized worker means the model result is still pending. Picks change only after a verified actual result is applied.</p>{% endif %}
+{% if cabinet_url %}<p><a href="{{ cabinet_url }}">Return to your cabinet</a>. This reads the current permitted publication; pending or failed work does not replace it.</p>{% endif %}
+{% if catalogue_url %}<p><a href="{{ catalogue_url }}">Return to your picks</a></p>{% endif %}
+{% endblock %}

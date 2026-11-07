@@ -1,0 +1,49 @@
+{% extends 'base.html' %}
+{% block title %}Fictional catalogue{% endblock %}
+{% block navigation %}
+<nav aria-label="Cabinet">
+  <a href="{% url 'profiles' %}">Choose a profile</a>
+  <form method="post" action="{% url 'logout' %}">{% csrf_token %}<button class="quiet" type="submit">Log out</button></form>
+</nav>
+{% endblock %}
+{% block content %}
+<p class="eyebrow">The cabinet / a fictional collection</p>
+<h1>Small wonders,<br>all imagined.</h1>
+<p class="context">Profile context: <strong>{{ selected_profile.label }}</strong></p>
+<p class="lede">Three little departures from the everyday. Every title and description here is invented.</p>
+<section aria-labelledby="collection-heading">
+  <div class="section-rule"><h2 id="collection-heading">Inside this cabinet</h2><span aria-hidden="true">№ 01—03</span></div>
+  <div class="cards">
+  {% for row in feedback_cards %}
+    <article class="card">
+      <div class="card-mark" aria-hidden="true">{{ forloop.counter|stringformat:'02d' }}</div>
+      <p class="eyebrow">{{ row.card.category }}</p>
+      <h3>{{ row.card.title }}</h3>
+      <p>{{ row.card.description }}</p>
+      <p><a href="{{ row.feedback_url }}">Feedback for {{ row.card.title }}</a></p>
+      {% if row.summary %}
+      <ul class="card-summary">
+      {% for statement in row.summary %}
+        <li>{% if statement.signal == 'enjoyment' %}Experienced enjoyment{% elif statement.signal == 'interest' %}Future interest{% elif statement.signal == 'familiarity' %}Familiarity{% elif statement.signal == 'saved' %}Saved{% elif statement.signal == 'skipped' %}Skipped{% elif statement.signal == 'opened' %}Explicitly opened{% elif statement.signal == 'completion' %}Completion{% elif statement.signal == 'constraint' %}Practical constraint{% elif statement.signal == 'visibility' %}Visibility{% elif statement.signal == 'legacy_rating' %}Legacy rating (basis unknown){% elif statement.signal == 'legacy_state' %}Legacy state{% elif statement.signal == 'seed_statement' %}Attributed statement{% endif %}:
+        {% if statement.value == None %}No current value.
+        {% elif statement.signal == 'enjoyment' %}{{ statement.value.value }} out of 5 · after experience.
+        {% elif statement.signal == 'legacy_rating' %}{{ statement.value.value }} out of 5 · basis unknown · {{ statement.value.labels.hint }}.
+        {% elif statement.signal == 'interest' %}{{ statement.value.value|capfirst }} · anticipated.
+        {% elif statement.signal == 'constraint' %}{{ statement.value.text }}
+        {% elif statement.signal == 'seed_statement' %}{{ statement.value.text }} — {{ statement.value.attribution }}
+        {% elif statement.signal == 'saved' or statement.signal == 'skipped' or statement.signal == 'opened' %}{{ statement.value.value|yesno:'Yes,No' }}
+        {% elif statement.signal == 'completion' and statement.value.value == 'not_started' %}Not started
+        {% elif statement.signal == 'completion' and statement.value.value == 'in_progress' %}In progress
+        {% else %}{{ statement.value.value|capfirst }}{% endif %}</li>
+      {% endfor %}
+      </ul>
+      {% endif %}
+      <p class="card-foot">An invented work</p>
+    </article>
+  {% empty %}
+    <p>No works visible in this cabinet.</p>
+  {% endfor %}
+  </div>
+</section>
+<p class="endnote">You’ve reached the end of this little collection.</p>
+{% endblock %}

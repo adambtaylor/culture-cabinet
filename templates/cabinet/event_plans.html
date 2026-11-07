@@ -1,0 +1,29 @@
+{% extends 'provider_base.html' %}
+{% block title %}Event plans{% endblock %}
+{% block content %}
+<h1>Plan an evening together</h1>
+<p>Save real source planning holds or try the separate fictional booking rehearsal. No account action occurs simply by saving a plan.</p>
+<section class="paper-panel"><h2>Live booking awaits connection</h2>
+<p>Events discovered in your Cabinet remain source references. Before booking, we need the exact session, an official seller quote including fees and refund restrictions, and booking confirmation from that seller.</p>
+<p>Your calendar and selected contacts also need a verified connection and your approval. Friends receive standard invitations and choose whether to accept; the app cannot place entries directly in their calendars.</p>
+<button disabled>Book a live event · not connected</button></section>
+<h2>Your real source planning holds</h2>
+<p>From Music &amp; events, read a listing and its details, open Date night, then explicitly save your estimates. Saved holds are unbooked and can produce tentative calendar files and owner email packets without new credentials.</p>
+{% for plan in plans %}{% if plan.data.kind == 'source_planning_hold' %}<p><a href="{% url 'event_plan' selected_profile.pk plan.pk %}">{{ plan.data.source.title }} · {{ plan.data.source.date }}</a> · unbooked source hold</p>{% endif %}{% endfor %}
+<h2>Your rehearsal plans</h2>
+{% for plan in plans %}{% if plan.mode == 'sample' %}<p><a href="{% url 'event_plan' selected_profile.pk plan.pk %}">{{ plan.data.ticket.offer.event.title }} · {{ plan.data.ticket.offer.event.start }}</a> · simulated purchase: {{ plan.data.ticket.purchase_state }}</p>{% endif %}{% empty %}<p>No plans yet.</p>{% endfor %}
+{% if ready %}<h2>Try the complete workflow</h2>
+<form method="post" action="{% url 'event_plan_start' selected_profile.pk %}" class="paper-panel">
+{% csrf_token %}
+<p><label>Exact session <select name="session_id">{% for event in sessions %}<option value="{{ event.session_id }}">{{ event.title }} · {{ event.start }} · {{ event.timezone }}</option>{% endfor %}</select></label></p>
+<p><label>Ticket quantity, including yourself <input type="number" name="quantity" min="1" max="10" value="2" required></label></p>
+<fieldset><legend>Selected friends · fictional mailboxes</legend>
+{% for contact in contacts %}<p><label><input type="checkbox" name="contacts" value="{{ contact.recipient_id }}"> {{ contact.label }} — {{ contact.address }}</label></p>{% endfor %}
+</fieldset>
+<details><summary>Rehearsal responses</summary>
+<p><label>Seller response <select name="purchase_scenario">{% for scenario in scenarios %}<option>{{ scenario }}</option>{% endfor %}</select></label></p>
+<p><label>Calendar response <select name="calendar_scenario">{% for scenario in scenarios %}<option>{{ scenario }}</option>{% endfor %}</select></label></p>
+<p>“unknown_then_confirmed” needs another evidence check. It never resubmits a purchase or invitation.</p></details>
+<button>Review fictional quote and attendees</button>
+</form>{% else %}<p role="status">This preview cannot save event plans until the candidate’s storage update is approved and applied.</p>{% endif %}
+{% endblock %}

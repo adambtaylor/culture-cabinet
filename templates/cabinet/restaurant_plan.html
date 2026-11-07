@@ -1,0 +1,53 @@
+<section class="paper-panel"><h2>Build the evening around an available table</h2>
+<p><strong>Restaurant rehearsal · fictional venue, menu, availability and confirmations.</strong> Live booking is not connected. No reservation, charge or personal-data transfer occurs here.</p>
+<p>The table and event share this plan. Alternative event dates can change an unapproved ticket selection; approved or submitted tickets stay fixed. Dining party size is separate from ticket quantity and friend invitations.</p>
+{% if restaurant.wish %}<h3>Your words</h3><blockquote>{{ restaurant.wish }}</blockquote><p>Saved exactly as you wrote them; options below are suggestions, not inferred preferences.</p>{% endif %}
+{% if restaurant_editable %}
+<details {% if not restaurant %}open{% endif %}><summary>What would make this evening work?</summary>
+<form method="post" action="{% url 'restaurant_action' selected_profile.pk plan.pk %}">
+{% include 'cabinet/event_plan_fields.html' with consent='Use these constraints for a fictional availability search. Refreshing discards earlier table approval.' %}
+<p><label>Your wish (optional) <textarea name="wish" maxlength="500">{{ restaurant.wish }}</textarea></label></p>
+<p><label>Dining party size <input name="party_size" type="number" min="1" max="10" value="{{ restaurant.constraints.party_size|default:2 }}" required></label>
+<label><input name="vegetarian" type="checkbox" {% if not restaurant or restaurant.constraints.vegetarian %}checked{% endif %}> Vegetarian menu choices required</label></p>
+<p>Exact branch: SYNTHETIC Garden · Carlton branch, fictional Carlton address.</p>
+<p><label>From <select name="date_from"><option value="2027-01-15">15 January 2027</option><option value="2027-01-16" {% if restaurant.constraints.date_from == '2027-01-16' %}selected{% endif %}>16 January 2027</option></select></label>
+<label>Through <select name="date_to"><option value="2027-01-15" {% if restaurant.constraints.date_to == '2027-01-15' %}selected{% endif %}>15 January 2027</option><option value="2027-01-16" {% if not restaurant or restaurant.constraints.date_to == '2027-01-16' %}selected{% endif %}>16 January 2027</option></select></label></p>
+<p>All times Australia/Melbourne. These two dates are fictional rehearsal sessions.</p>
+<p><label>Earliest <select name="earliest"><option>17:30</option><option {% if restaurant.constraints.earliest == '18:00' %}selected{% endif %}>18:00</option><option {% if restaurant.constraints.earliest == '18:30' %}selected{% endif %}>18:30</option></select></label>
+<label>Latest <select name="latest"><option {% if restaurant.constraints.latest == '17:30' %}selected{% endif %}>17:30</option><option {% if restaurant.constraints.latest == '18:00' %}selected{% endif %}>18:00</option><option {% if not restaurant or restaurant.constraints.latest == '18:30' %}selected{% endif %}>18:30</option></select></label>
+<label>Preferred <select name="preferred"><option {% if restaurant.constraints.preferred == '17:30' %}selected{% endif %}>17:30</option><option {% if restaurant.constraints.preferred == '18:00' %}selected{% endif %}>18:00</option><option {% if not restaurant or restaurant.constraints.preferred == '18:30' %}selected{% endif %}>18:30</option></select></label></p>
+<p><label>Meal minutes <input name="meal_minutes" type="number" min="45" max="150" value="{{ restaurant.constraints.meal_minutes|default:60 }}" required></label>
+<label>Restaurant to event minutes <input name="travel_minutes" type="number" min="0" max="120" value="{% if restaurant %}{{ restaurant.constraints.travel_minutes }}{% else %}20{% endif %}" required></label>
+<label>Arrival buffer minutes <input name="buffer_minutes" type="number" min="0" max="90" value="{% if restaurant %}{{ restaurant.constraints.buffer_minutes }}{% else %}10{% endif %}" required></label></p>
+<p>Travel and buffers are your planning assumptions, not verified routes. Event start and finish are shown above; doors time is unknown. Outbound/return PTV, bicycle rules, last service, weather, separate origins and after-drinks are not yet checked.</p>
+<p><label>Rehearsal reservation response <select name="scenario"><option>confirmed</option><option {% if restaurant.scenario == 'unknown_then_confirmed' %}selected{% endif %}>unknown_then_confirmed</option><option {% if restaurant.scenario == 'unknown' %}selected{% endif %}>unknown</option><option {% if restaurant.scenario == 'failed' %}selected{% endif %}>failed</option></select></label></p>
+<button name="action" value="search">Find fictional tables and matching sessions</button></form></details>
+{% endif %}
+{% if restaurant %}
+<p>Availability observed {{ restaurant.searched_at }}. A fresh listing is not a held table. Fictional menu shows vegetarian choices; this is not dietary accommodation confirmed by a real restaurant. Restaurant reviews and real opening hours remain unchecked.</p>
+{% if restaurant_editable %}
+{% for option in restaurant_options %}<article><h3>{{ option.offer.start }} · {{ option.offer.branch }}</h3>
+<p>{{ option.offer.party_size }} diners · meal ends {{ option.offer.end }} · event {{ option.event.start }} to {{ option.event.end }}. {{ restaurant.constraints.travel_minutes }} minutes to event + {{ restaurant.constraints.buffer_minutes }} minute arrival buffer.</p>
+<p>Available in the fixture · expires {{ option.offer.expires_at }}. Deposit {{ option.offer.currency }} {{ option.offer.deposit }}; meal total, drinks and transit fares unknown.</p>
+<form method="post" action="{% url 'restaurant_action' selected_profile.pk plan.pk %}">{% include 'cabinet/event_plan_fields.html' with consent='Choose this exact table and compatible event session for review. This does not reserve either.' %}<input type="hidden" name="offer_key" value="{{ option.offer.key }}"><button name="action" value="choose">Review this evening</button></form></article>
+{% empty %}<p>No current compatible tables in this bounded search. Adjust dates/times/buffers or refresh expired observations; no availability is inferred.</p>{% endfor %}
+<details><summary>All observed availability, including exclusions</summary>{% for row in restaurant.observations %}<p>{{ row.start }} · {{ row.availability }} (fictional). Only fresh available tables fitting the event and buffers appear as options.</p>{% endfor %}</details>
+{% endif %}
+<p>Restaurant state: <strong>{{ restaurant.state }}</strong> (simulated).</p>
+{% if restaurant_offer %}<h3>Exact reservation preview</h3>
+<p>{{ restaurant_offer.branch }} · {{ restaurant_offer.address }} · {{ restaurant_offer.party_size }} diners · {{ restaurant_offer.start }} to {{ restaurant_offer.end }} · {{ restaurant_offer.timezone }}.</p>
+<p>Dietary request: {% if restaurant.constraints.vegetarian %}vegetarian choices required{% else %}none specified{% endif %}. No names, contact details or payment data have been supplied.</p>
+<p>Deposit {{ restaurant_offer.currency }} {{ restaurant_offer.deposit }}. {{ restaurant_offer.cancellation_terms }}</p>
+<p>Menu reference: <code>{{ restaurant_offer.menu_source }}</code>. Booking reference: <code>{{ restaurant_offer.booking_source }}</code> (fictional).</p>
+{% if not restaurant_compatible %}<p role="alert">The event changed or was cancelled. Review the restaurant separately; no reservation has been updated, cancelled or refunded.</p>{% endif %}
+{% if restaurant.state == 'selected' or restaurant.state == 'approved' %}
+{% if restaurant_current and restaurant_compatible %}
+<form method="post" action="{% url 'restaurant_action' selected_profile.pk plan.pk %}">{% include 'cabinet/event_plan_fields.html' with consent='Approve this exact branch, date, time, party size, dietary request, deposit and cancellation terms in rehearsal.' %}
+{% if restaurant.state == 'selected' %}<button name="action" value="approve">Approve fictional reservation details</button>{% else %}<button name="action" value="reserve">Rehearse one reservation request</button>{% endif %}</form>
+{% else %}<p>Refresh and review the table before proceeding.</p>{% endif %}
+{% elif restaurant.state == 'unknown' %}<p>Outcome unknown. The saved request cannot be sent again.</p><form method="post" action="{% url 'restaurant_action' selected_profile.pk plan.pk %}">{% include 'cabinet/event_plan_fields.html' with consent='Check this existing fictional reservation without creating another.' %}<button name="action" value="reconcile">Check reservation evidence</button></form>
+{% elif restaurant.state == 'confirmed' %}<p>Simulated restaurant confirmation: {{ restaurant.evidence.reference }}. Ticket purchase, calendar and invitations remain separate approvals. This restaurant component is not yet included in calendar exports.</p>
+{% elif restaurant.state == 'failed' %}<p>Simulated definite failure. Receipt retained; no automatic retry.</p>{% endif %}
+{% endif %}{% endif %}
+<p>You can leave the evening open by stopping here. There is no chasing, recurring search or automatic booking.</p>
+</section>

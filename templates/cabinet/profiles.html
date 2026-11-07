@@ -1,0 +1,22 @@
+{% extends 'base.html' %}
+{% block title %}Choose a profile{% endblock %}
+{% block navigation %}
+<nav aria-label="Cabinet"><form method="post" action="{% url 'logout' %}">{% csrf_token %}<button class="quiet" type="submit">Log out</button></form></nav>
+{% endblock %}
+{% block content %}
+<p class="eyebrow">The cabinet / profile context</p>
+<h1>Which shelf today?</h1>
+<p class="lede">Choose an available profile to enter the fictional catalogue.</p>
+<div class="profile-list">
+{% for profile in profile_options %}
+<form class="profile-panel" method="post" action="{% url 'select_profile' %}">
+  {% csrf_token %}
+  <h2>{{ profile.label }}</h2>
+  <p>A context for this visit. The invented collection is shared.</p>
+  <button type="submit" name="profile_id" value="{{ profile.pk }}">Choose {{ profile.label }} <span aria-hidden="true">→</span></button>
+</form>
+{% empty %}
+<section class="paper-panel"><h2>No profile available</h2><p>There is no available profile for this login. You can log out above.</p></section>
+{% endfor %}
+</div>
+{% endblock %}

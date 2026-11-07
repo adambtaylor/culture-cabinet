@@ -1,0 +1,24 @@
+{% load static %}<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{% block title %}Culture Cabinet{% endblock %} · Synthetic demo</title>
+  <link rel="stylesheet" href="{% static 'cabinet.css' %}">
+</head>
+<body>
+  <a class="skip-link" href="#main">Skip to content</a>
+  <div class="demo-banner">Synthetic demo · P1.1-02 · Entirely fictional</div>
+  <header class="masthead">
+    <p class="wordmark">Culture <span>Cabinet</span></p>
+    <p class="masthead-note">A little room for imagined things.</p>
+    {% block navigation %}{% endblock %}
+  </header>
+  <main id="main" tabindex="-1">{% block content %}{% endblock %}</main>
+  <footer class="colophon">
+    <span class="stamp">Fiction only</span>
+    <p>A finite fictional catalogue with profile-specific feedback.<br>
+    Fictional inputs only. No live discovery.</p>
+  </footer>
+</body>
+</html>

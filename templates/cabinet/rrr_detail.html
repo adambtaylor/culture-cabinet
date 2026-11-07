@@ -1,0 +1,12 @@
+{% if event.detail_status %}
+<p role="status">Triple R detail · {{ event.detail_status }} · Checked: {{ event.detail_checked_at }}<br>{{ event.detail_message }}</p>
+{% if event.details %}
+<p>Original listing date: {{ event.listed_date }}<br>Detail date/time: {{ event.details.when }}</p>
+{% if event.details.start_date %}<p>Explicit source start date: {{ event.details.start_date }}{% if event.details.end_date %} · End date: {{ event.details.end_date }}{% endif %}</p>{% endif %}
+{% if event.details.start_time %}<p>Source clock time: {{ event.details.start_time }}{% if event.details.end_time %}–{{ event.details.end_time }}{% endif %} · Timezone unverified</p>{% endif %}
+<p>Detail venue: {{ event.details.venue|default:'unknown' }}{% if event.details.address %}<br>{{ event.details.address }}{% endif %}</p>
+{% if event.details.more_info_url %}<p><a href="{{ event.details.more_info_url }}" target="_blank" rel="noopener noreferrer" referrerpolicy="no-referrer">Triple R’s “More info” link</a> · Destination and ticket availability unverified.</p>
+{% else %}<p>No supported “More info” link in this detail response. Check the Triple R page.</p>{% endif %}
+<p>Detail retrieved: {{ event.details.retrieved_at }}. Details expire with the original listing; this read does not refresh the listing.</p>
+{% endif %}
+{% else %}<p>Detail date, time, address and external link have not been read.</p>{% endif %}

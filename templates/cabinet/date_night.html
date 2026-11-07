@@ -1,0 +1,63 @@
+{% extends 'provider_base.html' %}
+{% load tz %}
+{% block title %}An evening around {{ event.title }}{% endblock %}
+{% block content %}{% timezone 'Australia/Melbourne' %}
+<p><a href="{% url 'discovery_profile' profile_id %}">Back to Music &amp; events</a></p>
+<h1>An evening around {{ event.title }}</h1>
+<p><strong>Real source listing · proposed journey · no booking.</strong> This is a temporary discovery preview. Seller-confirmed sessions are still required before the existing booking and calendar workflow can activate.</p>
+<section class="paper-panel"><h2>The event anchor</h2>
+<p>{{ event.listed_date }} · {{ event.venue|default:'Venue not supplied' }}.</p>
+{% if event.details %}<p>{{ event.details.address }}<br>Source time label {{ event.details.time_label|default:'unknown' }} · explicit doors {{ event.details.doors_time|default:'unknown' }} · explicit show {{ event.details.show_time|default:'unknown' }}. Finish unknown.</p>{% else %}<p>Time, doors, finish and address remain unknown. Read the event detail from Music &amp; events for any explicit source wording.</p>{% endif %}
+<p>Listed price: {{ event.price_label|default:'unknown' }}. This is not an all-in quote or available ticket.</p>
+<p><a href="{{ event.url }}" target="_blank" rel="noopener noreferrer">Read the original Beat listing and seller links</a> · retrieved {{ event.retrieved_at }}. Cancellation status unverified. Cached facts expire after 15 minutes; opening this page does not refresh the source.</p>
+</section>
+<section class="paper-panel"><h2>Propose the journey</h2>
+<p>Batman, Coburg and Merlynston are your candidate stations; the other stations are public examples. They are not your home, workplace or Lisa’s location. A chosen arrival station is not a claim that it is nearest or connected to this venue. Comparing locally makes no provider request. Optional Google Maps links share your entered cycle origin only when you open them.</p>
+<p>Planning timezone: Australia/Melbourne. This is an explicit planning assumption, not a timezone assertion from Beat. Minutes are your estimates, including transfers and walking/cycling; they are not timetable results.</p>
+<form method="post">{% csrf_token %}{{ form.as_p }}<button name="intent" value="preview">Compare this proposed outward and return journey</button> <button name="intent" value="save_hold">Save an unbooked planning hold</button></form>
+{% if existing_hold %}<p><a href="{% url 'event_plan' profile_id existing_hold.pk %}">Open your saved source planning hold</a></p>{% endif %}
+</section>
+{% if proposal %}
+<section class="paper-panel"><h2>Your proposed evening</h2>
+<p role="status"><strong>{% if proposal.blocked %}Bicycle or source-guidance constraint blocks this proposal.{% else %}Proposed only — no timed journey verified.{% endif %}</strong></p>
+<p>Event clock: {{ proposal.start|date:'D j M Y H:i'|default:'unknown' }} ({{ proposal.start_basis }}; Australia/Melbourne). Source finish remains unknown.</p>
+<h3>Outward</h3>
+<p>{{ proposal.origin }} → {{ proposal.arrival }} → {{ event.venue|default:'venue still to resolve' }}. Route, interchange and final venue connection unverified.</p>
+<p>{{ proposal.outward.status }}: {{ proposal.outward.message }}</p>
+{% if proposal.depart %}<p>Using your {{ proposal.values.outward_minutes }} minute estimate, {{ proposal.values.lock_minutes }} minute handling allowance and {{ proposal.values.arrival_buffer }} minute arrival buffer, proposed departure by <strong>{{ proposal.depart|date:'D j M H:i' }}</strong> (Australia/Melbourne).</p>{% else %}<p>No departure deadline can be calculated until a show time or explicit planning assumption is supplied.</p>{% endif %}
+{% if proposal.companion_origin %}<p>Optional companion example: {{ proposal.companion_origin }} → same chosen arrival station, using {{ proposal.values.companion_minutes }} estimated minutes{% if proposal.companion_depart %}; proposed departure {{ proposal.companion_depart|date:'D j M H:i' }}{% endif %}. No invitation, location lookup or assumption of attendance.</p>{% endif %}
+<h3>Return</h3>
+<p>{{ event.venue|default:'venue' }} → {{ proposal.arrival }} → {{ proposal.origin }}. Preferred leave time <strong>{{ proposal.leave|date:'D j M H:i' }}</strong>, estimated arrival at the example origin {{ proposal.return_arrival|date:'D j M H:i' }} (Australia/Melbourne). This is not the event finish or a verified last train.</p>
+<p>{{ proposal.returning.status }}: {{ proposal.returning.message }}</p>
+{% if proposal.parked_bike_station %}<p><strong>Parked-bike constraint:</strong> return to {{ proposal.parked_bike_station }} to collect the bicycles. A journey ending at a different station does not complete this plan. Add the cycle home after collection; its route and time remain unverified.</p>{% endif %}
+<p>Your selected occasion: {{ proposal.values.occasion|default:'undecided' }}. This temporary choice does not change favourites or infer Lisa’s attendance.</p>
+{% if proposal.cycle_links %}<h3>Look up cycling routes</h3><p>Opening these links sends your entered origin and the named station to Google Maps. Cabinet has not fetched a route or stored that origin. Check route identification and current conditions; copy the displayed cycling estimates into the comparison if useful.</p><ul>{% for link in proposal.cycle_links %}<li>{{ link.station }}: <a href="{{ link.outward }}" target="_blank" rel="noopener noreferrer">Cycle to station in Google Maps</a> · <a href="{{ link.returning }}" target="_blank" rel="noopener noreferrer">Cycle back from the same station</a></li>{% endfor %}</ul>{% endif %}
+<h3>Compare the three origin stations</h3>
+<p>Enter separate cycle-to-station and onward estimates above. Cabinet does not store or geocode the optional origin; Google receives it only if you open its route links. Waiting, transfers and the last venue connection belong in the onward estimate.</p>
+<table><thead><tr><th>Station</th><th>Cycle minutes</th><th>Onward minutes</th><th>Total with allowances</th><th>Bike collection</th></tr></thead><tbody>
+{% for row in proposal.station_comparison.rows %}<tr><td>{{ row.station }}</td><td>{{ row.cycle|default_if_none:'unknown' }}</td><td>{{ row.onward|default_if_none:'unknown' }}</td><td>{{ row.total|default_if_none:'incomplete' }}</td><td>{{ row.return_station|default:'Bicycle carried; check each mode' }}</td></tr>{% endfor %}
+</tbody></table>
+{% if proposal.station_comparison.winners %}<p>Lowest supplied estimate: {{ proposal.station_comparison.winners|join:', ' }}. {{ proposal.station_comparison.basis }} {% if not proposal.station_comparison.complete %}Some stations have incomplete estimates, so this is only a partial comparison.{% endif %} This comparison does not change the selected station or departure calculation above.</p>{% else %}<p>No station can be ranked until both estimates are supplied for at least one station.</p>{% endif %}
+<p>A shorter cycle does not necessarily win: train waits, transfers, bicycle handling and the venue connection can change the total. A blocked bicycle carriage option remains blocked regardless of its estimate. Check the return service and disruptions before choosing.</p>
+<h3>Before treating it as ready</h3>
+<p>Check both directions, transfers, last return, disruptions/replacement buses, bike space, walking/cycling access, weather and parking. If the bike cannot accompany a leg, revise the mode or plan to leave it parked outside ticketed areas. Parking availability and security have not been checked.</p>
+<p><a href="{{ proposal.journey_url }}" target="_blank" rel="noopener noreferrer">Open official Journey Planner</a> · <a href="{{ proposal.timetables_url }}" target="_blank" rel="noopener noreferrer">Official timetables</a> · <a href="{{ proposal.works_url }}" target="_blank" rel="noopener noreferrer">Maps and planned works</a></p>
+<p>These links send no saved origins or coordinates. Enter the public examples above yourself. Official guidance recommends checking the planner within 14 days to see planned-work service changes. No live routing API is connected.</p>
+<h3>Disruption alerts · not active</h3>
+<p>For a saved journey, the first check should be two hours before departure, then checks every five minutes until that leg departs. Outward and return checks use separate clocks. Only materially changed notices affecting the selected routes, stops or trips should alert you.</p>
+{% for window in proposal.watch_windows %}<p>Proposed {{ window.leg }} check window: {{ window.start|date:'D j M H:i' }}–{{ window.stop|date:'D j M H:i' }} (Australia/Melbourne; based on this proposal’s estimated times).</p>{% endfor %}
+<p><strong>No watch has been scheduled.</strong> This preview is not a saved, timed journey. Official data access, a durable scheduler and your chosen notification channel must be connected and tested first. The current demo expires independently; it cannot promise alerts after expiry.</p>
+<p>Coverage must include route-relevant cancellations, rail replacement, station closures and timetable/last-service impacts where the source supports them. Feed unavailable means unchecked, never “no disruptions”. Ordinary bikes cannot be carried on metropolitan replacement buses; any fallback still needs verification.</p>
+<p><a href="https://transport.vic.gov.au/disruptions/disruptions-information" target="_blank" rel="noopener noreferrer">Check official disruptions now</a> · <a href="https://transport.vic.gov.au/route/timetable/15/upfield-line" target="_blank" rel="noopener noreferrer">Upfield timetable and line information</a></p>
+<h3>Meal and optional drink</h3>
+<p>Restaurant branch, vegetarian menu, editorial review, table availability and after-drink venue are still unselected. <a href="{% url 'event_plans' profile_id %}">The restaurant reservation rehearsal</a> remains separate and fictional; it cannot book this live listing.</p>
+<p>Whole-evening cost: unknown. Listed admission is not a checkout quote; meal, drinks, fares, parking and other fees are unverified.</p>
+</section>
+{% endif %}
+<section class="paper-panel"><h2>Transport source and freshness</h2>
+<p><a href="{{ rules_url }}" target="_blank" rel="noopener noreferrer">Official bicycle rules</a> · reviewed {{ rules_reviewed_at|date:'j M Y' }}. Recheck current guidance; a review older than 30 days cannot support the proposal.</p>
+<p>Folding-bike guidance specifies a folded envelope of 82 × 69 × 39 cm and wheel rims no greater than 51 cm. Regional trains and coaches have different conditions and are outside this metropolitan proposal.</p>
+<p>Adapted guidance: © Copyright State of Victoria (Department of Transport and Planning), <a href="https://transport.vic.gov.au/website-terms/copyright" target="_blank" rel="noopener noreferrer">CC BY 4.0</a>. No current timetable, disruption, fare or weather data has been fetched.</p>
+</section>
+<p>You can leave this evening open. No recurring search, reservation, calendar change or invitation follows from viewing or editing this proposal.</p>
+{% endtimezone %}{% endblock %}

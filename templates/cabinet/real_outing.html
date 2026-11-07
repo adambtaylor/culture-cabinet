@@ -1,0 +1,27 @@
+{% extends 'provider_base.html' %}
+{% load tz %}
+{% block title %}Your saved outing hold{% endblock %}
+{% block content %}
+<p><a href="{% url 'event_plans' selected_profile.pk %}">All event plans</a></p>
+<h1>{{ source.title }}</h1>
+<p role="status"><strong>Real source · unbooked planning hold.</strong> This is your saved intention and travel estimate. No ticket, restaurant booking, invitation or automatic alert has been created.</p>
+<section class="paper-panel"><h2>Your occupied time</h2>
+{% timezone calendar.event.timezone %}<p>{{ occupied_start|date:"D j M, H:i" }}–{{ occupied_end|date:"D j M, H:i" }} · {{ calendar.event.timezone }}. Show time and preferred leaving time remain distinct in the packet below.</p>{% endtimezone %}
+<p>Source: <a href="{{ source.url }}" target="_blank" rel="noopener noreferrer">Read the original listing</a> · last read {{ source.retrieved_at }}. These are archived planning facts; check current session details and cancellation status before going.</p>
+<pre style="white-space:pre-wrap">{{ calendar.description }}</pre>
+<p>The optional precise cycling origin was not saved or included. Dinner, drinks, tickets, timetable verification and whole-night cost remain unconfirmed.</p>
+</section>
+<section class="paper-panel"><h2>Use the packet now</h2>
+<p>Download a tentative calendar file or an unsent email file. These use the real source and your selected times. Downloading performs no account write. An ICS import is a manual action in your calendar app; repeated imports can create duplicates in some clients. Keep one copy and use the recorded provider identity for later changes.</p>
+<form method="post" action="{% url 'real_outing_action' selected_profile.pk plan.pk %}">{% include 'cabinet/event_plan_fields.html' with consent='Export this exact private, unbooked planning hold as a tentative calendar file.' %}<button name="action" value="ics">Download calendar hold (.ics)</button></form>
+<form method="post" action="{% url 'real_outing_action' selected_profile.pk plan.pk %}">{% include 'cabinet/event_plan_fields.html' with consent='Download the displayed owner packet as an unsent email file, without a guessed recipient.' %}<button name="action" value="eml">Download unsent email (.eml)</button></form>
+</section>
+<section class="paper-panel"><h2>Use your connected Google account with Codex</h2>
+<p>The supported handoff targets your connected primary Google Calendar with no attendees, or sends the packet only to the connected Gmail account itself. Ask Codex to confirm the actual account and carry out the selected action. This app does not hold Google credentials or run those tools automatically.</p>
+<p>A reserved handoff is uncertain until Codex reads back the real provider record. It must be attempted at most once. If interrupted, reconcile the existing marker; do not create or send again. Changes to a reserved plan require that reconciliation and an update using the provider identity.</p>
+{% if not plan.data.handoffs.calendar %}<form method="post" action="{% url 'real_outing_action' selected_profile.pk plan.pk %}">{% include 'cabinet/event_plan_fields.html' with consent='Reserve one supervised handoff for this unbooked hold on my connected primary Google Calendar, with no friends invited. Actual account/action authorization is still checked by Codex before execution.' %}<button name="action" value="reserve_calendar">Prepare one calendar handoff</button></form>{% endif %}
+{% if not plan.data.handoffs.email %}<form method="post" action="{% url 'real_outing_action' selected_profile.pk plan.pk %}">{% include 'cabinet/event_plan_fields.html' with consent='Reserve one supervised handoff of this private packet to my connected Gmail account itself. Codex must check the account and action before sending.' %}<button name="action" value="reserve_email">Prepare one owner email handoff</button></form>{% endif %}
+{% for receipt in handoffs %}<h3>{{ receipt.kind }}: {{ receipt.state }}</h3><p>One attempt reserved. {% if receipt.observed_receipt %}A matching provider record was read back; this does not confirm booking or attendance.{% else %}No successful account action is verified.{% endif %}</p><p>Reconciliation marker: <code>{{ receipt.packet.marker }}</code>. Codex checks this existing request, not a fresh submission.</p>{% endfor %}
+<p>Friends’ invitations, direct PDF attachments and automatic reschedule/cancellation delivery are not enabled for these source holds. The separate rehearsal demonstrates those interactions without inventing live bookings.</p>
+</section>
+{% endblock %}

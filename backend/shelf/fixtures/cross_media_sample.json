@@ -1,0 +1,662 @@
+{
+  "schema": "cross-media-fixture-v1",
+  "provenance": "RECONSTRUCTED parent-supplied public relationships; not captured API responses. Unknown source revision/statement IDs/freshness. SIMULATED rankings; SYNTHETIC human examples, not the owner’s likes.",
+  "source_revision": null,
+  "source_checked_at": null,
+  "research_sources": [
+    "https://www.wikidata.org/wiki/Q190192",
+    "https://www.wikidata.org/wiki/Q437383",
+    "https://www.wikidata.org/wiki/Q987305"
+  ],
+  "entities": [
+    {
+      "id": "Q190192",
+      "labels": {
+        "en": {
+          "value": "Dune (novel)"
+        }
+      },
+      "claims": {
+        "P4969": [
+          {
+            "rank": "normal",
+            "mainsnak": {
+              "snaktype": "value",
+              "property": "P4969",
+              "datavalue": {
+                "value": {
+                  "id": "Q60834962"
+                }
+              }
+            }
+          }
+        ]
+      }
+    },
+    {
+      "id": "Q60834962",
+      "labels": {
+        "en": {
+          "value": "Dune (film)"
+        }
+      },
+      "claims": {
+        "P144": [
+          {
+            "rank": "normal",
+            "mainsnak": {
+              "snaktype": "value",
+              "property": "P144",
+              "datavalue": {
+                "value": {
+                  "id": "Q190192"
+                }
+              }
+            }
+          }
+        ],
+        "P4947": [
+          {
+            "rank": "normal",
+            "mainsnak": {
+              "snaktype": "value",
+              "property": "P4947",
+              "datavalue": {
+                "value": "438631"
+              }
+            }
+          }
+        ]
+      }
+    },
+    {
+      "id": "Q437383",
+      "labels": {
+        "en": {
+          "value": "Dune Messiah (novel)"
+        }
+      },
+      "claims": {
+        "P4969": [
+          {
+            "rank": "normal",
+            "mainsnak": {
+              "snaktype": "value",
+              "property": "P4969",
+              "datavalue": {
+                "value": {
+                  "id": "Q1072774"
+                }
+              }
+            }
+          }
+        ]
+      }
+    },
+    {
+      "id": "Q1072774",
+      "labels": {
+        "en": {
+          "value": "Frank Herbert's Children of Dune (TV)"
+        }
+      },
+      "claims": {
+        "P144": [
+          {
+            "rank": "normal",
+            "mainsnak": {
+              "snaktype": "value",
+              "property": "P144",
+              "datavalue": {
+                "value": {
+                  "id": "Q437383"
+                }
+              }
+            }
+          },
+          {
+            "rank": "normal",
+            "mainsnak": {
+              "snaktype": "value",
+              "property": "P144",
+              "datavalue": {
+                "value": {
+                  "id": "Q437365"
+                }
+              }
+            }
+          }
+        ],
+        "P4983": [
+          {
+            "rank": "normal",
+            "mainsnak": {
+              "snaktype": "value",
+              "property": "P4983",
+              "datavalue": {
+                "value": "9156"
+              }
+            }
+          }
+        ]
+      }
+    },
+    {
+      "id": "Q437365",
+      "labels": {
+        "en": {
+          "value": "Children of Dune (novel)"
+        }
+      },
+      "claims": {
+        "P4969": [
+          {
+            "rank": "normal",
+            "mainsnak": {
+              "snaktype": "value",
+              "property": "P4969",
+              "datavalue": {
+                "value": {
+                  "id": "Q1072774"
+                }
+              }
+            }
+          }
+        ]
+      }
+    },
+    {
+      "id": "Q987305",
+      "labels": {
+        "en": {
+          "value": "Supplied redirect/deprecation trap"
+        }
+      },
+      "claims": {
+        "P4983": [
+          {
+            "rank": "normal",
+            "mainsnak": {
+              "snaktype": "value",
+              "property": "P4983",
+              "datavalue": {
+                "value": "19566"
+              }
+            }
+          }
+        ],
+        "P4947": [
+          {
+            "rank": "deprecated",
+            "mainsnak": {
+              "snaktype": "value",
+              "property": "P4947",
+              "datavalue": {
+                "value": "911852"
+              }
+            }
+          }
+        ]
+      }
+    }
+  ],
+  "redirects": [
+    {
+      "from": "Q16515173",
+      "to": "Q987305"
+    }
+  ],
+  "external_ids": [
+    {
+      "medium": "movie",
+      "id": 438631,
+      "external_ids": {
+        "wikidata_id": "Q60834962"
+      }
+    },
+    {
+      "medium": "tv",
+      "id": 9156,
+      "external_ids": {
+        "wikidata_id": "Q1072774"
+      }
+    },
+    {
+      "medium": "tv",
+      "id": 19566,
+      "external_ids": {
+        "wikidata_id": "Q16515173"
+      }
+    }
+  ],
+  "trails": {
+    "dune": {
+      "root": "wikidata:entity:Q190192",
+      "title": "SAMPLE: Dune novel → film"
+    },
+    "dune-messiah": {
+      "root": "wikidata:entity:Q437383",
+      "title": "SAMPLE: Dune Messiah → TV → Children of Dune"
+    },
+    "synthetic-lanes": {
+      "root": "tmdb:movie:81001",
+      "title": "SAMPLE: five synthetic seed lanes"
+    }
+  },
+  "outcome_examples": [
+    {
+      "label": "SIMULATED offline outcome example",
+      "status": "items",
+      "items": [
+        "synthetic-only"
+      ],
+      "checked_at": null,
+      "retry_at": null,
+      "expires_at": null,
+      "reason": "Offline example."
+    },
+    {
+      "label": "SIMULATED offline outcome example",
+      "status": "empty",
+      "items": [],
+      "checked_at": null,
+      "retry_at": null,
+      "expires_at": null,
+      "reason": "Offline example."
+    },
+    {
+      "label": "SIMULATED offline outcome example",
+      "status": "ambiguous",
+      "items": [
+        "synthetic-only"
+      ],
+      "checked_at": null,
+      "retry_at": null,
+      "expires_at": null,
+      "reason": "Offline example."
+    },
+    {
+      "label": "SIMULATED offline outcome example",
+      "status": "failed",
+      "items": [],
+      "checked_at": null,
+      "retry_at": null,
+      "expires_at": null,
+      "reason": "Offline example."
+    },
+    {
+      "label": "SIMULATED offline outcome example",
+      "status": "timeout",
+      "items": [],
+      "checked_at": null,
+      "retry_at": null,
+      "expires_at": null,
+      "reason": "Offline example."
+    },
+    {
+      "label": "SIMULATED offline outcome example",
+      "status": "rate-limited",
+      "items": [],
+      "checked_at": null,
+      "retry_at": null,
+      "expires_at": null,
+      "reason": "Offline example."
+    }
+  ],
+  "synthetic": {
+    "label": "Wholly fictional identities and human responses, SIMULATED rankings. No actual preferences.",
+    "cache": {
+      "schema": "cross-media-cache-v1",
+      "nodes": [
+        {
+          "key": "tmdb:movie:81001",
+          "provider": "tmdb",
+          "medium": "movie",
+          "source_id": 81001,
+          "title": "SYNTHETIC TEST seed 1",
+          "slug": null,
+          "url": "https://www.themoviedb.org/movie/81001",
+          "fetched_at": "2026-01-01T00:00:00+00:00",
+          "freshness": "supplied snapshot",
+          "provenance": "synthetic"
+        },
+        {
+          "key": "tmdb:movie:82001",
+          "provider": "tmdb",
+          "medium": "movie",
+          "source_id": 82001,
+          "title": "SIMULATED fictional neighbor 1",
+          "slug": null,
+          "url": "https://www.themoviedb.org/movie/82001",
+          "fetched_at": null,
+          "freshness": "unknown",
+          "provenance": "simulated"
+        },
+        {
+          "key": "tmdb:movie:81002",
+          "provider": "tmdb",
+          "medium": "movie",
+          "source_id": 81002,
+          "title": "SYNTHETIC TEST seed 2",
+          "slug": null,
+          "url": "https://www.themoviedb.org/movie/81002",
+          "fetched_at": "2026-01-01T00:00:00+00:00",
+          "freshness": "supplied snapshot",
+          "provenance": "synthetic"
+        },
+        {
+          "key": "tmdb:movie:82002",
+          "provider": "tmdb",
+          "medium": "movie",
+          "source_id": 82002,
+          "title": "SIMULATED fictional neighbor 2",
+          "slug": null,
+          "url": "https://www.themoviedb.org/movie/82002",
+          "fetched_at": null,
+          "freshness": "unknown",
+          "provenance": "simulated"
+        },
+        {
+          "key": "tmdb:movie:81003",
+          "provider": "tmdb",
+          "medium": "movie",
+          "source_id": 81003,
+          "title": "SYNTHETIC TEST seed 3",
+          "slug": null,
+          "url": "https://www.themoviedb.org/movie/81003",
+          "fetched_at": "2026-01-01T00:00:00+00:00",
+          "freshness": "supplied snapshot",
+          "provenance": "synthetic"
+        },
+        {
+          "key": "tmdb:movie:82003",
+          "provider": "tmdb",
+          "medium": "movie",
+          "source_id": 82003,
+          "title": "SIMULATED fictional neighbor 3",
+          "slug": null,
+          "url": "https://www.themoviedb.org/movie/82003",
+          "fetched_at": null,
+          "freshness": "unknown",
+          "provenance": "simulated"
+        },
+        {
+          "key": "tmdb:movie:81004",
+          "provider": "tmdb",
+          "medium": "movie",
+          "source_id": 81004,
+          "title": "SYNTHETIC TEST seed 4",
+          "slug": null,
+          "url": "https://www.themoviedb.org/movie/81004",
+          "fetched_at": "2026-01-01T00:00:00+00:00",
+          "freshness": "supplied snapshot",
+          "provenance": "synthetic"
+        },
+        {
+          "key": "tmdb:movie:82004",
+          "provider": "tmdb",
+          "medium": "movie",
+          "source_id": 82004,
+          "title": "SIMULATED fictional neighbor 4",
+          "slug": null,
+          "url": "https://www.themoviedb.org/movie/82004",
+          "fetched_at": null,
+          "freshness": "unknown",
+          "provenance": "simulated"
+        },
+        {
+          "key": "tmdb:movie:81005",
+          "provider": "tmdb",
+          "medium": "movie",
+          "source_id": 81005,
+          "title": "SYNTHETIC TEST seed 5",
+          "slug": null,
+          "url": "https://www.themoviedb.org/movie/81005",
+          "fetched_at": "2026-01-01T00:00:00+00:00",
+          "freshness": "supplied snapshot",
+          "provenance": "synthetic"
+        },
+        {
+          "key": "tmdb:movie:82005",
+          "provider": "tmdb",
+          "medium": "movie",
+          "source_id": 82005,
+          "title": "SIMULATED fictional neighbor 5",
+          "slug": null,
+          "url": "https://www.themoviedb.org/movie/82005",
+          "fetched_at": null,
+          "freshness": "unknown",
+          "provenance": "simulated"
+        },
+        {
+          "key": "tmdb:movie:83001",
+          "provider": "tmdb",
+          "medium": "movie",
+          "source_id": 83001,
+          "title": "SIMULATED shared fictional neighbor",
+          "slug": null,
+          "url": "https://www.themoviedb.org/movie/83001",
+          "fetched_at": null,
+          "freshness": "unknown",
+          "provenance": "simulated"
+        }
+      ],
+      "edges": [
+        {
+          "source": "tmdb:movie:81001",
+          "target": "tmdb:movie:82001",
+          "kind": "tmdb-recommendation",
+          "rank": 0,
+          "evidence": []
+        },
+        {
+          "source": "tmdb:movie:81001",
+          "target": "tmdb:movie:83001",
+          "kind": "tmdb-recommendation",
+          "rank": 1,
+          "evidence": []
+        },
+        {
+          "source": "tmdb:movie:81002",
+          "target": "tmdb:movie:82002",
+          "kind": "tmdb-recommendation",
+          "rank": 0,
+          "evidence": []
+        },
+        {
+          "source": "tmdb:movie:81002",
+          "target": "tmdb:movie:83001",
+          "kind": "tmdb-recommendation",
+          "rank": 1,
+          "evidence": []
+        },
+        {
+          "source": "tmdb:movie:81003",
+          "target": "tmdb:movie:82003",
+          "kind": "tmdb-recommendation",
+          "rank": 0,
+          "evidence": []
+        },
+        {
+          "source": "tmdb:movie:81003",
+          "target": "tmdb:movie:83001",
+          "kind": "tmdb-recommendation",
+          "rank": 1,
+          "evidence": []
+        },
+        {
+          "source": "tmdb:movie:81004",
+          "target": "tmdb:movie:82004",
+          "kind": "tmdb-recommendation",
+          "rank": 0,
+          "evidence": []
+        },
+        {
+          "source": "tmdb:movie:81004",
+          "target": "tmdb:movie:83001",
+          "kind": "tmdb-recommendation",
+          "rank": 1,
+          "evidence": []
+        },
+        {
+          "source": "tmdb:movie:81005",
+          "target": "tmdb:movie:82005",
+          "kind": "tmdb-recommendation",
+          "rank": 0,
+          "evidence": []
+        },
+        {
+          "source": "tmdb:movie:81005",
+          "target": "tmdb:movie:83001",
+          "kind": "tmdb-recommendation",
+          "rank": 1,
+          "evidence": []
+        }
+      ],
+      "records": []
+    },
+    "run": {
+      "actor_id": 7001,
+      "profile_id": 7002,
+      "id": "synthetic-run",
+      "revision": 5,
+      "history": [
+        {
+          "card": {
+            "key": "tmdb:movie:81001",
+            "provider": "tmdb",
+            "medium": "movie",
+            "source_id": 81001,
+            "title": "SYNTHETIC TEST seed 1",
+            "url": "https://www.themoviedb.org/movie/81001",
+            "fetched_at": "2026-01-01T00:00:00+00:00",
+            "lane": "synthetic-example",
+            "origin": "editorial",
+            "root": ""
+          },
+          "choice": "enjoyed",
+          "operation": "choose",
+          "responded_at": "2026-01-01T00:00:00+00:00",
+          "recorded_at": "2026-01-01T00:00:00+00:00",
+          "provenance": "authenticated-human-post"
+        },
+        {
+          "card": {
+            "key": "tmdb:movie:81002",
+            "provider": "tmdb",
+            "medium": "movie",
+            "source_id": 81002,
+            "title": "SYNTHETIC TEST seed 2",
+            "url": "https://www.themoviedb.org/movie/81002",
+            "fetched_at": "2026-01-01T00:00:00+00:00",
+            "lane": "synthetic-example",
+            "origin": "neighbor",
+            "root": ""
+          },
+          "choice": "enjoyed",
+          "operation": "choose",
+          "responded_at": "2026-01-01T00:00:00+00:00",
+          "recorded_at": "2026-01-01T00:00:00+00:00",
+          "provenance": "authenticated-human-post"
+        },
+        {
+          "card": {
+            "key": "tmdb:movie:81003",
+            "provider": "tmdb",
+            "medium": "movie",
+            "source_id": 81003,
+            "title": "SYNTHETIC TEST seed 3",
+            "url": "https://www.themoviedb.org/movie/81003",
+            "fetched_at": "2026-01-01T00:00:00+00:00",
+            "lane": "synthetic-example",
+            "origin": "editorial",
+            "root": ""
+          },
+          "choice": "enjoyed",
+          "operation": "choose",
+          "responded_at": "2026-01-01T00:00:00+00:00",
+          "recorded_at": "2026-01-01T00:00:00+00:00",
+          "provenance": "authenticated-human-post"
+        },
+        {
+          "card": {
+            "key": "tmdb:movie:81004",
+            "provider": "tmdb",
+            "medium": "movie",
+            "source_id": 81004,
+            "title": "SYNTHETIC TEST seed 4",
+            "url": "https://www.themoviedb.org/movie/81004",
+            "fetched_at": "2026-01-01T00:00:00+00:00",
+            "lane": "synthetic-example",
+            "origin": "editorial",
+            "root": ""
+          },
+          "choice": "interested",
+          "operation": "choose",
+          "responded_at": "2026-01-01T00:00:00+00:00",
+          "recorded_at": "2026-01-01T00:00:00+00:00",
+          "provenance": "authenticated-human-post"
+        },
+        {
+          "card": {
+            "key": "tmdb:movie:81005",
+            "provider": "tmdb",
+            "medium": "movie",
+            "source_id": 81005,
+            "title": "SYNTHETIC TEST seed 5",
+            "url": "https://www.themoviedb.org/movie/81005",
+            "fetched_at": "2026-01-01T00:00:00+00:00",
+            "lane": "synthetic-example",
+            "origin": "editorial",
+            "root": ""
+          },
+          "choice": "interested",
+          "operation": "choose",
+          "responded_at": "2026-01-01T00:00:00+00:00",
+          "recorded_at": "2026-01-01T00:00:00+00:00",
+          "provenance": "authenticated-human-post"
+        }
+      ]
+    }
+  },
+  "fictional_isbn_case": {
+    "label": "WHOLLY FICTIONAL checksum examples. These numbers make no real-world catalogue binding claim.",
+    "work_id": "OL990000001W",
+    "works": [
+      {
+        "key": "/works/OL990000001W"
+      }
+    ],
+    "editions": [
+      {
+        "key": "/books/OL990000001M",
+        "works": [
+          {
+            "key": "/works/OL990000001W"
+          }
+        ],
+        "isbn_10": [
+          "0-000-00000-0"
+        ],
+        "isbn_13": []
+      }
+    ],
+    "hardcover_editions": [
+      {
+        "book_id": 990000001,
+        "isbn_10": null,
+        "isbn_13": "9780000000002"
+      }
+    ],
+    "books": [
+      {
+        "id": 990000001,
+        "canonical_id": 990000002
+      },
+      {
+        "id": 990000002,
+        "canonical_id": null
+      }
+    ]
+  }
+}

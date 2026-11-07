@@ -1,0 +1,5 @@
+{% csrf_token %}
+<input type="hidden" name="version" value="{{ plan.version }}">
+<input type="hidden" name="nonce" value="{{ plan.nonce }}">
+<input type="hidden" name="preview" value="{{ preview_digest }}">
+<p><label><input type="checkbox" name="confirmed" required> {{ consent }}</label></p>

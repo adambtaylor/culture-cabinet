@@ -1,0 +1,17 @@
+{% extends 'provider_base.html' %}
+{% block title %}Choose a profile{% endblock %}
+{% block navigation %}<nav aria-label="Cabinet"><form method="post" action="{% url 'logout' %}">{% csrf_token %}<button class="quiet" type="submit">Log out</button></form></nav>{% endblock %}
+{% block content %}
+<p class="eyebrow">The cabinet / your context</p>
+<h1>Which shelf today?</h1>
+<p class="lede">Choose a profile before exploring. The catalogue shows whether local human history storage is ready. When ready, resume an owned run; histories remain separate. Provider metadata is temporary.</p>
+<div class="profile-list">
+{% for profile in profile_options %}
+<form class="profile-panel" method="post" action="{% url 'select_profile' %}">
+  {% csrf_token %}<h2>{{ profile.label }}</h2>
+  <p>A place to explore films, series and books.</p>
+  <button type="submit" name="profile_id" value="{{ profile.pk }}">Choose {{ profile.label }}</button>
+</form>
+{% empty %}<section class="paper-panel"><h2>No profile available</h2><p>Ask your operator to check this local account’s profile access, then reload this page. You can log out above.</p></section>{% endfor %}
+</div>
+{% endblock %}

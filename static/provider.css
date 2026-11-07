@@ -1,0 +1,62 @@
+/* Provider demo additions; the original cabinet stylesheet stays shared. */
+.provider-demo main { padding-top: 2.5rem; }
+.provider-demo .colophon { align-items: flex-start; }
+.provider-demo .colophon p + p { margin-top: .65rem; }
+.round-status { display: flex; flex-wrap: wrap; gap: .5rem 2rem; padding-block: 1rem; border-block: 1px solid var(--line); }
+.round-status p { margin: 0; }
+.discovery-tools { display: grid; grid-template-columns: minmax(0, 2fr) minmax(14rem, 1fr); gap: 1.5rem; margin-block: 2rem; }
+.search-fields { display: grid; grid-template-columns: minmax(0, 2fr) minmax(7rem, 1fr); gap: 1rem; }
+.search-fields .field { margin-top: .5rem; }
+.provider-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 1.25rem; margin-block: 1.5rem 2rem; }
+.provider-card { min-width: 0; }
+.provider-card h3 { font-size: 1.65rem; margin-block: .4rem 1rem; }
+.provider-card .synopsis { font-size: 1.05rem; }
+.source-meta { font: .85rem/1.6 system-ui, sans-serif; color: #4d5045; }
+.source-meta time { overflow-wrap: anywhere; }
+.lane-label { color: var(--rust); font: 600 .85rem/1.5 system-ui, sans-serif; }
+.taste-form { margin-top: auto; padding-top: 1rem; border-top: 1px dashed var(--line); }
+.taste-form legend { font: 600 .95rem/1.5 system-ui, sans-serif; margin-bottom: .7rem; }
+.taste-buttons { display: grid; gap: .5rem; }
+.taste-buttons button { width: 100%; text-align: left; padding: .65rem .8rem; }
+.provider-card a { overflow-wrap: anywhere; }
+.card-links { margin-block: 1rem; }
+.card-links p { margin-bottom: .5rem; }
+.notices, .empty-state { border-left: 3px solid var(--rust); padding: 1rem 1.25rem; background: var(--cream); margin-block: 1.5rem; }
+.notices p:last-child, .empty-state p:last-child { margin-bottom: 0; }
+.session-actions { display: flex; align-items: start; flex-wrap: wrap; gap: 1rem; margin-block: 2rem; }
+.save-form { border-top: 1px solid var(--line); margin-top: 1rem; padding-top: 1rem; }
+.save-form label { font-size: 1rem; }
+.save-form button { margin-top: .75rem; }
+.provider-demo .fine-print { margin-top: .75rem; }
+.lane-summary { padding-left: 1.5rem; }
+.lane-summary li { margin-bottom: .5rem; }
+@media (max-width: 65rem) { .provider-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+@media (max-width: 48rem) { .provider-grid, .discovery-tools, .search-fields { grid-template-columns: minmax(0, 1fr); } .search-fields .field { margin-bottom: .5rem; } }
+.obtain-listing { overflow-wrap: anywhere; }
+.obtain-listing h4 { font-size: 1.35rem; }
+.obtain-selection input[type="checkbox"] { width: 1.25rem; min-height: 1.25rem; vertical-align: middle; }
+.taste-funnel input[type="checkbox"] { width: 1.25rem; min-height: 1.25rem; vertical-align: middle; margin-right: .4rem; }
+.taste-funnel .rating-scale { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: .3rem; margin-bottom: .65rem; }
+.taste-funnel .rating-scale button { padding: .5rem .25rem; }
+.taste-funnel .rating-scale-label { margin-bottom: .3rem; font-size: .9rem; }
+.taste-funnel .provider-card form + form { display: flex; flex-wrap: wrap; gap: .5rem; margin-top: .75rem; }
+.taste-funnel .provider-card .source-meta { overflow-wrap: anywhere; }
+.obtain-selection select { max-width: 100%; padding: .6rem; font: inherit; }
+.obtain-selection .errorlist { color: var(--rust); }
+.message-text { white-space: pre-wrap; overflow-wrap: anywhere; font: inherit; padding: 1rem; background: var(--cream); border-left: 3px solid var(--rust); }
+.provider-demo textarea { box-sizing: border-box; width: 100%; max-width: 100%; font: inherit; }
+
+/* Recommendation link, deliberately distinct from Save/Favourite controls. */
+.date-night-badge { display:inline-block; padding:.25rem .65rem; border:1px solid currentColor; border-radius:.25rem; font-weight:600; text-decoration:none; background:#eee5d7; color:#344b45; }
+
+/* Feedback stays in normal flow; no animated removal or forced smooth scrolling. */
+.media-sidebar { display: flex; flex-wrap: wrap; gap: .6rem; margin: 1.5rem 0; }
+.media-sidebar a { padding: .6rem .9rem; border: 1px solid currentColor; border-radius: .25rem; }
+.media-sidebar [aria-current="page"] { font-weight: bold; background: #eee8dc; }
+.for-you { border-left: 3px solid currentColor; padding-left: .8rem; }
+[data-feedback-card]:focus { outline: 3px solid #514734; outline-offset: 4px; }
+[data-feedback-card][aria-busy="true"] { opacity: .75; }
+textarea[name="note"] { display: block; box-sizing: border-box; width: 100%; margin: .5rem 0 1rem; font: inherit; }
+#feedback-status:not(:empty) { padding: 1rem; border: 2px solid currentColor; }
+.enhancement { border-left: 4px solid #514734; }
+@media (prefers-reduced-motion: reduce) { html { scroll-behavior: auto; } *, *::before, *::after { animation: none !important; transition: none !important; } }

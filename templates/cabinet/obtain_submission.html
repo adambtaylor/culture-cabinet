@@ -1,0 +1,17 @@
+<h3>Confirm submission of this exact selection</h3>
+<p>This separate confirmation can send one NZB to the configured downloader. Review every choice before submitting.</p>
+<dl class="statements">
+  <div><dt>Title / exact edition</dt><dd>{{ acquisition_job.title }} / {{ obtain_submission.selection.edition }}</dd></div>
+  <div><dt>Exact listing</dt><dd>{{ obtain_submission.exact.result_id }} · Hydra ID {{ obtain_submission.exact.guid }}</dd></div>
+  <div><dt>Scope</dt><dd>{% if acquisition_job.scope == 'film' %}Full film{% elif acquisition_job.scope == 'audiobook' %}Full audiobook{% elif acquisition_job.scope == 'album_flac' %}One complete FLAC album{% elif acquisition_job.episode_code %}Series — {{ acquisition_job.episode_code }} only{% else %}Unconfirmed{% endif %}</dd></div>
+  <div><dt>Reported encoded size</dt><dd>{{ obtain_submission.exact.size }} bytes</dd></div>
+  <div><dt>Approved local file maximum</dt><dd>{{ obtain_submission.max_bytes }} bytes</dd></div>
+  <div><dt>Storage</dt><dd>{{ obtain_submission.selection.storage }}</dd></div>
+  <div><dt>Selection checks</dt><dd>Your exact release and scope, rights acknowledgement, storage capacity and existing Cabinet requests have been checked. Downloaded content identity and completeness remain unverified.</dd></div>
+  <div><dt>NZB SHA-256</dt><dd>{{ obtain_submission.nzb_sha256 }}</dd></div>
+</dl>
+<p>This review expires after five minutes, or sooner if the listing expires or authority changes. Queued means accepted only. Remote progress, status and cancellation are unavailable with add-only access.</p>
+<form method="post" action="{{ obtain_submit_url }}">{% csrf_token %}
+  {{ obtain_submit_form.as_p }}
+  <button type="submit">Confirm and submit this exact selection</button>
+</form>

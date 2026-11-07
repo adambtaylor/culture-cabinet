@@ -1,0 +1,24 @@
+from django.conf import settings
+from django.db import migrations, models
+import django.db.models.deletion
+
+
+class Migration(migrations.Migration):
+    dependencies = [('shelf', '0017_selected_episode_scope'), migrations.swappable_dependency(settings.AUTH_USER_MODEL)]
+    operations = [migrations.CreateModel(
+        name='AuthoredDiscoveryState',
+        fields=[
+            ('id', models.BigAutoField(auto_created=True, primary_key=True, serialize=False, verbose_name='ID')),
+            ('mode', models.CharField(max_length=12)),
+            ('revision', models.PositiveIntegerField(default=0)),
+            ('nonce', models.CharField(max_length=200)),
+            ('data', models.JSONField(default=dict)),
+            ('receipts', models.JSONField(default=dict)),
+            ('actor', models.ForeignKey(on_delete=django.db.models.deletion.PROTECT, to=settings.AUTH_USER_MODEL)),
+            ('profile', models.ForeignKey(on_delete=django.db.models.deletion.PROTECT, to='shelf.profile')),
+        ],
+        options={'constraints': [
+            models.UniqueConstraint(fields=('actor', 'profile', 'mode'), name='authored_actor_profile_mode'),
+            models.CheckConstraint(condition=models.Q(mode__in=['household', 'sample']), name='authored_mode_allowed'),
+        ]},
+    )]

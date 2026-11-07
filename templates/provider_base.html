@@ -1,0 +1,35 @@
+{% load static %}<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{% block title %}Culture Cabinet{% endblock %} · Real catalogue R&amp;D demo</title>
+  <link rel="stylesheet" href="{% static 'cabinet.css' %}">
+  <link rel="stylesheet" href="{% static 'provider.css' %}">
+  {% if feedback_enabled %}<script src="{% static 'card-feedback.js' %}" defer></script>
+  <script src="{% static 'enhancement.js' %}" defer></script>{% endif %}
+</head>
+<body class="provider-demo">
+  <a class="skip-link" href="#main">Skip to content</a>
+  <div class="demo-banner">Real catalogue · Research &amp; development demo</div>
+  <header class="masthead">
+    <p class="wordmark">Culture <span>Cabinet</span></p>
+    <p class="masthead-note">Find your next film, series or book.</p>
+    {% block navigation %}{% endblock %}
+    {% if request.user.is_authenticated %}<nav aria-label="Discovery"><a href="{% url 'recommendations' %}">Across your Cabinet</a> · <a href="{% url 'discovery' %}">Music &amp; events</a>{% if selected_profile %} · <a href="{% url 'taste_funnel' selected_profile.pk %}">Rate &amp; Synergize</a> · <a href="{% url 'social_discovery' selected_profile.pk %}">Selected social sources</a> · <a href="{% url 'nonfiction_discovery' selected_profile.pk %}">Podcasts &amp; nonfiction</a>{% endif %}</nav>{% endif %}
+    <nav aria-label="Research samples"><a href="{% url 'cross_media_sample' %}">SAMPLE: cross-media trails</a>{% if selected_profile %} · <a href="{% url 'event_plans' selected_profile.pk %}">Event plans</a> · <a href="{% url 'messages' selected_profile.pk %}">WhatsApp · rehearsal</a>{% endif %}</nav>
+  </header>
+  <main id="main" tabindex="-1" data-feedback-context>
+    {% if messages %}<div class="notices" role="status">{% for message in messages %}<p>{{ message }}</p>{% endfor %}</div>{% endif %}
+    {% if selected_profile %}{% include 'cabinet/media_sidebar.html' %}{% endif %}
+    <p id="feedback-status" role="status" aria-live="polite" aria-atomic="true"></p>
+    {% block content %}{% endblock %}
+  </main>
+  <footer class="colophon">
+    <span class="stamp">In exploration</span>
+    <div><p>{% if durable_active %}Human responses and minimal judged-source provenance survive logout and restart in local storage. Provider metadata and descriptions expire after one hour.{% elif temporary_notice %}{{ temporary_notice }}{% else %}Local research and development. Storage availability is shown in the catalogue; provider metadata is temporary.{% endif %}</p>
+    <p>This product uses the TMDB API but is not endorsed or certified by TMDB. Book records come from Hardcover.</p>
+    <p>Provider suggestions are exploration, never your likes. No provider library writes or downloads.</p></div>
+  </footer>
+</body>
+</html>

@@ -1,0 +1,188 @@
+<section class="paper-panel enhancement" data-enhancement data-state="{{ enhancement.state }}" data-schema="{{ enhancement.schema }}" data-status-url="{{ enhancement.status_url }}" aria-labelledby="enhance-heading">
+  <h2 id="enhance-heading">Enhance my picks</h2>
+  <div role="status" aria-live="polite" aria-atomic="true"><p data-enhance-label>{% if enhancement.schema == 'enhance/v1' %}Enhance progress{% else %}{{ enhancement.label|default:'Supervised enhancement' }}{% endif %}</p><p data-enhance-explanation{% if enhancement.schema == 'enhance/v1' %} hidden{% endif %}>{{ enhancement.explanation|default:'Enhancement requires a manual, supervised Astra high model handoff. It does not run automatically.' }}</p></div>
+  {% comment %}StageEvent.public is display data, not send authority. Keep stage copy here so initial HTML and client updates use the same words; no provider/source prose becomes markup.{% endcomment %}
+  {% if enhancement.schema == 'enhance/v1' %}{{ enhancement|json_script:"enhance-stage-receipt" }}{% endif %}
+  <div data-enhance-progress{% if enhancement.schema != 'enhance/v1' %} hidden{% endif %}>
+    <p class="fine-print">One round covers every enabled category, whichever tab you are viewing.</p>
+    <ol class="enhance-phases" aria-label="Enhance order"><li>Collect and enrich API candidates</li><li>Review and confirm inference</li><li>Validate and publish picks</li></ol>
+    <div data-enhance-stages role="status" aria-live="polite" aria-atomic="true">
+      <div data-enhance-stage="authorized"{% if enhancement.stage != 'authorized' %} hidden{% endif %}>
+        <h3>Preparing this round</h3>
+        {% if portable_ui %}
+          {% if portable_commands.start %}<p>Choose “Start a round and review API requests” below. You will review the actual API requests before approving collection; nothing is sent by opening this page.</p>
+          {% elif portable_commands.preview %}<p>Use “Review the next request” below before approving any work.</p>
+          {% else %}<p>No start or review action is currently available. Check this round’s recorded status or review setup.</p>{% endif %}
+        {% else %}<p>The selected profile’s permitted ratings and notes are bound to this round. API collection comes first. Wait for collection status.</p>{% endif %}
+      </div>
+      <div data-enhance-stage="collecting"{% if enhancement.stage != 'collecting' %} hidden{% endif %}>
+        <h3>Collecting and enriching API candidates</h3>
+        <p>Configured, permitted sources are being checked across every enabled category. Inference has not started. Wait for the collection result below.</p>
+      </div>
+      <div data-enhance-stage="sealed"{% if enhancement.stage != 'sealed' %} hidden{% endif %}>
+        <h3>API collection complete</h3>
+        <p>Collection outcomes are recorded for every enabled category. Candidates still need inference review; your current picks have not changed.</p>
+      </div>
+      <div data-enhance-stage="awaiting_preview"{% if enhancement.stage != 'awaiting_preview' %} hidden{% endif %}>
+        {% if portable_ui %}
+        <h3>Review this round’s next request</h3>
+        <p>API requests are reviewed before collection. The separate inference body is reviewed after collection. Use the available review action below; nothing is sent automatically.</p>
+        {% else %}
+        <h3>Review needed before inference</h3>
+        <p>Review the actual inference body, destination, omissions and allowance before confirming. Nothing is sent automatically. Inference review is not connected on this page yet.</p>
+        {% endif %}
+      </div>
+      <div data-enhance-stage="ready"{% if enhancement.stage != 'ready' %} hidden{% endif %}>
+        <h3>Inference review confirmed</h3>
+        {% if portable_ui %}
+          {% if portable_commands.confirm and disclosure.kind == 'inference' %}<p>Review the exact inference request below, then explicitly approve it if you want this potentially paid attempt. The server rechecks the body and permissions before sending.</p>
+          {% elif portable_commands.preview %}<p>Use “Review the next request” below. No inference will be sent without its separate explicit confirmation.</p>
+          {% else %}<p>No inference confirmation is currently offered. Check the recorded status; do not start another attempt.</p>{% endif %}
+        {% else %}<p>The server must recheck the reviewed body and current permissions before reserving an attempt. This page cannot start an inference send.</p>{% endif %}
+      </div>
+      <div data-enhance-stage="reserved"{% if enhancement.stage != 'reserved' %} hidden{% endif %}>
+        <h3>Inference attempt reserved</h3>
+        <p>One attempt is reserved. Wait for its recorded status; do not start another round. A reservation is not a completed result.</p>
+      </div>
+      <div data-enhance-stage="in_flight"{% if enhancement.stage != 'in_flight' %} hidden{% endif %}>
+        <h3>Waiting for inference</h3>
+        <p>API collection finished before this inference attempt. Check this round’s recorded outcome before any further attempt; no automatic retry is made.</p>
+      </div>
+      <div data-enhance-stage="validated"{% if enhancement.stage != 'validated' %} hidden{% endif %}>
+        <h3>Inference result checked</h3>
+        <p>The result has passed its checks. Your picks change only after publication is confirmed.</p>
+      </div>
+      <div data-enhance-stage="staged"{% if enhancement.stage != 'staged' %} hidden{% endif %}>
+        <h3>Preparing picks for publication</h3>
+        <p>The checked result is staged across categories. Your previous picks remain current until publication is confirmed.</p>
+      </div>
+      <div data-enhance-stage="published"{% if enhancement.stage != 'published' %} hidden{% endif %}>
+        <h3>Publication confirmed</h3>
+        <p>A publication revision is recorded below. Return to your picks to review the result; check category outcomes for unavailable sources or retained older picks.</p>
+      </div>
+      <div data-enhance-stage="blocked"{% if enhancement.stage != 'blocked' %} hidden{% endif %}>
+        <h3>This round is blocked</h3>
+        <p>No new picks are confirmed. Review the reason below before continuing. Keep your current picks; a fresh send is not available here.</p>
+      </div>
+      <div data-enhance-stage="no_candidates"{% if enhancement.stage != 'no_candidates' %} hidden{% endif %}>
+        <h3>No grounded candidates this round</h3>
+        <p>No new grounded picks are available from this round. Keep your current picks and review the category outcomes below.</p>
+      </div>
+      <div data-enhance-stage="failed"{% if enhancement.stage != 'failed' %} hidden{% endif %}>
+        <h3>This round could not finish</h3>
+        <p>No new publication is confirmed. Keep your current picks and review the reason below. This round will not retry automatically.</p>
+      </div>
+      <div data-enhance-stage="cancelled"{% if enhancement.stage != 'cancelled' %} hidden{% endif %}>
+        <h3>This round was cancelled</h3>
+        <p>This round will not publish new picks. An external attempt may still continue or incur a charge; cancellation does not confirm a remote stop or refund.</p>
+      </div>
+      <div data-enhance-stage="stale"{% if enhancement.stage != 'stale' %} hidden{% endif %}>
+        <h3>Your responses or permissions changed</h3>
+        <p>Keep your current picks. Review the current ratings, notes and permissions before requesting a new preview. The old preview cannot be reused.</p>
+      </div>
+      <div data-enhance-stage="unknown"{% if enhancement.stage != 'unknown' %} hidden{% endif %}>
+        <h3>The inference outcome is uncertain</h3>
+        <p>Keep your current picks. Reconcile the existing attempt before requesting another; reloading, switching tabs or clicking again must not resend it.</p>
+      </div>
+    </div>
+    {% comment %}Keep bounded native recovery text aligned with reasonText in enhancement.js. Category codes can differ from the overall code; never echo source errors or turn a cause into send permission.{% endcomment %}
+    <p data-enhance-reason{% if enhancement.code == 'OK' or not enhancement.code %} hidden{% endif %}>
+{% if enhancement.code == 'UNAUTHENTICATED' %}Open owner setup to sign in or confirm your session, then review the existing round. Nothing is retried automatically.
+{% elif enhancement.code == 'AUTHORITY_DENIED' %}Review the selected profile’s permissions before continuing. No extra send is available here.
+{% elif enhancement.code == 'CREDENTIAL_REQUIRED' %}Review the connection that needs a credential before continuing. Nothing is retried automatically.
+{% elif enhancement.code == 'CAPABILITY_UNAVAILABLE' %}The current connections do not support this operation. Keep your existing picks.
+{% elif enhancement.code == 'SOURCE_UNAVAILABLE' %}A source is unavailable. Review the affected categories below; do not treat this as an empty search.
+{% elif enhancement.code == 'RATE_LIMITED' %}A source has asked Cabinet to wait. This round will not retry automatically.
+{% elif enhancement.code == 'UNKNOWN_RECONCILIATION_REQUIRED' %}Reconcile the existing attempt before any further inference. Do not resend this round.
+{% elif enhancement.code == 'PREVIEW_STALE' %}Review your current responses and permissions and obtain a fresh preview before continuing.
+{% elif enhancement.code == 'VALIDATION_STALE' %}Review your current responses and permissions and obtain a fresh preview before continuing.
+{% elif enhancement.code == 'RUN_STALE' %}Review your current responses and permissions and obtain a fresh preview before continuing.
+{% elif enhancement.code == 'REVISION_CONFLICT' %}Review your current responses and permissions and obtain a fresh preview before continuing.
+{% elif enhancement.code == 'LIMIT_EXCEEDED' %}This round exceeds the permitted limits. No extra work was authorized; keep your current picks.
+{% elif enhancement.code == 'NO_GROUNDED_CANDIDATES' %}No grounded candidates are available for new picks. Review category outcomes below.
+{% elif enhancement.code == 'IDEMPOTENCY_CONFLICT' %}Check the existing round before continuing; do not start another attempt with changed request details.
+{% else %}This round needs attention. No additional send or automatic retry is available here.{% endif %}
+    </p>
+    <p data-enhance-update role="status" aria-live="polite" aria-atomic="true"></p>
+    <p data-enhance-publication{% if not enhancement.published or not enhancement.publication_revision %} hidden{% endif %}>Publication revision: <span data-enhance-revision>{{ enhancement.publication_revision }}</span></p>
+    <div data-enhance-coverage>
+      <h3>Category outcomes</h3>
+      <p data-enhance-coverage-pending{% if enhancement.category_outcomes %} hidden{% endif %}>Category outcomes have not been recorded yet. Missing results do not mean an empty category or successful collection.</p>
+      <ul data-enhance-outcomes class="enhance-outcomes">
+        {% for outcome in enhancement.category_outcomes %}
+        <li><strong>{{ outcome.category }}</strong> —
+          {% if outcome.state == 'fresh' %}{{ outcome.candidate_count }} sourced candidate{{ outcome.candidate_count|pluralize }} collected; new picks are not confirmed by collection alone.
+          {% elif outcome.state == 'empty_bounded' %}No candidates within this round’s collection limits.
+          {% elif outcome.state == 'unavailable' %}
+            {% if outcome.code == 'CAPABILITY_UNAVAILABLE' %}Unsupported by the current source connections.{% else %}Source unavailable; no fresh result.{% endif %}
+          {% elif outcome.state == 'failed' %}Collection failed; this is not an empty result.
+          {% elif outcome.state == 'cancelled' %}Collection cancelled; no fresh result.
+          {% elif outcome.state == 'retained_previous_stale' %}Older picks retained; not refreshed by this round.
+          {% else %}Outcome not confirmed.{% endif %}
+          {% if outcome.code and outcome.code != 'OK' %}<span data-enhance-category-cause>
+{% if outcome.code == 'UNAUTHENTICATED' %}Open owner setup to sign in or confirm your session, then review the existing round. Nothing is retried automatically.
+{% elif outcome.code == 'AUTHORITY_DENIED' %}Review the selected profile’s permissions before continuing. No extra send is available here.
+{% elif outcome.code == 'CREDENTIAL_REQUIRED' %}Review the connection that needs a credential before continuing. Nothing is retried automatically.
+{% elif outcome.code == 'CAPABILITY_UNAVAILABLE' %}The current connections do not support this operation. Keep your existing picks.
+{% elif outcome.code == 'SOURCE_UNAVAILABLE' %}A source is unavailable. Review the affected categories below; do not treat this as an empty search.
+{% elif outcome.code == 'RATE_LIMITED' %}A source has asked Cabinet to wait. This round will not retry automatically.
+{% elif outcome.code == 'UNKNOWN_RECONCILIATION_REQUIRED' %}Reconcile the existing attempt before any further inference. Do not resend this round.
+{% elif outcome.code == 'PREVIEW_STALE' %}Review your current responses and permissions and obtain a fresh preview before continuing.
+{% elif outcome.code == 'VALIDATION_STALE' %}Review your current responses and permissions and obtain a fresh preview before continuing.
+{% elif outcome.code == 'RUN_STALE' %}Review your current responses and permissions and obtain a fresh preview before continuing.
+{% elif outcome.code == 'REVISION_CONFLICT' %}Review your current responses and permissions and obtain a fresh preview before continuing.
+{% elif outcome.code == 'LIMIT_EXCEEDED' %}This round exceeds the permitted limits. No extra work was authorized; keep your current picks.
+{% elif outcome.code == 'NO_GROUNDED_CANDIDATES' %}No grounded candidates are available for new picks. Review category outcomes below.
+{% elif outcome.code == 'IDEMPOTENCY_CONFLICT' %}Check the existing round before continuing; do not start another attempt with changed request details.
+{% else %}This round needs attention. No additional send or automatic retry is available here.{% endif %}
+          </span>{% endif %}
+        </li>
+        {% endfor %}
+      </ul>
+    </div>
+    {% if portable_ui %}<p class="fine-print">Only the actions available below are authorized for this round. Existing picks stay in place until a publication is confirmed.</p>{% else %}<p class="fine-print">This progress view cannot start API calls or inference. Review, recovery and run controls require the connected server workflow.</p>{% endif %}
+  </div>
+  {% if portable_ui %}
+  <div data-enhance-native-controls>
+    <p><a href="/setup">Open owner setup or Your model</a>. After changing setup or confirming your session, return here and explicitly retry the intended action; nothing is resubmitted for you.</p>
+    {% if portable_return_url %}<p><a href="{{ portable_return_url }}">Review this round again after restoring access</a>. Start with its recorded status; no request is repeated by this link.</p>{% endif %}
+    {% if portable_commands.start %}
+    <form method="post" action="{{ portable_commands.start }}">{% csrf_token %}
+      <input type="hidden" name="profile_ref" value="{{ profile_ref }}"><input type="hidden" name="connection_ref" value="{{ connection_ref }}">
+      <input type="hidden" name="client_key" value="{{ client_key }}"><input type="hidden" name="refresh_nonce" value="{{ refresh_nonce }}">
+      <button type="submit">Start a round and review API requests</button>
+    </form>
+    {% endif %}
+    {% if portable_commands.preview %}<form method="post" action="{{ portable_commands.preview }}">{% csrf_token %}<button type="submit">Review the next request</button></form>{% endif %}
+    {% if disclosure %}
+    <section aria-labelledby="enhance-disclosure-heading">
+      <h3 id="enhance-disclosure-heading">{% if disclosure.kind == 'catalogue' %}Review API collection{% else %}Review inference{% endif %}</h3>
+      <p>Destination{% if disclosure.destinations|length != 1 %}s{% endif %}:</p><ul>{% for destination in disclosure.destinations %}<li>{{ destination }}</li>{% endfor %}</ul>
+      <p>Preview expires: {{ disclosure.expires_at }}</p>
+      {% if disclosure.omitted_groups %}<p>Omitted groups: {{ disclosure.omitted_groups|join:', ' }}</p>{% endif %}
+      <details open><summary>Exact request body</summary><textarea readonly rows="8" aria-label="Exact request body">{{ disclosure.body|force_escape }}</textarea></details>
+      {% if portable_commands.confirm %}<form method="post" action="{{ portable_commands.confirm }}">{% csrf_token %}
+        <input type="hidden" name="preview_ref" value="{{ disclosure.preview_ref }}"><input type="hidden" name="body_digest" value="{{ disclosure.body_digest }}">
+        <label><input type="checkbox" name="confirmed" value="yes" required autocomplete="off"> I approve this exact {% if disclosure.kind == 'catalogue' %}API collection request{% else %}inference request and its possible charge{% endif %}.</label>
+        <button type="submit">Confirm this request once</button>
+      </form>{% endif %}
+    </section>
+    {% endif %}
+    {% if portable_commands.cancel %}<form method="post" action="{{ portable_commands.cancel }}">{% csrf_token %}<input type="hidden" name="expected_revision" value="{{ enhancement.revision }}"><button type="submit">Stop this round</button></form><p>An already reserved external attempt may continue or incur a charge. Stopping this round does not confirm a remote cancellation or refund.</p>{% endif %}
+    {% if portable_commands.status %}<p><a href="{{ portable_commands.status }}">Check this round’s recorded status</a></p>{% endif %}
+    {% if not portable_commands %}<p>No run action is currently available. A supported source, current permissions and inference connection are required; a successful connection test alone does not enable Enhance.</p>{% endif %}
+  </div>
+  {% endif %}
+  <p data-enhance-message role="status" aria-live="polite"></p>
+  {% if enhance_url and enhancement.schema != 'enhance/v1' %}<form data-enhance-form method="post" action="{{ enhance_url }}">{% csrf_token %}<input type="hidden" name="expected_digest" value="{{ enhance_digest }}"><input type="hidden" name="category" value="{{ active_queue|default:'all' }}"><input type="hidden" name="preview_token" value="{{ enhance_token }}"><button type="submit">Enhance my picks</button></form>{% else %}{% csrf_token %}{% endif %}
+  <button data-enhance-check type="button" hidden>Check existing status</button>
+  <button data-enhance-apply type="button" hidden>Apply ready picks</button>
+  <button data-enhance-cancel type="button" hidden>Stop applying this round</button>
+  <noscript>
+    {% if enhancement.schema != 'enhance/v1' and enhancement.state == 'completed' and enhancement.apply_url and enhancement.application_state != 'applied' and enhancement.application_state != 'cancelled' %}<form method="post" action="{{ enhancement.apply_url }}">{% csrf_token %}<button type="submit">Apply ready picks</button></form>{% endif %}
+    {% if enhancement.schema != 'enhance/v1' and enhancement.cancel_url and enhancement.application_state != 'applied' and enhancement.application_state != 'cancelled' %}<form method="post" action="{{ enhancement.cancel_url }}">{% csrf_token %}<button type="submit">Stop applying this round</button></form><p>This stops application only; external model work may continue.</p>{% endif %}
+  </noscript>
+  <p data-enhance-cancel-note hidden>This stops Cabinet applying this round. It does not stop an external model turn.</p>
+  <p><a data-enhance-status-link href="{{ enhancement.status_url }}"{% if enhancement.schema == 'enhance/v1' or not enhancement.status_url %} hidden{% endif %}>Review enhancement status</a></p>
+  {% if enhancement.request_id %}<p>Request: {{ enhancement.request_id }}</p>{% endif %}
+</section>

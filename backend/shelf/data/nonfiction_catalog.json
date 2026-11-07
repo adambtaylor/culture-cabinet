@@ -1,0 +1,300 @@
+{
+  "version": 1,
+  "verified_at": "2026-10-31T00:44:36Z",
+  "clusters": [
+    {
+      "id": "deep_dives",
+      "label": "AI, history & geopolitics",
+      "reason": "Long conversations connecting models of intelligence with history and state power.",
+      "episodes": [
+        {
+          "key": "apple:podcast_episode:1000623089443",
+          "apple_episode_id": "1000623089443",
+          "apple_collection_id": "1434243584",
+          "title": "#392 – Joscha Bach: Life, Intelligence, Consciousness, AI & the Future of Humans",
+          "show": "Lex Fridman Podcast",
+          "apple_url": "https://podcasts.apple.com/us/podcast/392-joscha-bach-life-intelligence-consciousness-ai/id1434243584?i=1000623089443",
+          "published_at": "2023-08-01",
+          "duration_seconds": null,
+          "source_url": "https://lexfridman.com/joscha-bach-3/",
+          "retrieved_at": "2026-10-31T00:44:36Z",
+          "evidence_status": "not_independently_appraised",
+          "content_kind": "research_discussion",
+          "why": "Explores cognitive architecture, artificial consciousness and open-source AI; speculative positions remain the guest's views.",
+          "books": [
+            {
+              "title": "Principles of Synthetic Intelligence: Psi: An Architecture of Motivated Cognition",
+              "author": "Joscha Bach",
+              "publisher_url": "https://global.oup.com/academic/product/principles-of-synthetic-intelligence-9780195370676?title=Guide",
+              "source_url": "https://global.oup.com/academic/product/principles-of-synthetic-intelligence-9780195370676?title=Guide",
+              "why": "Technical bridge from the conversation about minds to a specified cognitive architecture.",
+              "isbn": "9780195370676"
+            }
+          ],
+          "cluster": "deep_dives"
+        },
+        {
+          "key": "apple:podcast_episode:1000563819491",
+          "apple_episode_id": "1000563819491",
+          "apple_collection_id": "1434243584",
+          "title": "#289 – Stephen Kotkin: Putin, Zelenskyy, and War in Ukraine",
+          "show": "Lex Fridman Podcast",
+          "apple_url": "https://podcasts.apple.com/au/podcast/289-stephen-kotkin-putin-zelenskyy-and-war-in-ukraine/id1434243584?i=1000563819491",
+          "published_at": "2022-05-25",
+          "duration_seconds": null,
+          "source_url": "https://lexfridman.com/stephen-kotkin-2/",
+          "retrieved_at": "2026-10-31T00:44:36Z",
+          "evidence_status": "not_independently_appraised",
+          "content_kind": "historical_discussion",
+          "why": "Connects Russian and Soviet history with the 2022 invasion; analysis is dated to the recording rather than a current forecast.",
+          "books": [
+            {
+              "title": "Stalin: Paradoxes of Power, 1878–1928",
+              "author": "Stephen Kotkin",
+              "publisher_url": "https://www.penguinrandomhouse.com/books/299269/stalin-by-stephen-kotkin/",
+              "source_url": "https://www.penguinrandomhouse.com/books/299269/stalin-by-stephen-kotkin/",
+              "why": "Historical context for the discussion of Russian state power; this volume ends in 1928.",
+              "isbn": "9780143127864"
+            }
+          ],
+          "cluster": "deep_dives"
+        }
+      ]
+    },
+    {
+      "id": "macroeconomics",
+      "label": "Money markets & financial systems",
+      "reason": "Understand market plumbing and compare competing monetary-system explanations.",
+      "episodes": [
+        {
+          "key": "apple:podcast_episode:1000469941965",
+          "apple_episode_id": "1000469941965",
+          "apple_collection_id": "1056200096",
+          "title": "Zoltan Pozsar and Perry Mehrling On The Historic Crisis Of Financial Market Plumbing",
+          "show": "Odd Lots",
+          "apple_url": "https://podcasts.apple.com/us/podcast/zoltan-pozsar-and-perry-mehrling-on-the-historic/id1056200096?i=1000469941965",
+          "published_at": "2020-03-30",
+          "duration_seconds": null,
+          "source_url": "https://omny.fm/shows/odd-lots/zoltan-pozsar-and-perry-mehrling-on-the-historic-c",
+          "retrieved_at": "2026-10-31T00:44:36Z",
+          "evidence_status": "not_independently_appraised",
+          "content_kind": "research_discussion",
+          "why": "A crisis-era explanation of funding stress and Federal Reserve intervention, useful before tackling rate transmission.",
+          "books": [
+            {
+              "title": "The New Lombard Street: How the Fed Became the Dealer of Last Resort",
+              "author": "Perry Mehrling",
+              "publisher_url": "https://pup-assets.imgix.net/onix/images/9781400836260/9780691242200.pdf?fm=pdf",
+              "source_url": "https://searchworks.stanford.edu/view/8838838",
+              "why": "Develops the money-market and central-bank framework behind the episode.",
+              "isbn": "9780691143989"
+            }
+          ],
+          "cluster": "macroeconomics"
+        },
+        {
+          "key": "apple:podcast_episode:1000579120792",
+          "apple_episode_id": "1000579120792",
+          "apple_collection_id": "1056200096",
+          "title": "Zoltan Pozsar and Perry Mehrling Debate Bretton Woods 3.0",
+          "show": "Odd Lots",
+          "apple_url": "https://podcasts.apple.com/us/podcast/zoltan-pozsar-and-perry-mehrling-debate-bretton-woods-3-0/id1056200096?i=1000579120792",
+          "published_at": "2022-09-11",
+          "duration_seconds": null,
+          "source_url": "https://omny.fm/shows/odd-lots/zoltan-pozsar-and-perry-mehrling-debate-bretton-wo",
+          "retrieved_at": "2026-10-31T00:44:36Z",
+          "evidence_status": "not_independently_appraised",
+          "content_kind": "research_discussion",
+          "why": "Contrasting interpretations of dollar dominance, commodities and monetary change; the thesis is debated rather than established.",
+          "books": [
+            {
+              "title": "The New Lombard Street: How the Fed Became the Dealer of Last Resort",
+              "author": "Perry Mehrling",
+              "publisher_url": "https://pup-assets.imgix.net/onix/images/9781400836260/9780691242200.pdf?fm=pdf",
+              "source_url": "https://searchworks.stanford.edu/view/8838838",
+              "why": "Develops the money-market and central-bank framework behind the episode.",
+              "isbn": "9780691143989"
+            }
+          ],
+          "cluster": "macroeconomics"
+        }
+      ]
+    },
+    {
+      "id": "sleep_health",
+      "label": "Sleep & health optimisation",
+      "reason": "Discovery seeds include Andrew Huberman, Matthew Walker and Bryan Johnson (the dictated Brian/Optimize interest); inclusion is not endorsement.",
+      "episodes": [
+        {
+          "key": "apple:podcast_episode:1000651280950",
+          "apple_episode_id": "1000651280950",
+          "apple_collection_id": "1545953110",
+          "title": "GUEST SERIES | Dr. Matt Walker: The Biology of Sleep & Your Unique Sleep Needs",
+          "show": "Huberman Lab",
+          "apple_url": "https://podcasts.apple.com/gb/podcast/huberman-lab/id1545953110?i=1000651280950",
+          "published_at": "2024-04-03",
+          "duration_seconds": null,
+          "source_url": "https://www.hubermanlab.com/episode/guest-series-dr-matthew-walker-the-biology-of-sleep-your-unique-sleep-needs",
+          "retrieved_at": "2026-10-31T00:44:36Z",
+          "evidence_status": "not_independently_appraised",
+          "content_kind": "research_discussion",
+          "why": "Introduces sleep stages, chronotype and individual needs. Discussion and linked studies require claim-by-claim appraisal; this is not proven personalised advice.",
+          "books": [
+            {
+              "title": "Why We Sleep: Unlocking the Power of Sleep and Dreams",
+              "author": "Matthew Walker",
+              "publisher_url": "https://www.simonandschuster.com/books/Why-We-Sleep/Matthew-Walker/9781501144325",
+              "source_url": "https://www.simonandschuster.com/books/Why-We-Sleep/Matthew-Walker/9781501144325",
+              "why": "Longer treatment of sleep and circadian topics; publisher description verifies the book, not clinical claims.",
+              "isbn": "9781501144325"
+            }
+          ],
+          "cluster": "sleep_health"
+        },
+        {
+          "key": "apple:podcast_episode:1000643355534",
+          "apple_episode_id": "1000643355534",
+          "apple_collection_id": "582272991",
+          "title": "The $2M Longevity Protocol: Bryan Johnson’s Biohacking Blueprint",
+          "show": "The Rich Roll Podcast",
+          "apple_url": "https://podcasts.apple.com/au/podcast/the-%242m-longevity-protocol-bryan-johnsons-biohacking/id582272991?i=1000643355534",
+          "published_at": null,
+          "duration_seconds": null,
+          "source_url": "https://www.youtube.com/watch?v=roHeUk7ApUo",
+          "retrieved_at": "2026-10-31T00:44:36Z",
+          "evidence_status": "not_independently_appraised",
+          "content_kind": "anecdote",
+          "why": "Personal self-experiment and longevity ambitions described by Johnson. The official description is promotional; reversal-of-aging claims are not independently supported by this catalog. The sleep book is a separate topic bridge, not validation of Blueprint.",
+          "books": [
+            {
+              "title": "Why We Sleep: Unlocking the Power of Sleep and Dreams",
+              "author": "Matthew Walker",
+              "publisher_url": "https://www.simonandschuster.com/books/Why-We-Sleep/Matthew-Walker/9781501144325",
+              "source_url": "https://www.simonandschuster.com/books/Why-We-Sleep/Matthew-Walker/9781501144325",
+              "why": "Longer treatment of sleep and circadian topics; publisher description verifies the book, not clinical claims.",
+              "isbn": "9781501144325"
+            }
+          ],
+          "cluster": "sleep_health"
+        }
+      ]
+    },
+    {
+      "id": "living_soil",
+      "label": "Urban orchards, soil & fungi",
+      "reason": "Pair community-orchard observation with measured soil testing and a focused mycorrhizae book.",
+      "episodes": [
+        {
+          "key": "apple:podcast_episode:1000758421498",
+          "apple_episode_id": "1000758421498",
+          "apple_collection_id": "1078657833",
+          "title": "How to Read a Soil Test for Fruit Trees (and What to Try Next) with Ariel Agenbroad",
+          "show": "Orchard People",
+          "apple_url": "https://podcasts.apple.com/us/podcast/how-to-read-a-soil-test-for-fruit-trees-and-what-to/id1078657833?i=1000758421498",
+          "published_at": "2026-03-31",
+          "duration_seconds": null,
+          "source_url": "https://podcasts.apple.com/us/podcast/how-to-read-a-soil-test-for-fruit-trees-and-what-to/id1078657833?i=1000758421498",
+          "retrieved_at": "2026-10-31T00:44:36Z",
+          "evidence_status": "not_independently_appraised",
+          "content_kind": "research_discussion",
+          "why": "An extension educator discusses pH, organic matter and test interpretation, encouraging context before amendments.",
+          "books": [
+            {
+              "title": "Teaming with Fungi: The Organic Grower's Guide to Mycorrhizae",
+              "author": "Jeff Lowenfels",
+              "publisher_url": "https://www.hachettebookgroup.com/titles/jeff-lowenfels/teaming-with-fungi/9781604697292/",
+              "source_url": "https://www.hachettebookgroup.com/titles/jeff-lowenfels/teaming-with-fungi/9781604697292/",
+              "why": "Topic bridge from orchard soil life to plant–fungus relationships; applicability depends on species and site.",
+              "isbn": "9781604697292"
+            }
+          ],
+          "cluster": "living_soil"
+        },
+        {
+          "key": "apple:podcast_episode:1000792193607",
+          "apple_episode_id": "1000792193607",
+          "apple_collection_id": "1078657833",
+          "title": "Why do some fruit trees thrive while others struggle? with Derek Barbe and Chrisina Balint",
+          "show": "Orchard People",
+          "apple_url": "https://podcasts.apple.com/us/podcast/why-do-some-fruit-trees-thrive-while-others-struggle/id1078657833?i=1000792193607",
+          "published_at": "2026-09-29",
+          "duration_seconds": null,
+          "source_url": "https://share.transistor.fm/s/02acd8c6",
+          "retrieved_at": "2026-10-31T00:44:36Z",
+          "evidence_status": "not_independently_appraised",
+          "content_kind": "anecdote",
+          "why": "Visits two Peterborough community orchards to compare tree growth and soil biology. Site observations generate questions; they do not establish causal benefits of a product or practice.",
+          "books": [
+            {
+              "title": "Teaming with Fungi: The Organic Grower's Guide to Mycorrhizae",
+              "author": "Jeff Lowenfels",
+              "publisher_url": "https://www.hachettebookgroup.com/titles/jeff-lowenfels/teaming-with-fungi/9781604697292/",
+              "source_url": "https://www.hachettebookgroup.com/titles/jeff-lowenfels/teaming-with-fungi/9781604697292/",
+              "why": "Topic bridge from orchard soil life to plant–fungus relationships; applicability depends on species and site.",
+              "isbn": "9781604697292"
+            }
+          ],
+          "cluster": "living_soil"
+        }
+      ]
+    },
+    {
+      "id": "unusual_history",
+      "label": "Espionage & unusual history",
+      "reason": "Narrative history spanning intelligence operations and wartime amphetamine use.",
+      "episodes": [
+        {
+          "key": "apple:podcast_episode:1000669016871",
+          "apple_episode_id": "1000669016871",
+          "apple_collection_id": "1229409577",
+          "title": "Inside the Iranian Embassy Siege with Ben Macintyre",
+          "show": "Spybrary Spy Podcast",
+          "apple_url": "https://podcasts.apple.com/us/podcast/inside-the-iranian-embassy-siege-with-ben-macintyre/id1229409577?i=1000669016871",
+          "published_at": "2024-09-10",
+          "duration_seconds": null,
+          "source_url": "https://spybrary.com/iranian-embassy-siege-ben-macintyre/",
+          "retrieved_at": "2026-10-31T00:44:36Z",
+          "evidence_status": "not_independently_appraised",
+          "content_kind": "historical_discussion",
+          "why": "Author interview on the 1980 siege, hostage negotiations and intelligence context, with a direct bridge to the source book.",
+          "books": [
+            {
+              "title": "The Siege: A Six-Day Hostage Crisis and the Daring Special-Forces Operation That Shocked the World",
+              "author": "Ben Macintyre",
+              "publisher_url": "https://www.penguinrandomhouse.com/books/739963/the-siege-by-ben-macintyre/",
+              "source_url": "https://www.penguinrandomhouse.com/books/739963/the-siege-by-ben-macintyre/",
+              "why": "The book discussed in the interview, expanding the 1980 embassy-crisis reconstruction.",
+              "isbn": "9780593728116"
+            }
+          ],
+          "cluster": "unusual_history"
+        },
+        {
+          "key": "apple:podcast_episode:1000727548166",
+          "apple_episode_id": "1000727548166",
+          "apple_collection_id": "1434243584",
+          "title": "#481 – Norman Ohler: Hitler, Nazis, Drugs, WW2, Blitzkrieg, LSD, MKUltra & CIA",
+          "show": "Lex Fridman Podcast",
+          "apple_url": "https://podcasts.apple.com/in/podcast/481-norman-ohler-hitler-nazis-drugs-ww2-blitzkrieg/id1434243584?i=1000727548166",
+          "published_at": "2025-09-19",
+          "duration_seconds": null,
+          "source_url": "https://lexfridman.com/norman-ohler/",
+          "retrieved_at": "2026-10-31T00:44:36Z",
+          "evidence_status": "not_independently_appraised",
+          "content_kind": "historical_discussion",
+          "why": "Includes Pervitin, military stimulant use and the author's response to historians' criticism. Drug use does not by itself establish an explanation for military outcomes.",
+          "books": [
+            {
+              "title": "Blitzed: Drugs in the Third Reich",
+              "author": "Norman Ohler",
+              "publisher_url": "https://www.harpercollins.com/products/blitzed-norman-ohler",
+              "source_url": "https://www.harpercollins.com/products/blitzed-norman-ohler",
+              "why": "Book behind the wartime-stimulant discussion; compare its interpretation with the criticism discussed in the episode."
+            }
+          ],
+          "cluster": "unusual_history"
+        }
+      ]
+    }
+  ]
+}

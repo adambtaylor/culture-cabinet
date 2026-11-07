@@ -1,0 +1,68 @@
+{% if obtain_search %}
+<h3>Obtain options for {{ obtain_search.title }}</h3>
+<p>Default scope: {% if obtain_search.scope == 'film' %}Full film{% elif obtain_search.scope == 'audiobook' %}Full audiobook{% elif obtain_search.scope == 'series_s01e01' %}Series — S01E01 only{% endif %}.</p>
+<p>Search listings for this saved title. A listing does not verify the title, year, edition, completeness or your rights to the content.</p>
+{% if obtain_preview_available %}
+<form method="post" action="{{ obtain_search.url }}">{% csrf_token %}
+{% if obtain_search.is_tv %}
+<p>Choose one episode. Leave both fields blank for the default S01E01.</p>
+<p><label for="obtain-season">Season (0–999)</label> <input id="obtain-season" name="season" type="number" min="0" max="999" step="1"></p>
+<p><label for="obtain-episode">Episode (1–999)</label> <input id="obtain-episode" name="episode" type="number" min="1" max="999" step="1"></p>
+{% endif %}
+<button type="submit">Search listings</button></form>
+{% else %}
+<p role="status">Preview storage is unavailable. Ask the operator to prepare local preview storage.</p>
+{% endif %}
+{% elif obtain_preview %}
+<h3>{% if obtain_selected_result %}Review exact listing{% else %}Listings for {{ obtain_preview.title }}{% endif %}</h3>
+<p>Fixed scope: {% if obtain_preview.scope == 'film' %}Full film{% elif obtain_preview.scope == 'audiobook' %}Full audiobook{% elif obtain_preview.episode_code %}Series — {{ obtain_preview.episode_code }} only{% endif %}.</p>
+{% if obtain_preview.state == 'results' or obtain_preview.state == 'partial' %}
+{% if obtain_preview.state == 'partial' %}<p role="status">Some listings were omitted because their title or indexer label could not be safely displayed. This preview does not show all returned listings.</p>{% endif %}
+<p>Listing claims only. Title, year, edition, full work and rights are unverified.</p>
+<p class="source-meta">Preview expires: <time datetime="{{ obtain_preview.expires_at }}">{{ obtain_preview.expires_at }}</time></p>
+{% if obtain_selected_result %}
+<article class="card provider-card obtain-listing">
+<h4>{{ obtain_selected_result.title }}</h4>
+<dl class="statements">
+<div><dt>Source / indexer</dt><dd>{{ obtain_selected_result.indexer|default:'Not reported' }}</dd></div>
+<div><dt>Reported size</dt><dd>{{ obtain_selected_result.size }} bytes ({{ obtain_selected_result.size|filesizeformat }})</dd></div>
+<div><dt>Edition</dt><dd>{{ obtain_selected_result.edition }}</dd></div>
+<div><dt>Full work</dt><dd>{{ obtain_selected_result.full_work }}</dd></div>
+</dl>
+</article>
+{% if obtain_result_form and obtain_result_confirm_url %}
+<p>Confirming records this exact listing as your local selection. It cannot download.</p>
+<form class="obtain-selection" method="post" action="{{ obtain_result_confirm_url }}">
+{% csrf_token %}
+{{ obtain_result_form.non_field_errors }}
+{{ obtain_result_form.review_token }}{{ obtain_result_form.review_token.errors }}
+{{ obtain_result_form.scope }}{{ obtain_result_form.scope.errors }}
+{{ obtain_result_form.edition.as_hidden }}{{ obtain_result_form.edition.errors }}
+<p>{{ obtain_result_form.authorized_content.errors }}{{ obtain_result_form.authorized_content }} {{ obtain_result_form.authorized_content.label_tag }}</p>
+<p>{{ obtain_result_form.storage.errors }}{{ obtain_result_form.storage.label_tag }} {{ obtain_result_form.storage }}</p>
+<p>{{ obtain_result_form.storage_check.errors }}{{ obtain_result_form.storage_check }} {{ obtain_result_form.storage_check.label_tag }}</p>
+<button type="submit">Confirm local selection</button>
+</form>
+{% endif %}
+{% else %}
+<div class="provider-grid">
+{% for result in obtain_preview.results %}
+<article class="card provider-card obtain-listing">
+<h4>{{ result.title }}</h4>
+<p class="source-meta">Source / indexer: {{ result.indexer|default:'Not reported' }}</p>
+<p>Reported size: {{ result.size }} bytes ({{ result.size|filesizeformat }})</p>
+<p>Edition: {{ result.edition }}<br>Full work: {{ result.full_work }}</p>
+{% if result.selectable %}<p><a href="{{ result.review_url }}">Review exact listing: {{ result.title }}</a></p>
+{% else %}<p>Cannot select: {% if result.reason == 'ambiguous_episode' %}a pack, multiple episodes or an unclear episode listing; only {{ obtain_preview.episode_code }} is in scope.{% elif result.reason == 'ebook_not_audiobook' %}an ebook listing; only a full audiobook is in scope.{% elif result.reason == 'unsupported_type' %}an unsupported listing type, such as a torrent.{% elif result.reason == 'category_mismatch' %}the reported category is outside this scope.{% elif result.reason == 'year_mismatch' %}the reported year differs from the saved title.{% elif result.reason == 'title_mismatch' %}the listing title differs from the saved title.{% else %}this listing is outside the fixed scope.{% endif %}</p>{% endif %}
+</article>
+{% empty %}<p role="status">No listings in this stored preview.</p>{% endfor %}
+</div>
+{% endif %}
+{% elif obtain_preview.state == 'searching' %}<p role="status">Searching listings. Refresh this page to see stored results.</p>
+{% elif obtain_preview.state == 'empty' %}<p role="status">No listings found. This does not establish availability.</p>
+{% elif obtain_preview.state == 'failed' %}<p role="status">Search failed. Return to the saved title’s obtain options to try again.</p>
+{% elif obtain_preview.state == 'unconfigured' %}<p role="status">Listing search is not configured. Ask the operator to check the search connection.</p>
+{% elif obtain_preview.state == 'expired' %}<p role="status">Preview expired. Return to the saved title’s obtain options for a fresh search.</p>
+{% else %}<p role="status">Preview unavailable.</p>{% endif %}
+{% endif %}
+<p>Local confirmation records a selection and cannot download. Submission is disabled by default and requires trusted operator setup and a separate fresh review.</p>

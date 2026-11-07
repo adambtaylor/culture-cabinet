@@ -1,0 +1,148 @@
+{% extends 'provider_base.html' %}
+{% block title %}Selected social sources{% endblock %}
+{% block content %}
+<section class="paper-panel">
+  <p class="eyebrow">Cultural discovery · {% if mode == 'sample' %}isolated fictional sample{% else %}your selected sources{% endif %}</p>
+  <h1>Events without the feed</h1>
+  <p>Choose a small set of venues, artists and cultural pages. Review short event leads here, then open a source only when you want the details.</p>
+  <p><a href="?mode=household">Your sources</a> · <a href="?mode=sample">Try the isolated sample</a> · <a href="{% url 'discovery_profile' selected_profile.pk %}">Music &amp; events</a></p>
+  {% if mode == 'sample' %}
+  <p><strong>SAMPLE: invented content and browser states. No account or website is accessed. Sample imports stay here.</strong></p>
+  {% else %}
+  <p><strong>Browser adapter not connected.</strong> This candidate cannot read Facebook or Instagram yet. You can select sources and manually enter a cultural announcement you have seen.</p>
+  {% endif %}
+  <ol>
+    <li>Select exact followed cultural pages, or a related public Facebook event. No automatic followed-list import.</li>
+    <li>Later, sign in personally in your browser. A connected read will stop for login, a challenge or an access block. Sessions stay in that browser; continued access is not guaranteed.</li>
+    <li>Queue and run one bounded read per source. Review each lead before importing it; importing is not a like, attendance claim or ticket reservation.</li>
+  </ol>
+  <p>Each task is limited to one page, five leads, eight UI actions and 60 seconds. No background schedule is created. Only cultural announcements from the selected source are in scope.</p>
+  <p>Source text is untrusted. An announcement does not confirm an exact session, ticket availability, price or cancellation status.</p>
+</section>
+{% if not ready %}<section class="paper-panel"><h2>Storage unavailable</h2><p>Source selections cannot be saved until the candidate migration is applied. No migration or browser read occurs on this page.</p></section>{% else %}
+<section class="paper-panel">
+  <h2>1. Choose sources <small>{{ sources|length }} / 12</small></h2>
+  {% if mode == 'sample' %}
+  <form method="post" action="{{ action_url }}">{% include 'cabinet/social_fields.html' %}
+    <input type="hidden" name="platform" value="facebook"><input type="hidden" name="url" value="https://www.facebook.com/fixture-cultural-studio">
+    <input type="hidden" name="label" value="SAMPLE: Moving Light Studio"><input type="hidden" name="kind" value="artist">
+    <input type="hidden" name="scope" value="followed"><input type="hidden" name="confirmed" value="on">
+    <button name="action" value="add_source">Add fictional cultural source</button>
+  </form>
+  {% endif %}
+  <details><summary>Add a {% if mode == 'sample' %}sample{% else %}selected{% endif %}source</summary>
+  <form method="post" action="{{ action_url }}">{% include 'cabinet/social_fields.html' %}
+    <p><label>Platform <select name="platform"><option value="facebook">Facebook</option><option value="instagram">Instagram</option></select></label></p>
+    <p><label>Short label <input name="label" maxlength="100" required placeholder="Venue or artist name"></label></p>
+    <p><label>Clean page link <input type="url" name="url" maxlength="512" required placeholder="https://www.instagram.com/venue_name"></label></p>
+    <p><label>Source type <select name="kind"><option value="venue">Venue</option><option value="artist">Artist</option><option value="page">Cultural page</option><option value="event">Public Facebook event</option></select></label></p>
+    <p><label>Scope <select name="scope"><option value="followed">A cultural page I explicitly choose from those I follow</option><option value="public_event">A related public Facebook event I explicitly select</option></select></label></p>
+    <p><label><input type="checkbox" name="confirmed" required> I selected this cultural source. It is not a personal feed, private friend post or message.</label></p>
+    <button name="action" value="add_source">Save selected source</button>
+  </form></details>
+  {% for source in sources %}
+  <article class="paper-panel">
+    <h3>{{ source.label }}</h3><p>{{ source.platform }} · {{ source.kind }} · {{ source.scope }}</p>
+    {% if mode == 'household' %}<p><a href="{{ source.url }}" target="_blank" rel="noopener noreferrer">Open selected source</a></p>{% endif %}
+    <form method="post" action="{{ action_url }}">{% include 'cabinet/social_fields.html' %}
+      <input type="hidden" name="identity" value="{{ source.id }}"><input type="hidden" name="confirmed" value="on">
+      {% if mode == 'sample' %}<label>Fictional browser outcome <select name="scenario">{% for value in scenarios %}<option value="{{ value }}">{{ value }}</option>{% endfor %}</select></label>{% endif %}
+      <button name="action" value="queue">Queue one read</button>
+    </form>
+    <details><summary>Manual fallback: enter one cultural announcement</summary>
+    <p>Use a short factual title and the exact post or event permalink. Do not paste private posts, credentials, unrelated personal details or an entire page. The entry remains an unconfirmed lead.</p>
+    <form method="post" action="{{ action_url }}">{% include 'cabinet/social_fields.html' %}
+      <input type="hidden" name="identity" value="{{ source.id }}">
+      <p><label>Short event title <input name="title" maxlength="160" required></label></p>
+      <p><label>Exact post/event link <input type="url" name="post_url" maxlength="512" required></label></p>
+      <p><label>Official event link, if this post supplies one <input type="url" name="event_url" maxlength="2048"></label><small> Optional: supported official sources include Triple R and Moshtix. Leave blank if unavailable; no title-based matching.</small></p>
+      <p><label>Date wording shown on source <input name="listed_when" maxlength="160" placeholder="Unknown or date to be announced"></label></p>
+      <p><label><input type="checkbox" name="confirmed" required> I saw this cultural announcement on the selected source and want to review it here.</label></p>
+      <button name="action" value="manual">Add to review inbox</button>
+    </form></details>
+    <form method="post" action="{{ action_url }}">{% include 'cabinet/social_fields.html' %}<input type="hidden" name="identity" value="{{ source.id }}"><input type="hidden" name="confirmed" value="on">
+      <button name="action" value="remove_source">Remove source and its captured leads</button>
+    </form>
+  </article>{% empty %}<p>No sources selected. Start with a few favourite cultural venues or artists; the general social feed is outside this task.</p>{% endfor %}
+</section>
+<section class="paper-panel">
+  <h2>2. One-shot queue <small>{{ tasks|length }} / 30</small></h2>
+  {% for task in tasks %}
+  <article><h3>{{ task.source.label }}</h3><p><strong>{{ task.status_label }}</strong><br>Queued {{ task.queued_at }}{% if task.checked_at %} · Read started {{ task.checked_at }}{% endif %}</p>
+    {% if task.status == 'queued' or task.status == 'reading' %}
+    <form method="post" action="{{ action_url }}">{% include 'cabinet/social_fields.html' %}<input type="hidden" name="identity" value="{{ task.id }}"><input type="hidden" name="confirmed" value="on">
+      {% if task.status == 'queued' %}<button name="action" value="run">Run this bounded read</button>{% endif %}
+      <button name="action" value="cancel">Cancel task locally</button>
+    </form>{% endif %}
+    {% if task.status == 'login_needed' or task.status == 'challenge' or task.status == 'policy_block' %}<p>Handle access yourself in the ordinary browser, or use manual entry above. No bypass or automatic retry is available.</p>{% endif %}
+  </article>{% empty %}<p>Nothing queued. Opening this page does not read social accounts.</p>{% endfor %}
+  {% if tasks %}<form method="post" action="{{ action_url }}">{% include 'cabinet/social_fields.html' %}<input type="hidden" name="confirmed" value="on"><button name="action" value="clear_tasks">Clear completed task summaries</button></form>{% endif %}
+</section>
+<section class="paper-panel">
+  <h2>3. Review leads <small>{{ inbox|length }} / 60</small></h2>
+  {% for row in inbox %}
+  <article class="paper-panel">
+    <p class="eyebrow">Announcement · {{ row.provenance }} · {{ row.review }}</p><h3>{{ row.title }}</h3>
+    <p>Selected source: {{ row.source.label }}<br>Captured {{ row.captured_at }}<br>Source publication time: {{ row.published_at|default:'unknown' }}</p>
+    <p>Source date wording: {{ row.listed_when|default:'unknown' }}. Exact session and timezone unconfirmed.<br>Confidence: {% if row.provenance == 'manual-entry' %}human-entered lead{% elif row.provenance == 'fixture' %}fictional sample only{% else %}browser-observed lead{% endif %}; independently unverified. Ticket availability, price and cancellation unknown.</p>
+    <p>{% if row.fresh %}Captured within 24 hours; source freshness remains unknown.{% else %}<strong>Stale capture: excluded from current discovery. Withdraw an imported lead, then read or enter it again.</strong>{% endif %}</p>
+    {% if mode == 'household' %}<p><a href="{{ row.post_url }}" target="_blank" rel="noopener noreferrer">View original announcement</a>{% if row.event_url %} · <a href="{{ row.event_url }}" target="_blank" rel="noopener noreferrer">Linked official event</a>{% endif %}</p>{% endif %}
+    {% if row.duplicate %}<p><strong>Already in a current feed:</strong> {{ row.duplicate.title }}. The exact event link matches; this social lead will not add a second recommendation. Both sources remain available here.</p>{% endif %}
+    {% if row.review == 'imported' %}
+    <p>{% if mode == 'sample' %}Reviewed inside this sample only. It cannot enter your discovery.{% else %}Eligible for Music &amp; events while fresh. No preference, booking or calendar change was recorded.{% endif %}</p>
+    <form method="post" action="{{ action_url }}">{% include 'cabinet/social_fields.html' %}<input type="hidden" name="identity" value="{{ row.id }}"><input type="hidden" name="confirmed" value="on"><button name="action" value="withdraw">Withdraw from discovery and review again</button></form>
+    {% elif row.fresh %}
+    <form method="post" action="{{ action_url }}">{% include 'cabinet/social_fields.html' %}<input type="hidden" name="identity" value="{{ row.id }}">
+      <p><label><input type="checkbox" name="confirmed" required> I reviewed this announcement as an unconfirmed cultural lead.</label></p>
+      <button name="action" value="import">{% if mode == 'sample' %}Mark reviewed in sample{% else %}Import this lead into discovery{% endif %}</button>
+    </form>{% endif %}
+    <form method="post" action="{{ action_url }}">{% include 'cabinet/social_fields.html' %}<input type="hidden" name="identity" value="{{ row.id }}"><input type="hidden" name="confirmed" value="on"><button name="action" value="discard">Discard captured lead</button></form>
+  </article>{% empty %}<p>No leads awaiting review. A login failure or an empty bounded read never means there are no events.</p>{% endfor %}
+</section>
+<section class="paper-panel">
+  <h2>4. Public event observations</h2>
+  <p>Record one public cultural event you already observed in a browser or received as a manual handoff. This form does not open a browser, call a social API or crawl an account. Private parties and private locations are excluded before storage. Keep only short public event facts and evidence references; never paste a page, messages, credentials or personal details.</p>
+  <p>A browser observation is not proof that a human performed the action. Choose owner-confirmed only with evidence that the owner acted. Agent-marked and unknown-origin signals are excluded from preference reinforcement, including later recaptures of that lineage. Attending shows stronger intent than Interested; neither proves enjoyment, completed attendance, booking, ticket ownership or payment.</p>
+  <details><summary>Record a public event observation</summary>
+  <form method="post" action="{{ action_url }}">{% include 'cabinet/social_fields.html' %}
+    <p><label>Platform <select name="platform"><option value="facebook">Facebook</option><option value="instagram">Instagram</option></select></label></p>
+    <p><label>Observed platform event ID <input name="platform_event_id" maxlength="100" required></label></p>
+    <p><label>Observed canonical public event link <input type="url" name="canonical_url" maxlength="512" required></label></p>
+    <p><label>Short event title <input name="title" maxlength="160" required></label></p>
+    <p><label>Public organizer, if shown <input name="organizer" maxlength="160"></label></p>
+    <p><label>Public venue, if shown <input name="venue" maxlength="160"></label></p>
+    <p><label>Date/time exactly as shown <input name="raw_date_time" maxlength="200" required placeholder="unknown if unresolved"></label></p>
+    <p><label>Observed timezone <input name="timezone_name" maxlength="64" required placeholder="unknown if unresolved"></label> Keep source wording; no date or timezone is guessed.</p>
+    <p><label>Observation time with UTC offset <input name="observed_at" maxlength="64" required placeholder="2026-10-30T12:00:00+00:00"></label></p>
+    <p><label>Browser or manual evidence reference <input name="evidence_ref" maxlength="240" required></label></p>
+    <p><label>Who performed the signal? <select name="actor_origin"><option value="unknown">Unknown origin</option><option value="owner_confirmed">Owner-confirmed action, supported by evidence</option><option value="agent_marked">Agent-marked action</option></select></label></p>
+    <p><label>Observed signal <select name="signal_type"><option value="none">No interest signal observed</option><option value="interested">Interested</option><option value="attending">Attending</option></select></label></p>
+    <p><label>Evidence confidence <select name="confidence"><option value="observed">Observed</option><option value="reported">Reported</option><option value="uncertain">Uncertain</option></select></label></p>
+    <p><label>Action lineage reference <input name="lineage_ref" maxlength="240" required></label> Use the same reference when recapturing the same action.</p>
+    <p><label>Prior observation ID this corrects, if any <input name="supersedes" maxlength="64" pattern="[a-f0-9]{64}"></label></p>
+    <p><label>Short conflict or correction note, if needed <input name="conflict_note" maxlength="240"></label></p>
+    <p><label><input type="checkbox" name="public_confirmed" required> This is a public cultural event, with public venue metadata; it is not a private party.</label></p>
+    <p><label><input type="checkbox" name="confirmed" required> I reviewed this minimal observation and its action provenance.</label></p>
+    <button name="action" value="observe_event">Save public event observation</button>
+  </form></details>
+  <p>History is preserved as observations and corrections. Identical recapture does not add independent interest. Eligibility below describes the evidence only; recording an observation does not itself update preferences.</p>
+  {% for row in event_intake %}
+  <article class="paper-panel">
+    <h3>{{ row.title }}</h3>
+    <p>{{ row.platform }} · event {{ row.platform_event_id }}<br>Organizer: {{ row.organizer|default:'unknown' }} · Public venue: {{ row.venue|default:'unknown' }}<br>Raw date/time: {{ row.raw_date_time }} · Timezone: {{ row.timezone_name }}</p>
+    <p>Signal: {{ row.signal_type }} · Origin: {{ row.actor_origin }} · Confidence: {{ row.confidence }}<br>Observed: {{ row.observed_at }}<br>Captured: {{ row.captured_at }} · Capture actor: {{ row.capture_actor }}</p>
+    <p>Evidence reference: {{ row.evidence_ref }}<br>Action lineage: {{ row.lineage_ref }}<br>Observation ID: {{ row.id }}</p>
+    {% if row.canonical_url %}<p><a href="{{ row.canonical_url }}" target="_blank" rel="noopener noreferrer">Observed public event</a></p>{% endif %}
+    <p>{% if row.eligible %}<strong>Current eligible owner signal</strong>{% else %}<strong>Excluded from current preference evidence:</strong> {{ row.exclusion_reason }}{% endif %}</p>
+    {% if row.supersedes %}<p>Correction of observation {{ row.supersedes }}.</p>{% endif %}
+    {% if row.superseded %}<p>This historical observation has been superseded.</p>{% endif %}
+    {% if row.conflicts %}<p><strong>Conflicting source facts:</strong> {{ row.conflicts|join:', ' }}. Review the preserved observations; no conflicting value is silently chosen.</p>{% endif %}
+    {% if row.conflict_note %}<p>Conflict note: {{ row.conflict_note }}</p>{% endif %}
+    <form method="post" action="{{ action_url }}">{% include 'cabinet/social_fields.html' %}
+      <input type="hidden" name="identity" value="{{ row.id }}"><input type="hidden" name="confirmed" value="on">
+      <button name="action" value="event_withdraw">Withdraw this event and its observations</button>
+    </form>
+  </article>{% empty %}<p>No public event observations recorded.</p>{% endfor %}
+</section>
+{% endif %}
+{% endblock %}

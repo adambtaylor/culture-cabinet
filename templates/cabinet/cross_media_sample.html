@@ -1,0 +1,75 @@
+{% extends 'provider_base.html' %}
+{% block title %}{{ sample_title }} · offline reconstructed/simulated data{% endblock %}
+{% block navigation %}<nav aria-label="Cabinet"><a href="{% url 'profiles' %}">Return to catalogue profiles</a></nav>{% endblock %}
+{% block content %}
+<p class="eyebrow">SAMPLE / offline cross-media research</p>
+<h1>{{ sample_title }}</h1>
+<p class="lede">{{ temporary_notice }}</p>
+<p>The inherited “Real catalogue” banner and Hardcover footer describe the wider demo. This SAMPLE contains reconstructed or fictional data only: no live catalogue or Hardcover book records were fetched here.</p>
+<p>{{ provenance_label }} {{ freshness_label }}</p>
+<p>{{ ranking_label }} Simulated roots are not the owner’s likes. Login identifies access only; this page does not use your profile or taste.</p>
+<p>Hardcover mapping: <strong>{{ mapping_status }}</strong>. {{ mapping_label }} Known-work Hardcover mappings remain unresolved. Fixture construction time is not source freshness.</p>
+<nav aria-label="Choose a sample trail">
+  <ul>
+    <li><a href="{% url 'cross_media_sample' %}?trail=dune"{% if trail_id == 'dune' %} aria-current="page"{% endif %}>SAMPLE: Dune novel to film</a></li>
+    <li><a href="{% url 'cross_media_sample' %}?trail=dune-messiah"{% if trail_id == 'dune-messiah' %} aria-current="page"{% endif %}>SAMPLE: Dune Messiah to TV to Children of Dune</a></li>
+    <li><a href="{% url 'cross_media_sample' %}?trail=synthetic-lanes"{% if trail_id == 'synthetic-lanes' %} aria-current="page"{% endif %}>SAMPLE: five fictional seed lanes</a></li>
+  </ul>
+</nav>
+<section aria-labelledby="root-heading">
+  <h2 id="root-heading">Sample starting point</h2>
+  <p>{{ root.title }} · {{ root.key }}</p>
+  <p>Source: {{ root.provider }} · Provenance: {{ root.provenance }} · Freshness: {{ root.freshness }} · Snapshot: {{ root.fetched_at|default_if_none:'unknown' }}</p>
+  {% if root.url and root.provenance != 'synthetic' and root.provenance != 'simulated' %}<p><a href="{{ root.url }}">View {{ root.title }} on {{ root.provider }}</a></p>{% endif %}
+</section>
+<section aria-labelledby="trail-heading">
+  <h2 id="trail-heading">Why this? Relationship trails</h2>
+  <p>“based-on” records a source relationship. Identity links connect identifiers. Each path shows traversal separately from the recorded relationship direction; a related work never becomes a preference automatically.</p>
+  {% for card in cards %}
+  <article class="paper-panel">
+    <h3>{{ card.title }}</h3>
+    <p>{{ card.key }} · {{ card.medium }} · Source: {{ card.provider }}</p>
+    <p>Provenance: {{ card.provenance }} · Freshness: {{ card.freshness }} · Snapshot: {{ card.fetched_at|default_if_none:'unknown' }}</p>
+    {% if card.url and card.provenance != 'synthetic' and card.provenance != 'simulated' %}<p><a href="{{ card.url }}">View {{ card.title }} on {{ card.provider }}</a></p>{% endif %}
+    <details open><summary>Why this? Path from {{ root.title }}</summary>
+      <p>Provider-neighbor hops: {{ card.neighbor_hops }} · Factual hops: {{ card.fact_hops }}</p>
+      <ol>{% for step in card.path %}<li>
+        <p>Path: {{ step.from_key }} → {{ step.to_key }} · Traversal: {{ step.traversal }}</p>
+        <p>Relationship: {{ step.kind }} · Recorded direction: {{ step.source }} → {{ step.target }} · Original rank (zero-based): {{ step.rank }}</p>
+        <ul>{% for evidence in step.evidence %}<li>
+          Source: {{ evidence.entity|default_if_none:'unknown' }} · Property: {{ evidence.property|default_if_none:'unknown' }} · Claim rank: {{ evidence.rank }} · Provenance: {{ evidence.provenance }}.
+          Statement ID: {{ evidence.statement_id|default_if_none:'unknown' }} · Revision: {{ evidence.revision|default_if_none:'unknown' }} · Checked at: {{ evidence.checked_at|default_if_none:'unknown' }}.
+          {% if evidence.source_url %}<a href="{{ evidence.source_url }}">Wikidata evidence for {{ evidence.entity }} / {{ evidence.property }}</a>{% endif %}
+        </li>{% empty %}<li>SIMULATED relationship; no captured source evidence. Freshness unknown.</li>{% endfor %}</ul>
+      </li>{% endfor %}</ol>
+    </details>
+  </article>
+  {% empty %}<p>No reachable sample relationships supplied.</p>{% endfor %}
+</section>
+{% if lanes %}
+<section aria-labelledby="lanes-heading">
+  <h2 id="lanes-heading">SIMULATED human history and provider ranks</h2>
+  <p>Wholly fictional responses demonstrate separate experienced and anticipated seeds. No actual human history is loaded. Fictional identifiers below are examples, not verified catalogue bindings.</p>
+  {% for lane in lanes %}<article>
+    <h3>{{ lane.root.title }}</h3>
+    <p>Simulated root: {{ lane.root.key }} · Choice: {{ lane.choice }} · Signal: {{ lane.signal }} · Simulated history provenance: {{ lane.provenance }} · Fictional response time: {{ lane.responded_at|default_if_none:'unknown' }}</p>
+    {% if lane.path_budget_reached %}<p>Traversal budget reached; coverage may be incomplete.</p>{% endif %}
+    <ol>{% for member in lane.members %}<li>{{ member.title }} · {{ member.key }} · Source: {{ member.provider }} · Provenance: {{ member.provenance }} · Freshness: {{ member.freshness }}.
+      {% for step in member.path %}<p>Why this? {{ step.from_key }} → {{ step.to_key }} · Relationship: {{ step.kind }} · Traversal: {{ step.traversal }} · SIMULATED original rank (zero-based): {{ step.rank }}</p>{% endfor %}
+    </li>{% empty %}<li>No members supplied for this lane.</li>{% endfor %}</ol>
+  </article>{% endfor %}
+  <h3>Round-robin selection and lane memberships</h3>
+  <ol>{% for member in selection %}<li>{{ member.title }} · {{ member.key }}
+    <ul>{% for membership in member.memberships %}<li>Lane: {{ membership.lane_id }}
+      {% for step in membership.path %}<p>Why this? {{ step.from_key }} → {{ step.to_key }} · {{ step.kind }} · {{ step.traversal }} · SIMULATED rank (zero-based): {{ step.rank }}</p>{% endfor %}
+    </li>{% endfor %}</ul>
+  </li>{% endfor %}</ol>
+</section>
+{% endif %}
+<section aria-labelledby="outcomes-heading">
+  <h2 id="outcomes-heading">SIMULATED offline outcome examples</h2>
+  <p>These illustrate distinct snapshot states, not live provider coverage or failures. “empty” means a successful empty result.</p>
+  <ul>{% for outcome in outcomes %}<li>{{ outcome.label }} · Status: {{ outcome.status }} · {{ outcome.reason }} · Checked at: {{ outcome.checked_at|default_if_none:'unknown' }} · Retry at: {{ outcome.retry_at|default_if_none:'unknown' }} · Expires at: {{ outcome.expires_at|default_if_none:'unknown' }}</li>{% endfor %}</ul>
+  <p>Implementation defaults: up to {{ limits.lanes }} seed lanes, {{ limits.neighbor_hops }} provider-neighbor hop and {{ limits.fact_hops }} factual hops per root. These limits are heuristics, not user facts.</p>
+</section>
+{% endblock %}

@@ -1,0 +1,146 @@
+{% extends 'provider_base.html' %}
+{% block title %}Saved items{% endblock %}
+{% block navigation %}<nav aria-label="Cabinet"><a href="{% url 'catalogue' %}">Explore catalogue</a><a href="{% url 'profiles' %}">Choose profile</a><form method="post" action="{% url 'logout' %}">{% csrf_token %}<button class="quiet" type="submit">Log out</button></form></nav>{% endblock %}
+{% block content %}
+<p class="eyebrow">The cabinet / {{ selected_profile.label }}</p>
+<h1>Keep a place for later.</h1>
+{% if selected_profile.id %}<p><a href="{% url 'acquired_files' selected_profile.id %}">Acquired files</a></p>{% endif %}
+<p class="lede">To watch, to read, and favourites. A saved heart records your intent to keep an item, separately from any statement that you enjoyed it.</p>
+{% if saved_available %}
+  {% for shelf in saved_lists %}
+  <section aria-labelledby="shelf-{{ forloop.counter }}"><div class="section-rule"><h2 id="shelf-{{ forloop.counter }}">{{ shelf.label }}</h2></div>
+    <div class="provider-grid">{% for item in shelf.items %}
+    <article class="card provider-card"><h3>{{ item.title }}</h3><p>{{ item.medium_label }}</p><p class="source-meta">Source: {{ item.provider_label }}{% if item.fetched_at %}<br>Fetched: <time datetime="{{ item.fetched_at }}">{{ item.fetched_at }}</time>{% endif %}</p>
+      {% if item.url %}<p><a href="{{ item.url }}" target="_blank" rel="noopener noreferrer" aria-label="{{ item.title }} on {{ item.provider_label }} (opens a new tab)">Open on {{ item.provider_label }}</a></p>{% endif %}
+      {% if item.remove_url %}<form method="post" action="{{ item.remove_url }}">{% csrf_token %}<button class="quiet" type="submit" aria-label="Remove {{ item.title }} from {{ shelf.label }}">Remove from this list</button></form>{% endif %}
+      {% if item.obtain_preview_url %}<p><a href="{{ item.obtain_preview_url }}">Obtain options for {{ item.title }}</a></p>{% elif obtain_available and item.obtain_review_url %}<p><a href="{{ item.obtain_review_url }}">Review obtain options for {{ item.title }}</a></p>{% endif %}
+    </article>
+    {% empty %}<p>No items here yet. Save a heart from the catalogue when something catches your eye.</p>{% endfor %}</div>
+  </section>
+  {% empty %}<section class="paper-panel"><h2>Your lists are empty</h2><p>Explore the catalogue and use a saved heart to keep a title for later.</p></section>{% endfor %}
+{% else %}
+<section class="paper-panel"><h2>Saved storage needs operator preparation</h2><p>The lists are <strong>To watch</strong>, <strong>To read</strong> and <strong>Favourites</strong>. Saving controls will appear when local list storage is ready. Your discovery choices work separately.</p></section>
+{% endif %}
+<section class="margin-note" aria-labelledby="obtain-heading"><h2 id="obtain-heading">Obtain</h2>
+{% if obtain_submission %}
+  {% include 'cabinet/obtain_submission.html' %}
+{% elif acquisition_job.has_transfer %}
+  <p>Your persisted submission receipt appears below. Remote progress and cancellation are unavailable with add-only access.</p>
+{% elif obtain_search or obtain_preview %}
+  {% include 'cabinet/obtain_preview.html' %}
+{% elif obtain_available and obtain_confirmation %}
+  <p>Review this exact selection before any authorized action.</p>
+  <dl class="statements">
+    <div><dt>Title</dt><dd>{{ obtain_confirmation.title }}</dd></div>
+    <div><dt>Edition</dt><dd>{{ obtain_confirmation.edition }}</dd></div>
+    <div><dt>Scope</dt><dd>{% if obtain_confirmation.scope == 'film' %}Full film{% elif obtain_confirmation.scope == 'audiobook' %}Full audiobook{% elif obtain_confirmation.scope == 'album_flac' %}One complete FLAC album{% elif acquisition_job.episode_code %}Series — {{ acquisition_job.episode_code }} only{% elif obtain_confirmation.scope == 'series_s01e01' %}Series — S01E01 only{% else %}Unconfirmed — no action available{% endif %}</dd></div>
+    <div><dt>Authorized content</dt><dd>{{ obtain_confirmation.authorized_content }}</dd></div>
+    <div><dt>Storage destination</dt><dd>{{ obtain_confirmation.storage }}</dd></div>
+    <div><dt>Duplicate check</dt><dd>{{ obtain_confirmation.duplicate_status }}</dd></div>
+    <div><dt>Cancellation status</dt><dd>{{ obtain_confirmation.cancel_status }}</dd></div>
+  </dl>
+  {% if acquisition_configuration %}
+  <dl class="statements">
+    <div><dt>Configuration status</dt><dd>{{ acquisition_configuration.status }}</dd></div>
+    <div><dt>Reason</dt><dd>{{ acquisition_configuration.reason }}</dd></div>
+    <div><dt>Availability</dt><dd>{{ acquisition_configuration.availability }}</dd></div>
+    <div><dt>Size</dt><dd>{{ acquisition_configuration.size }}</dd></div>
+    <div><dt>Storage capacity</dt><dd>{{ acquisition_configuration.storage_capacity }}</dd></div>
+  </dl>
+  {% endif %}
+  {% if obtain_form and obtain_confirm_url %}
+  <p>Enter your explicit edition label. It states your selection; no matching edition or availability has been verified. The scope above is fixed: a full film, a full audiobook (never an ebook), or series S01E01 only (never a season or full series).</p>
+  <form method="post" action="{{ obtain_confirm_url }}">
+    {% csrf_token %}
+    {{ obtain_form.as_p }}
+    <button type="submit">Confirm local obtain request</button>
+  </form>
+  <p>Confirmation records a local blocked request. Culture Cabinet acquisition is not yet connected or authorized; no download can start.</p>
+  <p>Repeated confirmation shares the existing request. To change its edition, cancel the request and open a new review. An old review still refers to the cancelled request.</p>
+  <p>If confirmation is rejected, return to your saved list and open a fresh review. Check the edition, legal-right and storage acknowledgements; if local storage is unavailable, ask the operator to check preparation before retrying.</p>
+  {% endif %}
+{% else %}
+  <p>Culture Cabinet acquisition is not yet connected or authorized. Hydra and SAB exist on the guest; this app has no confirmed acquisition connection or permissions. No title or edition availability has been verified.</p>
+  <p>No download can start. When saved storage is ready, open a title’s obtain review to confirm an explicit edition and your legal right to a full film, a full audiobook, or series S01E01 only.</p>
+{% endif %}
+</section>
+{% if acquisition_job %}
+<section class="paper-panel" aria-labelledby="job-heading"><h2 id="job-heading">Local obtain request {{ acquisition_job.id }}</h2>
+  <p role="status"><strong>{{ acquisition_job.status }}</strong>: {{ acquisition_job.reason }}</p>
+  {% if acquisition_job.postprocess_state %}<p>Local file evidence: {{ acquisition_job.postprocess_state }}. <a href="{{ acquisition_job.library_url }}">View acquired files</a></p>{% endif %}
+  {% if acquisition_job.completion_status %}
+  <p>Download completed according to SAB history at {{ acquisition_job.completion_status.acquired_at }}; recorded {{ acquisition_job.completion_status.observed_at }}.</p>
+  <p>Downloaded file bytes verified at {{ acquisition_job.completion_status.file_verified_at }}.</p>
+  {% if acquisition_job.completion_status.delivery_state == 'imported' %}<p>Kodi import was confirmed by the trusted Mac operator at {{ acquisition_job.completion_status.delivery_at }}.</p>
+  {% elif acquisition_job.completion_status.delivery_state == 'unknown' %}<p>Kodi import outcome is unknown. Reconcile the existing attempt before retrying.</p>
+  {% elif acquisition_job.completion_status.delivery_state == 'blocked' %}<p>Kodi import was blocked before a confirmed library result.</p>
+  {% else %}<p>Kodi import has not been reported.</p>{% endif %}
+  {% if acquisition_job.completion_status.scan_attempts == 1 %}<p>One Kodi scan was reserved. An interrupted attempt is reconciled by reading the library; it is not scanned again automatically.</p>{% endif %}
+  {% if acquisition_job.completion_status.readiness %}<p>Mac file bytes verified at {{ acquisition_job.completion_status.readiness.file_verified_at }}. {% if acquisition_job.completion_status.readiness.track_count %}{{ acquisition_job.completion_status.readiness.track_count }} FLAC tracks and matching Kodi songs and album were observed at{% else %}A video stream ({{ acquisition_job.completion_status.readiness.video_codec }}) and matching Kodi library entry were observed at{% endif %} {{ acquisition_job.completion_status.readiness.library_observed_at }}. Ready for a playback check; playback has not been tested.</p>{% endif %}
+  {% if not acquisition_job.completion_status.supported_consumer %}<p>Automatic import supports single-file films, the exact selected TV episode and complete FLAC albums. This selection needs a supported exact import contract.</p>{% endif %}
+  {% if acquisition_job.completion_status.kind == 'episode' %}
+  <p>TV destinations: Kodi and Apple TV are tracked separately.</p>
+  {% with apple=acquisition_job.completion_status.apple_tv_status %}
+  {% if apple.status == 'library_import_observed' %}<p>Apple TV library import was observed at {{ apple.checked_at }}. The exact library file and native compatibility matched; playback and HDR display output remain unverified.</p>
+  {% elif apple.status == 'handoff_pending' %}<p>Apple TV watchfolder handoff is pending. The handoff is reserved or awaiting ingestion; library import has not been observed.</p>
+  {% elif apple.status == 'unknown' %}<p>Apple TV handoff outcome is unknown. Reconcile the existing attempt before any retry.</p>
+  {% elif apple.status == 'remux_ready' %}<p>The Apple TV derivative was verified. Library import has not been observed.</p>
+  {% elif apple.status == 'blocked' %}<p>Apple TV import is blocked.
+    {% if apple.reason == 'unsupported_audio_codec' %}Choose a release with Apple TV compatible English audio. Audio will not be silently transcoded or downgraded.
+    {% elif apple.reason == 'english_audio_required' or apple.reason == 'ambiguous_audio' %}Choose one explicitly tagged English non-commentary audio stream.
+    {% elif apple.reason == 'unsupported_video_codec' %}Choose a compatible video source; automatic video re-encoding is not enabled.
+    {% elif apple.reason == 'unsupported_subtitles' or apple.reason == 'ambiguous_subtitle_language' %}English subtitles need supported text and explicit language tags; image subtitles require manual treatment.
+    {% elif apple.reason == 'unsupported_hdr' %}The HDR or Dolby Vision combination is unsupported. Choose a compatible source; HDR will not be silently removed.
+    {% elif apple.reason == 'insufficient_disk_space' %}Free space for the preserved original and remux/transfer staging before operator reconciliation.
+    {% elif apple.reason == 'source_verification_failed' %}Recheck the exact registered original files before continuing.
+    {% elif apple.reason == 'remux_reconciliation_required' %}Inspect the existing remux journal and output before retrying.
+    {% elif apple.reason == 'session_expired' %}The approved session ended. A new authorized session is required.
+    {% else %}Inspect the existing verification and handoff evidence before retrying.{% endif %}</p>
+  {% else %}<p>Apple TV import has not been reported.</p>{% endif %}
+  {% endwith %}
+  {% endif %}
+  <p>These are recorded observations. Current file availability, playback and complete-work identity remain unverified.</p>
+  {% endif %}
+  {% if acquisition_job.submission_enabled == False %}<p>Selection saved locally. Submission requires trusted operator setup and a fresh explicit review.</p>{% endif %}
+  <dl class="statements">
+    <div><dt>Exact title</dt><dd>{{ acquisition_job.title }}</dd></div>
+    <div><dt>Your edition label</dt><dd>{{ acquisition_job.edition }}</dd></div>
+    <div><dt>Fixed scope</dt><dd>{% if acquisition_job.scope == 'film' %}Full film{% elif acquisition_job.scope == 'audiobook' %}Full audiobook{% elif acquisition_job.scope == 'album_flac' %}One complete FLAC album{% elif acquisition_job.episode_code %}Series — {{ acquisition_job.episode_code }} only{% else %}Unconfirmed{% endif %}</dd></div>
+    <div><dt>Storage</dt><dd>{{ acquisition_job.storage }}</dd></div>
+    <div><dt>Availability</dt><dd>{{ acquisition_job.availability }}</dd></div>
+    <div><dt>Size</dt><dd>{{ acquisition_job.size }}</dd></div>
+    <div><dt>Storage capacity</dt><dd>{{ acquisition_job.storage_capacity }}</dd></div>
+  </dl>
+  {% if acquisition_job.submission_review_url and not obtain_submission %}
+  <form method="post" action="{{ acquisition_job.submission_review_url }}">{% csrf_token %}<button type="submit">Prepare submission review</button></form>
+  <p>Submission is unconfigured by default. This step requires independent operator verification and retrieves the selected NZB for review; it does not enqueue.</p>
+  {% endif %}
+  {% if acquisition_job.has_transfer %}
+    {% if acquisition_job.status == 'queued' %}<p>The downloader accepted one job. {% if acquisition_job.completion_status %}The recorded completion and import observations appear above.{% elif acquisition_job.postprocess_state == 'postprocess_verified' %}Postprocessing files were verified. Final completion remains unknown.{% else %}Completion and local availability are unknown.{% endif %}</p>
+    {% elif acquisition_job.status == 'outcome_unknown' %}<p>The enqueue outcome is unknown. Do not resubmit. Manual reconciliation is required.</p>
+    {% elif acquisition_job.status == 'failed' and acquisition_job.reason == 'provider_failed' %}<p>The downloader reported that this release could not be completed. It is not ready to watch or listen to. The exact request is retained; no automatic retry or Kodi import follows this failure.</p>
+    {% elif acquisition_job.status == 'local_verified' %}<p>Local bytes were verified at the recorded time. This handoff does not index the file or start playback. Any trusted playable-file attestation appears in the export.</p>
+    {% elif acquisition_job.status == 'cancel_pending' %}<p>Local cancellation recorded. Remote cancellation is unconfirmed.</p>{% endif %}
+    {% if acquisition_job.local_handoff_url %}<p><a href="{{ acquisition_job.local_handoff_url }}">Export verified local handoff for Kodi</a></p><p>Kodi owns player controls and must reverify the file before playback. No listening history is recorded.</p>{% endif %}
+  {% endif %}
+  {% if acquisition_job.status == 'blocked_configuration' and acquisition_job.cancel_url %}<form method="post" action="{{ acquisition_job.cancel_url }}">{% csrf_token %}<button class="quiet" type="submit">Cancel this local request</button></form>{% endif %}
+  {% if not acquisition_job.has_transfer %}<p>Cancellation changes only this local request. No remote transfer has started. Its title, edition and scope remain in the record.</p>{% endif %}
+  {% if saved_url %}<p><a href="{{ saved_url }}">Back to saved lists and all requests</a></p>{% endif %}
+</section>
+{% endif %}
+{% if saved_available %}
+<section aria-labelledby="jobs-heading"><div class="section-rule"><h2 id="jobs-heading">Your local obtain requests</h2></div>
+  <p>Requests remain accessible here after you remove a saved heart. Saving, removing and cancelling do not record enjoyment or change your discovery choices.</p>
+  <div class="provider-grid">{% for job in acquisition_jobs %}
+    <article class="card provider-card"><h3>{{ job.title }}</h3>
+      <p>Your edition label: {{ job.edition }}</p>
+      <p>Fixed scope: {% if job.scope == 'film' %}Full film{% elif job.scope == 'audiobook' %}Full audiobook{% elif job.scope == 'album_flac' %}One complete FLAC album{% elif job.episode_code %}Series — {{ job.episode_code }} only{% else %}Unconfirmed{% endif %}</p>
+      <p><strong>{{ job.status }}</strong>: {{ job.reason }}</p>
+      <p>Availability: {{ job.availability }} · Size: {{ job.size }} · Storage capacity: {{ job.storage_capacity }}</p>
+      {% if job.status_url %}<p><a href="{{ job.status_url }}">View request {{ job.id }} for {{ job.title }}</a></p>{% endif %}
+      {% if job.status == 'blocked_configuration' and job.cancel_url %}<form method="post" action="{{ job.cancel_url }}">{% csrf_token %}<button class="quiet" type="submit" aria-label="Cancel local request {{ job.id }} for {{ job.title }}">Cancel local request</button></form>{% endif %}
+    </article>
+  {% empty %}<p>No local obtain requests yet. Saving a heart does not create a request. Open a saved title’s review to make an explicit selection.</p>{% endfor %}</div>
+</section>
+{% endif %}
+{% endblock %}
