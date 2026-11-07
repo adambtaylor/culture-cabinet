@@ -246,9 +246,10 @@ def run(root, *, port=0):
         settings.PORTABLE_AUTHORITY = authority
         settings.PORTABLE_CONNECTIONS = ConnectionValidation(authority, MemoryCredentials(authority))
         from shelf.portable_enhance_service import EnhanceService
-        # Construct the inert durable service only; missing real producers keep
-        # readiness closed. No source port or personal transport is registered.
-        EnhanceService(authority, settings.PORTABLE_CONNECTIONS)
+        # Compose concrete ports without activating sources or inventing policy.
+        # Missing explicit source rights/credentials/confirmations keep sends shut.
+        EnhanceService.compose(authority, settings.PORTABLE_CONNECTIONS,
+            policy_provider=getattr(settings, 'PORTABLE_SOURCE_POLICY', None))
         server = make_server(boundary, get_wsgi_application())
         if not stopping:
             print('Origin: ' + boundary.origin, flush=True)

@@ -183,3 +183,16 @@ class PortableEnhanceServiceTests(ServiceCase):
                          first['publication_revision'])
         self.fault('UNKNOWN_RECONCILIATION_REQUIRED', self.start_run)
         self.assertEqual(PortableCabinetManifest.objects.count(), 1)
+
+
+class NormalCompositionReadinessTests(StoreCase):
+    def test_explicit_composition_without_sources_or_policy_stays_closed(self):
+        service = EnhanceService.compose(self.authority, self.service)
+        self.assertTrue(service._normal)
+        from shelf.inference_adapters import PersonalResponsesAdapter
+        self.assertIs(type(service.personal_transport), PersonalResponsesAdapter)
+        # Existing fake neutral validation cannot become personal send authority.
+        self.assertFalse(self.service.status(self.ref, self.config.pk, self.config.config_revision)['connection_ready'])
+        self.assertEqual(service._contexts, {})
+        service.close()
+        self.assertEqual(service._memory, {})

@@ -1,21 +1,25 @@
-"""Owner-scoped durable Enhance commands; no normal source/send capability yet.
+"""Owner-scoped durable Enhance composition with explicit source/send authority.
 
 The frozen HTTP interface accepts opaque references and explicit confirmations,
 never authority/body/source dictionaries. The source-independent store is real;
 the unleased current-evidence/writer and personal transport producers remain
 explicit gates. No legacy key, private profile, transport or selector fallback.
 """
+from contextlib import contextmanager
 from datetime import timedelta
+from dataclasses import replace
+import math
+import time
 import uuid
 
 from django.views.decorators.debug import sensitive_variables
 
-from . import grant_authority as ga, disclosure
+from . import grant_authority as ga, disclosure, profile_snapshot
 from .disclosure import canonical_bytes, read_json, DisclosureError
 from .enhance_contract import CategoryOutcome, EnhanceFault, StageEvent, digest
 from .enhance_coordinator import (EnhanceCoordinator, EnhanceOutcome, PlannedEnhance,
     CollectedEnhance, InferencePreview)
-from .models import ProfileCabinetState, SynthesisRun
+from .models import ProfileCabinetState, SynthesisRun, PortableConnection
 from .portable_authority import AuthorityFault
 from .portable_cabinet_store import CabinetStore, StateProvider, require, stamp
 
@@ -34,21 +38,27 @@ class _DurablePorts:
             self.store._match(row, current)
             require(intent.bindings == current.bindings, 'PREVIEW_STALE', 409)
             from .current_profile import CurrentProfile
-            if type(self.service.state_provider) is CurrentProfile:
-                query = next((view for view in current.source_views
-                    if view.connection_ref == self.service._memory.get(self.run_ref, {}).get('source_connection_ref')), None)
-                require(query is not None, 'PREVIEW_STALE', 409)
-                ga.assert_current(query)
-                require(plan.bindings.connection_digest == digest(canonical_bytes(query.connection_binding))
-                    and plan.bindings.grants_digest == digest(canonical_bytes(query.grants)), 'PREVIEW_STALE', 409)
+            if type(self.store.provider) is CurrentProfile:
+                memory = self.service._memory.get(self.run_ref, {})
+                planned = self.service._planned(memory)
+                plans = dict(planned.source_plans)
+                for query in current.source_views:
+                    selected = plans.get(query.connection_ref)
+                    require(selected is not None, 'PREVIEW_STALE', 409)
+                    ga.assert_current(query)
+                    require(selected.bindings.connection_digest == digest(canonical_bytes(query.connection_binding))
+                        and selected.bindings.grants_digest == digest(canonical_bytes(query.grants)), 'PREVIEW_STALE', 409)
+                require(set(plans) == {view.connection_ref for view in current.source_views}, 'PREVIEW_STALE', 409)
             if seal is not None:
                 seal.verify(plan, current.registry, now=self.service.authority.now())
-                if type(self.service.state_provider) is CurrentProfile:
-                    require(self.service.catalogue.revalidate_collection(seal, plan, current.registry), 'PREVIEW_STALE', 409)
+                if type(self.store.provider) is CurrentProfile:
+                    require(memory['coordinator'].catalogue.revalidate_collection(seal, plan, current.registry,
+                        source_plans=dict(planned.source_plans)), 'PREVIEW_STALE', 409)
             if body is not None and row.body_digest:
                 require(digest(body) == row.body_digest, 'PREVIEW_STALE', 409)
 
     def reserve_attempt(self, intent, seal, body):
+        require(type(body) is bytes and 0 < len(body) <= 16384, 'LIMIT_EXCEEDED', 422)
         row = self.store.status(self.run_ref)
         row = self.store.reserve(self.run_ref, body_digest=digest(body), expected_revision=row.revision)
         self.reservation = row.transport_request_id
@@ -64,10 +74,39 @@ class _DurablePorts:
                 and row.state == 'running' and row.attempts == 1 and not row.cancel_requested
                 and row.body_digest == digest(body), 'RUN_STALE', 409)
             self.store._change(row, portable_stage='in_flight')
-        # The actual personal transport must independently verify this original
-        # reservation/current proof after network setup. None is provided by the
-        # ordinary service; the registered neutral adapter is never widened here.
-        raw = self.service.personal_transport.dispatch(reservation, body)
+        # The distinct personal permit rechecks the original reservation after
+        # network setup. The neutral adapter retains its probe-only contract.
+        from .inference_adapters import PersonalResponsesAdapter
+        if type(self.service.personal_transport) is PersonalResponsesAdapter:
+            from .inference_transport import personal_permit
+            memory = self.service._memory[self.run_ref]
+            @contextmanager
+            def credential_scope():
+                # Preserve recovery -> owner -> vault lock order while checking
+                # the original durable reservation at the final send boundary.
+                with ga.recovery_guard(self.service.authority, self.store.session_ref,
+                                       profile_ref=self.store.profile_ref), self.service.authority._lock:
+                    planned = self.service._planned(memory)
+                    self.revalidate(planned.intent, planned.plan, memory['work'].collected.seal, body)
+                    with self.store.scope() as cabinet:
+                        current = self.store.current()
+                        latest = self.store._run(cabinet, self.run_ref)
+                        self.store._match(latest, current)
+                        require(latest.transport_request_id == reservation and latest.state == 'running'
+                            and latest.attempts == 1 and not latest.cancel_requested
+                            and latest.body_digest == digest(body), 'RUN_STALE', 409)
+                    validation = self.service.validation
+                    require(validation.status(self.store.session_ref, ga._uuid(self.store.connection_ref),
+                        current.view.context['config_revision'])['connection_ready'], 'VALIDATION_STALE', 409)
+                    with validation.vault.ephemeral(self.store.session_ref, ga._uuid(self.store.connection_ref),
+                        current.view.context['config_revision'],
+                        credential_generation=current.view.connection_binding['credential_generation']) as secret:
+                        yield secret
+            permit = personal_permit(digest(body), credential_scope, memory['expires_at'], self.service.authority.now)
+            raw = self.service.personal_transport.dispatch(reservation, body, permit=permit)
+        else:
+            require(self.service._isolated is _ISOLATED, 'CAPABILITY_UNAVAILABLE', 503)
+            raw = self.service.personal_transport.dispatch(reservation, body)
         self.store.record_result(self.run_ref, raw)
         return raw
 
@@ -82,8 +121,83 @@ class EnhanceService:
         self.personal_transport, self.state_provider = personal_transport, state_provider
         self.selector, self.reconciler = selector, reconciler
         self._isolated, self._pipeline, self._memory = None, None, {}
+        self._normal, self._contexts, self._policy_provider, self._clock = False, {}, None, None
         authority._enhance_service = self
         authority.boundary._closing.append(self.close)
+
+    @classmethod
+    def compose(cls, authority, validation, *, policy_provider=None, registry=None, clock=None):
+        from .category_registry import registry_view
+        from .inference_adapters import PersonalResponsesAdapter
+        from .enhance_selection import GroundedSelector
+        value = cls(authority, validation, registry=registry or registry_view(),
+                    personal_transport=PersonalResponsesAdapter(), selector=GroundedSelector())
+        value._normal, value._policy_provider, value._clock = True, policy_provider, clock
+        authority._revokers.append(value._revoke_context)
+        return value
+
+    def _revoke_context(self, ref):
+        for key, (_, provider, _) in list(self._contexts.items()):
+            if key[0] == ref:
+                provider.invalidate_content()
+                del self._contexts[key]
+        for key, memory in list(self._memory.items()):
+            if memory['session_digest'] == digest(ref.encode()):
+                del self._memory[key]
+
+    def _normal_context(self, session_ref, profile_ref):
+        from .current_profile import CurrentProfile
+        from .source_authority import SourceAuthority
+        from .source_adapters import MediaBackend, MoshtixBackend, registered_source
+        from .source_collection import SourceCollection, CollectionClock
+        from .discovery_transport import MediaHostLimiter, MoshtixHostLimiter
+        with ga.recovery_guard(self.authority, session_ref, profile_ref=profile_ref), self.authority._lock:
+            ga._bound(self.authority, session_ref, profile_ref)
+            rows = list(PortableConnection.objects.filter(installation_id=self.authority.boundary.installation_id,
+                removed=False).exclude(adapter='openai_responses').order_by('pk'))
+            signature = tuple((str(row.pk), row.adapter, row.config_revision, row.credential_generation) for row in rows)
+            key = (session_ref, str(profile_ref))
+            prior = self._contexts.get(key)
+            if prior and prior[0] == signature:
+                return prior[1:]
+            require(len(self._contexts) < 32 or prior is not None, 'CAPABILITY_UNAVAILABLE', 503)
+            if prior:
+                prior[1].invalidate_content()
+            clock = self._clock or CollectionClock()
+            sources, backends, configured, limiters = [], {}, {}, {}
+            for row in rows:
+                if row.adapter not in ('tmdb_movie', 'tmdb_tv', 'hardcover', 'moshtix_public'):
+                    continue
+                issuer = SourceAuthority(self.authority, session_ref, profile_ref=profile_ref,
+                    connection_ref=str(row.pk), policy_provider=self._policy_provider)
+                name = 'moshtix' if row.adapter == 'moshtix_public' else row.adapter
+                require(name not in backends, 'REVISION_CONFLICT', 409)
+                sources.append(issuer)
+                try:
+                    if name == 'moshtix':
+                        backend = MoshtixBackend(issuer, MoshtixHostLimiter(), clock=clock)
+                    else:
+                        provider_name = 'hardcover' if name == 'hardcover' else 'tmdb'
+                        limiter = limiters.setdefault(provider_name, MediaHostLimiter(provider_name))
+                        backend = MediaBackend(issuer, self.validation.vault, limiter, clock=clock)
+                    backends[name] = backend
+                except (AuthorityFault, EnhanceFault):
+                    # Keep unavailable sources in CurrentProfile's revision;
+                    # one missing credential must not erase other categories.
+                    pass
+                for category in registered_source(name).categories:
+                    if category in self.registry.categories:
+                        configured.setdefault(category, []).append(name)
+            provider = CurrentProfile(self.authority, sources=tuple(sources), registry=self.registry)
+            catalogue = SourceCollection(tuple((key, tuple(value)) for key, value in configured.items()),
+                                         backends, clock=clock)
+            self._contexts[key] = (signature, provider, catalogue)
+            return provider, catalogue
+
+    @staticmethod
+    def _planned(memory):
+        work = memory['work']
+        return work if type(work) is PlannedEnhance else work.collected.planned
 
     @classmethod
     def isolated_test(cls, authority, validation=None, *, pipeline=None, **kwargs):
@@ -95,21 +209,25 @@ class EnhanceService:
 
     def close(self):
         self._memory.clear()  # Raw bodies/reconstruction refs never survive process loss.
+        for _, provider, _ in self._contexts.values():
+            provider.invalidate_content()
+        self._contexts.clear()
 
     def _store(self, session_ref, profile_ref, connection_ref):
-        kwargs = dict(profile_ref=profile_ref, connection_ref=connection_ref, state_provider=self.state_provider)
+        provider = self._normal_context(session_ref, profile_ref)[0] if self._normal else self.state_provider
+        kwargs = dict(profile_ref=profile_ref, connection_ref=connection_ref, state_provider=provider)
         factory = CabinetStore.isolated_test if self._isolated is _ISOLATED else CabinetStore
         return factory(self.authority, session_ref, **kwargs)
 
     def _available(self):
         from .current_profile import CurrentProfile
-        configured = self.catalogue is not None and self.registry is not None
+        configured = (self.catalogue is not None or self._normal) and self.registry is not None
         isolated = (self._isolated is _ISOLATED and ga._fixture_database()
             and isinstance(self.state_provider, StateProvider)
             and callable(getattr(self.personal_transport, 'dispatch', None))
             and callable(getattr(self.selector, 'build', None)))
         concrete = type(self.state_provider) is CurrentProfile and self.state_provider.authority is self.authority
-        return configured and (isolated or concrete)
+        return configured and (isolated or concrete or self._normal)
 
     def _inference_available(self):
         return callable(getattr(self.personal_transport, 'dispatch', None)) and callable(getattr(self.selector, 'build', None))
@@ -153,6 +271,8 @@ class EnhanceService:
             actions.append('cancel')
         if row.portable_stage == 'published' and not redacted:
             actions.append('current')
+        if memory and memory.get('detail_dependency'):
+            value['dependency'] = memory['detail_dependency']
         value.update(revision=row.revision, actions=actions, allowed_actions=list(actions),
                      cancel_requested=row.cancel_requested)
         return value
@@ -188,15 +308,20 @@ class EnhanceService:
                 return self.status(session_ref, run_ref=str(prior.pk))
             require(self._available(), 'CAPABILITY_UNAVAILABLE', 503)
             current = store.current()
+        for key, value in list(self._memory.items()):
+            if self.authority.now() >= value['expires_at']:
+                self._memory.pop(key, None)
+        require(len(self._memory) < 128, 'CAPABILITY_UNAVAILABLE', 503)
         run_ref = str(uuid.uuid4())
         ports = _DurablePorts(self, store, run_ref)
         coordinator = self._pipeline if self._pipeline is not None else EnhanceCoordinator(
-            self.catalogue, ports, now=self.authority.now)
+            self._normal_context(session_ref, profile_ref)[1] if self._normal else self.catalogue,
+            ports, now=self.authority.now)
         if self._pipeline is not None:
             # Explicit memory-only fixture producer, never a normal registration.
             coordinator.ports = ports
         query_view = current.source_views[0] if current.source_views else current.view
-        arguments = {'inference_view': current.view} if current.source_views else {}
+        arguments = {'inference_view': current.view, 'source_views': current.source_views} if current.source_views else {}
         if self._isolated is not _ISOLATED:
             require(current.source_views, 'CAPABILITY_UNAVAILABLE', 503)
         planned = coordinator.plan(query_view, current.registry, run_ref=run_ref,
@@ -211,12 +336,18 @@ class EnhanceService:
 
     @sensitive_variables()
     def _install_preview(self, store, row, phase, work, body, expires_at, coordinator):
-        source_preview, issuer = None, None
+        source_preview, issuer, source_previews = None, None, []
         if phase == 'catalogue' and self._isolated is not _ISOLATED:
-            issuer = next((source for source in self.state_provider.sources
-                if source.connection_ref == work.query_view.connection_ref), None)
-            require(issuer is not None, 'CAPABILITY_UNAVAILABLE', 503)
-            source_preview = issuer.preview(work.plan)
+            for key, plan in work.source_plans:
+                source = next((source for source in store.provider.sources if source.connection_ref == key), None)
+                require(source is not None, 'CAPABILITY_UNAVAILABLE', 503)
+                try:
+                    source_previews.append((source, source.preview(plan)))
+                except EnhanceFault as error:
+                    if error.code not in ('NO_GROUNDED_CANDIDATES', 'CAPABILITY_UNAVAILABLE', 'AUTHORITY_DENIED'):
+                        raise
+            require(source_previews, 'CAPABILITY_UNAVAILABLE', 503)
+            issuer, source_preview = source_previews[0]
             body = source_preview['body'].encode('utf-8')
         preview_ref = str(uuid.uuid4())
         run_ref = str(row.pk)
@@ -240,8 +371,60 @@ class EnhanceService:
         row = store.checkpoint(run_ref, stage='awaiting_preview', outcomes=outcomes, metadata=metadata, **sealed)
         self._memory[run_ref] = {'phase': phase, 'work': work, 'body': body, 'preview_ref': preview_ref,
             'expires_at': expires, 'session_digest': metadata['session_digest'], 'coordinator': coordinator,
-            'source_preview': source_preview, 'issuer': issuer,
+            'source_preview': source_preview, 'issuer': issuer, 'source_previews': source_previews,
+            'source_index': 0, 'details_prepared': False,
             'source_connection_ref': work.query_view.connection_ref if phase == 'catalogue' else work.collected.planned.query_view.connection_ref}
+
+    def _next_source_preview(self, store, row, memory):
+        index = memory['source_index'] + 1
+        if index >= len(memory['source_previews']):
+            return False
+        issuer, source = memory['source_previews'][index]
+        body = source['body'].encode()
+        preview_ref = str(uuid.uuid4())
+        store.checkpoint(str(row.pk), stage='awaiting_preview', metadata={'phase': 'catalogue',
+            'preview_ref': preview_ref, 'preview_digest': digest(body), 'session_digest': memory['session_digest']})
+        memory.update(source_index=index, issuer=issuer, source_preview=source,
+                      body=body, preview_ref=preview_ref)
+        return True
+
+    def _prepare_details(self, store, row, memory):
+        from .source_collection import SourceCollection
+        planned = memory['work']; catalogue = memory['coordinator'].catalogue
+        memory['details_prepared'] = True
+        book = catalogue.backends.get('hardcover') if type(catalogue) is SourceCollection else None
+        if book is None or book.issuer.connection_ref not in dict(planned.source_plans):
+            return False
+        # Only Hardcover search runs in this preparatory collection. Other
+        # sources remain unsent until the derived IDs get their OWN confirmation.
+        # Sharing the producer's bounded state resumes its original search permit;
+        # it never retries that search or promotes a proposed ID into permission.
+        stage = SourceCollection((('book', ('hardcover',)),), dict(catalogue.backends),
+                                 clock=catalogue.clock, state=catalogue.state)
+        began = catalogue.clock.monotonic()
+        seal = stage.collect(planned.plan, planned.registry, memory['coordinator'].budget,
+                             source_plans=dict(planned.source_plans))
+        usage = read_json(seal.source_revisions)['_collection']
+        budget = memory['coordinator'].budget
+        seconds = max(1, math.ceil(catalogue.clock.monotonic()-began))
+        require(usage['sends'] < budget.initial_sends and usage['response_bytes'] < budget.aggregate_bytes
+                and seconds < budget.collection_seconds, 'LIMIT_EXCEEDED', 422)
+        memory['coordinator'].budget = replace(budget, initial_sends=budget.initial_sends-usage['sends'],
+            aggregate_bytes=budget.aggregate_bytes-usage['response_bytes'], collection_seconds=budget.collection_seconds-seconds)
+        details = book.issuer.pending_details(planned.plan.plan_ref)
+        if not details or not catalogue.state.pending:
+            # Missing retention/derived-operation UI authority holds only this
+            # source. Never resend search to try to recover an unretained proposal.
+            configured = tuple((key, tuple(name for name in names if name != 'hardcover'))
+                               for key, names in catalogue.configured.items())
+            memory['coordinator'].catalogue = SourceCollection(configured, dict(catalogue.backends),
+                clock=catalogue.clock, state=catalogue.state)
+            memory['detail_dependency'] = 'exact_hardcover_detail_confirmation_unavailable'
+            return False
+        own = dict(planned.source_plans)[book.issuer.connection_ref]
+        memory['source_previews'] = [(book.issuer, book.issuer.preview(own, request=request)) for request in details]
+        memory['source_index'] = -1
+        return self._next_source_preview(store, row, memory)
 
     def status(self, session_ref, *, run_ref):
         row, store = self._find(session_ref, run_ref)
@@ -284,6 +467,8 @@ class EnhanceService:
             'destination': destinations[0], 'destinations': list(destinations),
             'expires_at': stamp(value['expires_at']), 'omitted_groups': list(omitted)}
         if value.get('source_preview') is not None:
+            public['disclosure'].update(source_number=value['source_index'] + 1,
+                source_count=len(value['source_previews']))
             source = value['source_preview']
             public['disclosure'].update({key: source[key] for key in
                 ('plan_digest', 'operation_digest', 'method', 'origin', 'path', 'query', 'headers')})
@@ -311,6 +496,11 @@ class EnhanceService:
                 if source is not None:
                     memory['issuer'].confirm(source['preview_ref'], plan_digest=source['plan_digest'],
                         operation_digest=source['operation_digest'], confirmed=True)
+                if source is not None and self._next_source_preview(store, row, memory):
+                    return self.status(session_ref, run_ref=run_ref)
+                if source is not None and not memory['details_prepared']:
+                    if self._prepare_details(store, row, memory):
+                        return self.status(session_ref, run_ref=run_ref)
                 collected = coordinator.collect(work, approved_query_digest=work.plan.body_digest if source is not None else body_digest)
                 if type(collected) is EnhanceOutcome:
                     store.finish(run_ref, stage=collected.event.stage, code=collected.event.code)
@@ -339,7 +529,9 @@ class EnhanceService:
                 completed = store.status(run_ref)
                 require(completed.state == 'completed', 'RUN_STALE', 409)
                 submitted = read_json(read_json(memory['body'])['input'].encode())
-                manifest = self.selector.build(completed.output, submitted, work.collected.seal.outcomes)
+                from .enhance_selection import GroundedSelector
+                arguments = {'snapshot': profile_snapshot.capture(work.inference_view)} if type(self.selector) is GroundedSelector else {}
+                manifest = self.selector.build(completed.output, submitted, work.collected.seal.outcomes, **arguments)
                 expected_revision = completed.evidence['expected_publication_revision']
                 store.publish(run_ref, manifest=manifest, expected_publication_revision=expected_revision,
                               allowed_candidates=submitted['candidates'])
