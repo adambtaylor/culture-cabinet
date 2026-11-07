@@ -42,8 +42,11 @@ class BoundaryCase(TransactionTestCase):
         self.directory = tempfile.TemporaryDirectory()
         self.addCleanup(self.directory.cleanup)
         self.root = Path(self.directory.name) / 'owner'
+        from .portable_fixture import BoundSocketLease
+        lease = BoundSocketLease(self.id())
+        self.addCleanup(lease.close)  # Registered before acquisition/partial setup.
         self.boundary = open_boundary(self.root)
-        self.addCleanup(self.boundary.close)
+        lease.attach(self.boundary)
         self.database = patch.object(BoundRoot, 'database_name', new_callable=PropertyMock,
                                      return_value=str(connection.settings_dict['NAME']))
         self.database.start()

@@ -25,7 +25,8 @@ _ACTIVE = set()
 
 
 def _usage_summary():
-    # Exit cleanup covers a runner interruption as well as normal test cleanup.
+    # Best effort on normal interpreter exit only; outer supervision must own
+    # cleanup after termination signals or abrupt runner loss.
     for fixture in tuple(_ACTIVE):
         try:
             fixture.stop()
@@ -44,7 +45,8 @@ import os, runpy, sys
 entry, audit = sys.argv[1:3]
 args = sys.argv[3:]
 def deny(event, args):
-    if event in {'socket.connect', 'socket.getaddrinfo'}:
+    if event in {'socket.connect', 'socket.getaddrinfo', 'subprocess.Popen',
+                 'os.fork', 'os.forkpty', 'os.posix_spawn', 'os.exec'}:
         with open(audit, 'a') as stream:
             stream.write('OUTBOUND_DENIED\n')
         raise OSError('ISOLATED_EGRESS_DENIED')
@@ -70,6 +72,92 @@ def members(group):
             except (OSError, ValueError, IndexError):
                 pass
     return sorted(result)
+
+
+_RESOURCE_LOCK = threading.RLock()
+_RESOURCE_COUNTS = {}
+
+
+def resource_event(**record):
+    """Secret-free task evidence; unset channel leaves ordinary fixtures alone."""
+    channel = os.environ.get('PR001_RESOURCE_LOG')
+    if channel:
+        data = (json.dumps(record, sort_keys=True) + '\n').encode()
+        fd = os.open(channel, os.O_WRONLY | os.O_APPEND | os.O_NOFOLLOW)
+        try:
+            if os.write(fd, data) != len(data):
+                raise PortableFixtureFailure('RESOURCE_RECORD_INCOMPLETE')
+        finally:
+            os.close(fd)
+
+
+def reserve_resource(category, case_id, maximum):
+    if not os.environ.get('PR001_RESOURCE_LOG'):
+        return None
+    with _RESOURCE_LOCK:
+        count = _RESOURCE_COUNTS.get(category, 0)
+        if count >= maximum:
+            raise PortableFixtureFailure('RESOURCE_ACQUISITION_BOUND')
+        _RESOURCE_COUNTS[category] = count + 1
+        start = time.monotonic()
+        resource_event(category=category, case_id=case_id, phase='reserved',
+                       ordinal=count+1, start=start, owner_pid=os.getpid())
+        return start
+
+
+class BoundSocketLease:
+    """One pre-reserved BoundRoot acquisition and idempotent measured close.
+
+    Normal fixture cleanup is primary; the timer starts shutdown early. Forced
+    cleanup is retained as failure, never substituted for a passing test. An
+    independent execution supervisor is still required for abrupt runner loss.
+    """
+    def __init__(self, case_id):
+        self.case_id = case_id
+        self.start = reserve_resource('bound_socket', case_id, 13)
+        self.boundary = None
+        self.lock = threading.RLock()
+        self.closed = self.forced = False
+        self.timer = None
+
+    def attach(self, boundary):
+        self.boundary = boundary
+        if self.start is not None:
+            info = os.fstat(boundary._socket.fileno())
+            resource_event(category='bound_socket', case_id=self.case_id,
+                phase='acquired', start=self.start, owner_pid=os.getpid(),
+                socket_identity=[info.st_dev, info.st_ino], fd=boundary._socket.fileno())
+            self.timer = threading.Timer(max(0, self.start+20-time.monotonic()), self.expire)
+            self.timer.daemon = True
+            self.timer.start()
+
+    def expire(self):
+        self.forced = True
+        self.close()
+
+    def close(self):
+        with self.lock:
+            if self.closed:
+                if self.forced:
+                    raise PortableFixtureFailure('BOUND_SOCKET_DEADLINE')
+                return
+            if self.timer:
+                self.timer.cancel()
+            try:
+                if self.boundary is not None:
+                    self.boundary.close()
+            finally:
+                self.closed = True
+                if self.start is not None:
+                    end = time.monotonic()
+                    complete = (self.boundary is not None and
+                        self.boundary._socket.fileno() == -1 and end-self.start <= 30 and not self.forced)
+                    resource_event(category='bound_socket', case_id=self.case_id,
+                        phase='closed' if self.boundary is not None else 'failed_acquisition',
+                        start=self.start, end=end, elapsed=end-self.start,
+                        complete=complete, forced=self.forced, owner_pid=os.getpid())
+                    if not complete:
+                        raise PortableFixtureFailure('BOUND_SOCKET_CUSTODY_UNPROVEN')
 
 
 class PortableFixture:
@@ -105,9 +193,13 @@ class PortableFixture:
         self.audit_path.touch(mode=0o600, exist_ok=False)
         self.master, slave = pty.openpty()
         env = {'PATH': '/usr/bin:/bin', 'LANG': 'C.UTF-8', **self.environment}
+        reserved = None
         try:
             try:
-                spawned_at = time.monotonic()
+                case_id = 'shelf.tests.test_portable_launch.PortableLaunchTests.test_actual_html_commands_and_security_guards'
+                measured_attempt = isinstance(subprocess.Popen, type)
+                reserved = reserve_resource('cli_child', case_id, 1) if measured_attempt else None
+                spawned_at = time.monotonic() if reserved is None else reserved
                 self.process = subprocess.Popen([sys.executable, '-I', '-B', '-c', _CHILD,
                     str(self.source_root / 'backend/portable.py'), str(self.audit_path),
                     '--data-root', str(self.data_root), '--port', str(self.port)],
@@ -115,6 +207,10 @@ class PortableFixture:
                     cwd=self.source_root, start_new_session=True)
                 _CLI_STARTS += 1  # Count actual children, not injected spawn failures.
                 self._usage = dict(pid=self.process.pid, start=spawned_at, complete=False)
+                if reserved is not None:
+                    self._usage['case_id'] = case_id
+                    resource_event(category='cli_child', case_id=case_id, phase='acquired',
+                        start=spawned_at, pid=self.process.pid, group=self.process.pid, owner_pid=os.getpid())
                 _USAGE.append(self._usage)
                 _ACTIVE.add(self)
                 # Shutdown has up to 6.2 seconds of bounded waits/probes. Start
@@ -125,6 +221,10 @@ class PortableFixture:
             finally:
                 os.close(slave)
         except BaseException:
+            if reserved is not None and self.process is None:
+                resource_event(category='cli_child', case_id=case_id,
+                    phase='failed_acquisition', start=reserved, end=time.monotonic(),
+                    owner_pid=os.getpid(), complete=False)
             self.stop()  # Includes master ownership even when Popen never returns.
             raise
         end = min(time.monotonic() + self.timeout, spawned_at + 20)
@@ -141,8 +241,11 @@ class PortableFixture:
                         break
                     text = self._terminal.decode('utf-8', 'replace')
                     match = re.search(r'^Origin: (http://127\.0\.0\.1:\d+)\r?$', text, re.M)
-                    if match:
+                    if match and self.origin is None:
                         self.origin = match[1]
+                        resource_event(category='cli_listener', case_id=case_id, phase='acquired',
+                            start=spawned_at, pid=self.process.pid,
+                            port=int(self.origin.rsplit(':', 1)[1]), owner_pid=os.getpid())
                     challenge = re.search(r'Claim code[^\r\n]*\r?\n([A-Za-z0-9_-]{32})\r?\n', text)
                     if challenge:
                         self.claim_code = challenge[1]
@@ -182,6 +285,10 @@ class PortableFixture:
                               result['remaining_owned_pids'] == [] and
                               result['listener_closed'] is True and
                               result['lock_released'] is True))
+                resource_event(category='cli_child', phase='closed', **self._usage)
+                if self.origin:
+                    resource_event(category='cli_listener', phase='closed', **self._usage,
+                                   listener_closed=result['listener_closed'])
                 print('PORTABLE_FIXTURE_USAGE ' + json.dumps(self._usage), flush=True)
                 # Unknown cleanup stays active for the exit safety attempt.
                 if self._usage['complete']:
@@ -217,7 +324,10 @@ class PortableFixture:
                 except Exception:
                     self.teardown_errors.append('PROCESS_STOP_FAILED')
                 try:
-                    if members(self.process.pid):
+                    group_members = members(self.process.pid)
+                    if self._usage is not None and any(pid != self.process.pid for pid in group_members):
+                        self.teardown_errors.append('UNEXPECTED_APPLICATION_DESCENDANTS')
+                    if group_members:
                         self.emergency_kill_used = True
                         self._signal(signal.SIGKILL)
                         end = time.monotonic()+1

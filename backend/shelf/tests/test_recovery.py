@@ -1,5 +1,5 @@
 """Concrete same-host witness tests; no production store/promotion or host loss."""
-from contextlib import contextmanager
+from contextlib import closing, contextmanager
 from dataclasses import replace
 import fcntl
 import hashlib
@@ -623,7 +623,7 @@ class TrustedPortableRestartTests(PortableRecoveryCase):
             with trusted_restart_fixture(self.boundary, confirmed=True, fresh=True):
                 self.fail('occupied journal adopted')
         self.assertEqual(marker.read_bytes(), b'fictional-occupied')
-        with sqlite3.connect(path) as raw:
+        with closing(sqlite3.connect(path)) as raw:
             self.assertEqual(raw.execute('PRAGMA application_id').fetchone()[0], 0)
         self.assertEqual(set(journal.iterdir()), {marker})
 
@@ -634,7 +634,7 @@ class TrustedPortableRestartTests(PortableRecoveryCase):
         with trusted_restart_fixture(self.boundary, confirmed=True, fresh=True) as current:
             journal = current.directory
         binding = journal / 'binding.json'
-        held = journal / 'held-binding'
+        held = self.boundary.root / 'held-binding'
         # Each mutation is confined to this disposable consistency fixture; the
         # original file is retained, never synthesized from lost history.
         for kind in ('missing', 'symlink', 'hardlink', 'database'):
@@ -650,9 +650,24 @@ class TrustedPortableRestartTests(PortableRecoveryCase):
                     elif kind == 'hardlink':
                         os.link(held, binding)
                 try:
-                    with self.assertRaises(RecoveryBlocked):
-                        with trusted_restart_fixture(self.boundary, confirmed=True):
-                            self.fail('unbound replacement served')
+                    from shelf import recovery
+                    with patch.object(recovery.os, 'open', wraps=os.open) as opened, \
+                         patch.object(recovery, 'identity', wraps=recovery.identity) as checked:
+                        with self.assertRaises(RecoveryBlocked):
+                            with trusted_restart_fixture(self.boundary, confirmed=True):
+                                self.fail('unbound replacement served')
+                    binding_opens = [call for call in opened.call_args_list
+                                     if str(call.args[0]) == 'binding.json']
+                    if kind in ('symlink', 'hardlink'):
+                        self.assertEqual({p.name for p in journal.iterdir()},
+                                         {'lock', 'journal', 'binding.json'})
+                        self.assertTrue(binding_opens)  # No inventory shortcut.
+                        self.assertTrue(binding_opens[0].args[1] & os.O_NOFOLLOW)
+                    if kind == 'hardlink':
+                        self.assertTrue(any(call.args[0] == binding for call in checked.call_args_list))
+                    if kind == 'missing':
+                        self.assertEqual({p.name for p in journal.iterdir()}, {'lock', 'journal'})
+                        self.assertFalse(binding_opens)  # Exact missing-file inventory refusal.
                 finally:
                     if kind == 'database':
                         path.unlink(); original.rename(path)
@@ -676,5 +691,5 @@ class TrustedPortableRestartTests(PortableRecoveryCase):
                 with trusted_restart_fixture(self.boundary, confirmed=True, fresh=fresh):
                     self.fail('partial initialization adopted')
             self.assertEqual({p.name: p.read_bytes() for p in journal.iterdir()}, before)
-        with sqlite3.connect(path) as raw:
+        with closing(sqlite3.connect(path)) as raw:
             self.assertEqual(raw.execute('PRAGMA application_id').fetchone()[0], 0)

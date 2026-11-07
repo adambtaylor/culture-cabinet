@@ -354,6 +354,21 @@ class FixtureFailureTests(SimpleTestCase):
                 self.assertFalse(self.f._usage['complete'])
 
 
+    def test_measured_stop_refuses_unreaped_primary_child(self):
+        from unittest.mock import Mock
+        self.f.process = Mock(pid=987654321, returncode=None)
+        self.f.process.poll.return_value = None
+        self.f._usage = dict(pid=987654321, start=100.0, complete=False)
+        receipt = dict(remaining_owned_pids=[], listener_closed=True, lock_released=True)
+        with patch.object(self.f, '_stop', return_value=receipt), \
+             patch.object(self.fixture_module.time, 'monotonic', return_value=125.0), \
+             patch('builtins.print'):
+            with self.assertRaises(self.fixture_module.PortableFixtureFailure):
+                self.f.stop()
+        self.assertFalse(self.f._usage['complete'])
+        self.assertIsNone(self.f._stop_receipt)
+
+
 # Reuse the accepted clock/owner/fake adapter fixture, which defines no test
 # methods. No production clock flag, extra CLI child or real provider is added.
 from django.test import Client
