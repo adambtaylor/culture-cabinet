@@ -5,13 +5,14 @@ composition authenticates source and personal ports independently; it never
 imports a legacy key/profile or substitutes the neutral probe for personal work.
 """
 from contextlib import contextmanager, nullcontext
-from datetime import timedelta
-from dataclasses import replace
+from datetime import datetime, timedelta, timezone
+from dataclasses import dataclass, replace
 import math
 import time
 import uuid
 
 from django.views.decorators.debug import sensitive_variables
+from django.db import connection
 
 from . import grant_authority as ga, disclosure, profile_snapshot
 from .disclosure import canonical_bytes, read_json, DisclosureError
@@ -23,6 +24,58 @@ from .portable_authority import AuthorityFault
 from .portable_cabinet_store import CabinetStore, StateProvider, checked_source_use, require, stamp
 
 _ISOLATED = object()
+
+
+class SavedCandidateUnavailable(AuthorityFault):
+    message = ('Saving this source title, URL and attribution is unavailable: '
+               'permission for a durable saved copy has not been established.')
+
+    def __init__(self):
+        super().__init__('CAPABILITY_UNAVAILABLE', 503)
+
+
+@dataclass(frozen=True, repr=False)
+class SavedCandidateEvidence:
+    """Bounded attribution from a current publication; never a Save capability."""
+    installation_ref: str
+    owner_revision: int
+    profile_ref: str
+    actor_id: int
+    profile_id: int
+    publication_ref: str
+    publication_revision: int
+    run_ref: str
+    candidate_key: str
+    candidate_digest: str
+    source_evidence_digest: str
+    provider: str
+    medium: str
+    source_id: int
+    title: str
+    url: str
+    fetched_at: datetime
+    source_valid_until: datetime
+    schema: str = 'portable-saved-candidate/v1'
+
+    def __post_init__(self):
+        require(self.schema == 'portable-saved-candidate/v1')
+        for value in (self.installation_ref, self.profile_ref, self.publication_ref, self.run_ref):
+            require(type(value) is str and str(ga._uuid(value)) == value)
+        for value in (self.owner_revision, self.actor_id, self.profile_id, self.publication_revision):
+            require(type(value) is int and 0 < value < 2**53)
+        require(type(self.source_id) is int and 0 < self.source_id <= 2147483647)
+        require(type(self.provider) is str and type(self.medium) is str
+                and (self.provider, self.medium) in {('tmdb', 'movie'), ('tmdb', 'tv'), ('hardcover', 'book')},
+                'CAPABILITY_UNAVAILABLE', 503)
+        for value, limit in ((self.candidate_key, 300), (self.title, 300), (self.url, 500)):
+            require(type(value) is str and 0 < len(value) <= limit and value.strip())
+        for value in (self.candidate_digest, self.source_evidence_digest):
+            require(type(value) is str and len(value) == 64 and all(c in '0123456789abcdef' for c in value))
+        require(all(type(value) is datetime and value.utcoffset() == timedelta(0)
+                    for value in (self.fetched_at, self.source_valid_until)))
+        require(self.fetched_at < self.source_valid_until)
+        from .saved import canonical_url
+        require(canonical_url(self.provider, self.medium, self.source_id, self.url) == self.url)
 
 
 class _DurablePorts:
@@ -673,6 +726,129 @@ class EnhanceService:
                          for group in manifest['categories'] for card in group['cards']}
             return {'schema': 'cabinet-current/v1', 'published': True, 'reaction_targets': reactions,
                     'publication_revision': publication.publication_revision, 'manifest': manifest, 'code': 'OK'}
+
+    def _saved_access(self, session_ref, profile_ref, *, action='save'):
+        # Evidence and matching numeric IDs cannot create or replace the live PA1
+        # capability. In particular, a refused portable scope never falls back.
+        try:
+            from .portable_saved_authority import PortableSavedAccess, active_portable_access
+        except ModuleNotFoundError as error:
+            if error.name != 'shelf.portable_saved_authority':
+                raise
+            raise AuthorityFault('CAPABILITY_UNAVAILABLE', 503) from None
+        access = active_portable_access()
+        require(type(access) is PortableSavedAccess and access.authority is self.authority
+                and access.session_ref == session_ref and access.profile_ref == profile_ref,
+                'AUTHORITY_DENIED', 403)
+        state, session = ga._bound(self.authority, session_ref, profile_ref,
+                                   sensitive=action == 'save')
+        require(state.data_schema_version == 2, 'CAPABILITY_UNAVAILABLE', 503)
+        identity = access.require(actor_id=state.actor_id, profile_id=state.profile_id, action=action)
+        require(identity.actor_id == state.actor_id and identity.profile_id == state.profile_id,
+                'AUTHORITY_DENIED', 403)
+        return state, session, access
+
+    def _saved_retention(self, card):
+        # Current display/retain bits carry a finite expiry. They do not prove
+        # permission to copy attribution for the lifetime of a durable saved row.
+        # Until that distinct host-owned right is available, Save fails closed.
+        raise SavedCandidateUnavailable()
+
+    def _saved_evidence(self, state, session, publication, card):
+        from .saved import canonical_url
+        from .category_registry import canonical_category
+        require(type(card) is dict and set(card) == disclosure.CANDIDATE_FIELDS)
+        provider, medium = card.get('provider'), card.get('medium')
+        require(type(provider) is str and type(medium) is str
+                and (provider, medium) in {('tmdb', 'movie'), ('tmdb', 'tv'), ('hardcover', 'book')},
+                'CAPABILITY_UNAVAILABLE', 503)
+        try:
+            category = canonical_category(card.get('category'))
+        except EnhanceFault:
+            raise AuthorityFault('CAPABILITY_UNAVAILABLE', 503) from None
+        require(category == medium, 'CAPABILITY_UNAVAILABLE', 503)
+        source_id = card.get('source_id')
+        require(type(source_id) is str and source_id.isascii() and source_id.isdecimal()
+                and 0 < len(source_id) <= 10 and str(int(source_id)) == source_id)
+        source_id = int(source_id)
+        require(0 < source_id <= 2147483647)
+        url = card.get('source_url')
+        require(type(url) is str and url and canonical_url(provider, medium, source_id, url) == url)
+        require(card.get('identity_status') == 'confirmed'
+                or (self._isolated is _ISOLATED and ga._fixture_database()
+                    and card.get('identity_status') == 'fixture_identity_only'), 'AUTHORITY_DENIED', 403)
+        require(card['evidence_type'] in ('live_lookup', 'cached_lookup')
+                or (self._isolated is _ISOLATED and ga._fixture_database()
+                    and card['evidence_type'] == 'fixture_not_live'), 'AUTHORITY_DENIED', 403)
+        times = []
+        for name in ('observed_at', 'valid_until'):
+            raw = card.get(name)
+            require(type(raw) is str and 0 < len(raw) <= 40)
+            try:
+                value = datetime.fromisoformat(raw.replace('Z', '+00:00'))
+            except ValueError:
+                raise AuthorityFault('CONTRACT_INVALID', 422) from None
+            require(value.utcoffset() is not None)
+            times.append(value.astimezone(timezone.utc))
+        observed, end = times
+        require(observed <= self.authority.now() < end, 'PREVIEW_STALE', 409)
+        require(type(card.get('rights_ref')) is str and 0 < len(card['rights_ref']) <= 300)
+        roots = card.get('source_roots')
+        require(type(roots) is list and 0 < len(roots) <= 100
+                and all(type(value) is str and 0 < len(value) <= 300 for value in roots)
+                and len(set(roots)) == len(roots))
+        provenance = {name: card[name] for name in ('provider', 'medium', 'source_id', 'source_url',
+            'rights_ref', 'source_roots', 'observed_at', 'valid_until')}
+        return SavedCandidateEvidence(str(state.installation_id), session.owner_revision,
+            str(state.profile_ref), state.actor_id, state.profile_id, str(publication.pk),
+            publication.publication_revision, str(publication.run_id), card['key'],
+            digest(canonical_bytes(card)), digest(canonical_bytes(provenance)), provider,
+            medium, source_id, card.get('title'), url, observed, end)
+
+    @sensitive_variables()
+    def resolve_saved_candidate(self, session_ref, *, profile_ref,
+                                expected_publication_revision, candidate_key):
+        require(type(expected_publication_revision) is int
+                and 0 < expected_publication_revision < 2**53)
+        require(type(candidate_key) is str and 0 < len(candidate_key) <= 300)
+        profile_ref = str(ga._uuid(profile_ref))
+        # read_current may commit privacy redaction. An enclosing Save transaction
+        # could resurrect removed payload on refusal, so refuse that call order.
+        require(not connection.in_atomic_block, 'CAPABILITY_UNAVAILABLE', 503)
+        with ga.recovery_guard(self.authority, session_ref, profile_ref=profile_ref), self.authority._lock:
+            state, session, access = self._saved_access(session_ref, profile_ref)
+            current = self.current(session_ref, profile_ref=profile_ref)
+            require(current['published'] and current['publication_revision'] == expected_publication_revision,
+                    'PREVIEW_STALE', 409)
+            from .models import PortableCabinetManifest
+            publication = PortableCabinetManifest.objects.filter(pk=state.active_manifest_ref,
+                cabinet=state, publication_revision=expected_publication_revision,
+                content_redacted_at__isnull=True).first()
+            require(publication is not None and self.authority.now() < publication.expires_at,
+                    'PREVIEW_STALE', 409)
+            cards = [card for group in current['manifest']['categories'] for card in group['cards']
+                     if card['key'] == candidate_key]
+            require(len(cards) == 1, 'PREVIEW_STALE', 409)
+            evidence = self._saved_evidence(state, session, publication, cards[0])
+            self._saved_retention(cards[0])
+            require(self._saved_access(session_ref, profile_ref)[2] is access, 'AUTHORITY_DENIED', 403)
+            return evidence
+
+    @contextmanager
+    def saved_candidate_window(self, session_ref, *, evidence):
+        require(type(evidence) is SavedCandidateEvidence, 'AUTHORITY_DENIED', 403)
+        require(not connection.in_atomic_block, 'CAPABILITY_UNAVAILABLE', 503)
+        with ga.recovery_guard(self.authority, session_ref, profile_ref=evidence.profile_ref), self.authority._lock:
+            _, _, access = self._saved_access(session_ref, evidence.profile_ref, action='save')
+            fresh = self.resolve_saved_candidate(session_ref, profile_ref=evidence.profile_ref,
+                expected_publication_revision=evidence.publication_revision, candidate_key=evidence.candidate_key)
+            require(fresh == evidence, 'PREVIEW_STALE', 409)
+            # N1 now owns the single SavedItem transaction and expected floor
+            # advancement (or duplicate no-write). Save intentionally invalidates
+            # the old publication; re-reading it here would reject our own write.
+            yield fresh
+            require(self._saved_access(session_ref, evidence.profile_ref, action='save')[2] is access,
+                    'AUTHORITY_DENIED', 403)
 
     def reconcile(self, session_ref, *, run_ref, receipt_ref):
         _, store = self._find(session_ref, run_ref, sensitive=True)
