@@ -127,12 +127,13 @@ def recovery_guard(authority, session_ref, *, profile_ref=None):
     try:
         with recovery.access_barrier():
             witness = recovery.installed_coordinator()
-            # No normal-disk D5 adapter is admitted. The existing empty barrier
-            # already requires the isolated verification environment; its memory
-            # database/bound-root binding is distinct from a neutral-proof seal.
+            # Disk use needs a constructor-issued witness for this exact root.
+            # The isolated memory fallback and explicit synthetic restart remain
+            # separate; neither becomes authority for an arbitrary disk store.
             trusted = (witness is not None and getattr(witness, '_trusted_restart_seal', None)
                 is recovery._TRUSTED_RESTART_SEAL and witness.trusted_boundary is authority.boundary)
-            _require(_fixture_database() or trusted, 'CAPABILITY_UNAVAILABLE', 503)
+            native = recovery.native_first_start_matches(witness, authority.boundary)
+            _require(_fixture_database() or trusted or native, 'CAPABILITY_UNAVAILABLE', 503)
             checkpoint = _RecoveryCheckpoint(authority, session_ref, witness, connection.connection)
             checkpoint.check()
             yield checkpoint

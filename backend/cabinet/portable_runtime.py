@@ -4,7 +4,7 @@ No existing settings, household identity or demo runtime is imported. Only a new
 store is migrated; an existing incompatible/partial store needs an explicit
 future upgrade/recovery procedure, never a guessed cleanup or automatic adoption.
 """
-from contextlib import closing
+from contextlib import closing, ExitStack
 import logging
 import os
 from pathlib import Path
@@ -26,6 +26,20 @@ class PortableStop(BaseException):
 
 class RuntimeFailure(Exception):
     """A safe fixed diagnostic, without filesystem or transient input details."""
+
+
+_FRESH_DATABASES = {}
+
+
+def _consume_native_first_start(boundary):
+    """Only this process's exclusive creation can authorize first provisioning."""
+    proof = _FRESH_DATABASES.pop(id(boundary), None)
+    if proof is None or proof[0] is not boundary or not boundary.active:
+        raise RuntimeFailure('PORTABLE_RECOVERY_CONTINUITY_REQUIRED')
+    root, database = boundary.root.stat(), Path(boundary.database_name).stat()
+    if proof[1:] != ((root.st_dev, root.st_ino), (database.st_dev, database.st_ino)):
+        raise RuntimeFailure('PORTABLE_RECOVERY_CONTINUITY_REQUIRED')
+    return proof[1:]
 
 
 def protect_core():
@@ -54,7 +68,12 @@ def prepare_database(boundary):
         if {p.name for p in boundary.root.iterdir()} != {'.portable-lock', '.portable-installation.json'}:
             raise RuntimeFailure('PORTABLE_STORE_REFUSED')
         fd = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY | os.O_NOFOLLOW, 0o600)
-        os.close(fd)
+        try:
+            root_info, database_info = boundary.root.stat(), os.fstat(fd)
+            _FRESH_DATABASES[id(boundary)] = (boundary,
+                (root_info.st_dev, root_info.st_ino), (database_info.st_dev, database_info.st_ino))
+        finally:
+            os.close(fd)
         return True
     private_file(path)
     for suffix in ['-wal', '-shm', '-journal']:
@@ -208,6 +227,7 @@ def make_server(boundary, application):
 def run(root, *, port=0):
     os.umask(0o077)
     boundary = server = None
+    lifetime = ExitStack()
     previous = {}
     stopping = False
     closing = False
@@ -243,6 +263,10 @@ def run(root, *, port=0):
         from shelf.secret_leases import MemoryCredentials
         from shelf.connection_validation import ConnectionValidation
         authority = PortableAuthority(boundary)
+        from shelf.recovery import native_first_start
+        # Retain the real disk/journal witness through every request. Existing
+        # roots cannot recreate first-start authority after witness loss.
+        lifetime.enter_context(native_first_start(boundary))
         settings.PORTABLE_AUTHORITY = authority
         settings.PORTABLE_CONNECTIONS = ConnectionValidation(authority, MemoryCredentials(authority))
         from shelf.portable_enhance_service import EnhanceService
@@ -272,8 +296,12 @@ def run(root, *, port=0):
     finally:
         closing = True
         try:
-            if boundary is not None:
-                boundary.close()
+            try:
+                lifetime.close()
+            finally:
+                if boundary is not None:
+                    _FRESH_DATABASES.pop(id(boundary), None)
+                    boundary.close()
         finally:
             if server is not None:
                 server.server_close()
