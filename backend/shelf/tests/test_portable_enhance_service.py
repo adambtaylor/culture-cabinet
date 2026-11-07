@@ -346,6 +346,24 @@ class PreparatoryOutcomeTests(__import__('unittest').TestCase):
 
 
 class SourceUseStageTests(ServiceCase):
+    def test_unavailable_local_pool_keeps_actual_category_failures(self):
+        from unittest.mock import patch
+        def unavailable(planned, **kwargs):
+            outcomes = tuple(CategoryOutcome(key, 'unavailable', 0, 'AUTHORITY_DENIED')
+                             for key in self.registry.categories)
+            event = StageEvent(planned.intent.run_ref, 'no_candidates', 'NO_GROUNDED_CANDIDATES', outcomes)
+            return EnhanceOutcome(event, planned.events + (event,))
+        started = self.start_run()
+        with patch.object(self.pipeline, 'collect', side_effect=unavailable):
+            status = self.confirm_run(started)
+        self.assertEqual(status['stage'], 'no_candidates')
+        row = SynthesisRun.objects.get(pk=started['run_ref'])
+        self.assertEqual([item['category'] for item in row.evidence['outcomes']], list(self.registry.categories))
+        self.assertTrue(all(item['state'] == 'unavailable' and item['code'] == 'AUTHORITY_DENIED'
+                            for item in row.evidence['outcomes']))
+        self.assertEqual(row.attempts, 0)
+        self.assertEqual((self.transport.calls, PortableCabinetManifest.objects.count()), (0, 0))
+
     def test_local_collection_without_model_use_stays_sealed_without_attempt_or_publication(self):
         self.catalogue.denied_categories.add('books')
         started = self.start_run()

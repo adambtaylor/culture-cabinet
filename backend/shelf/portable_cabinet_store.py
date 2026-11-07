@@ -276,7 +276,7 @@ class CabinetStore:
             return self._change(row, state='completed', portable_stage='validated', output=output,
                                 evidence=dict(row.evidence, code='OK'))
 
-    def finish(self, run_ref, *, stage, code):
+    def finish(self, run_ref, *, stage, code, outcomes=None):
         from .enhance_contract import TERMINALS
         require(stage in TERMINALS and code in SAFE_CODES)
         with self.scope() as cabinet:
@@ -286,8 +286,18 @@ class CabinetStore:
                     evidence=dict(row.evidence, code='UNKNOWN_RECONCILIATION_REQUIRED'))
             if row.state == 'failed':
                 return row
+            evidence = dict(row.evidence, code=code)
+            if outcomes is not None:
+                from .enhance_contract import CategoryOutcome
+                categories = row.portable_bindings['categories']
+                require(type(outcomes) is list and len(outcomes) == len(categories))
+                for category, item in zip(categories, outcomes):
+                    require(type(item) is dict
+                        and set(item) == {'category', 'state', 'candidate_count', 'code'})
+                    require(CategoryOutcome(**item).category == category)
+                evidence['outcomes'] = read_json(canonical_bytes(outcomes))
             return self._change(row, state='completed' if row.state == 'completed' else 'failed',
-                portable_stage=stage, evidence=dict(row.evidence, code=code))
+                portable_stage=stage, evidence=evidence)
 
     def cancel(self, run_ref, *, expected_revision):
         with self.scope(sensitive=True) as cabinet:

@@ -217,6 +217,7 @@ class EnhanceService:
         return tuple(CategoryOutcome(row.category, 'unavailable', 0, 'AUTHORITY_DENIED')
                      if row.category in denied else retained.get(row.category, row) for row in outcomes)
 
+    @sensitive_variables()
     def _source_use(self, memory, collected):
         planned, seal = collected.planned, collected.seal
         producer = memory['coordinator'].catalogue
@@ -570,7 +571,10 @@ class EnhanceService:
                         return self.status(session_ref, run_ref=run_ref)
                 collected = coordinator.collect(work, approved_query_digest=work.plan.body_digest if source is not None else body_digest)
                 if type(collected) is EnhanceOutcome:
-                    store.finish(run_ref, stage=collected.event.stage, code=collected.event.code)
+                    # A policy-denied local pool can be empty without being an
+                    # empty search. Keep the producer's all-category explanation.
+                    store.finish(run_ref, stage=collected.event.stage, code=collected.event.code,
+                                 outcomes=[vars(value) for value in collected.event.outcomes])
                     self._memory.pop(str(row.pk), None)
                     return self.status(session_ref, run_ref=run_ref)
                 require(type(collected) is CollectedEnhance)
