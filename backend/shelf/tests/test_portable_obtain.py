@@ -82,11 +82,11 @@ class PortableObtainTests(RecoveryCase):
         return portable_saved_scope(self.authority, self.ref, profile_ref=self.profile_ref,
             selection_token=self.selection_token, mutate=True)
 
-    def saved_item(self, *, lineage=None):
+    def saved_item(self, *, lineage=None, source_id=11):
         with ga.current_writer(self.authority, self.ref, self.profile_ref), transaction.atomic(), ga.writer_window(self.actor, self.state.profile_id):
             return SavedItem.objects.create(actor=self.actor, profile_id=self.state.profile_id,
-                provider='tmdb', medium='movie', source_id=11, list_kind='watch',
-                title='Fiction Film', url='https://www.themoviedb.org/movie/11',
+                provider='tmdb', medium='movie', source_id=source_id, list_kind='watch',
+                title='Fiction Film', url=f'https://www.themoviedb.org/movie/{source_id}',
                 fetched_at=timezone.now(), publication_lineage=lineage)
 
     def lineage(self):
@@ -256,6 +256,7 @@ class PortableObtainTests(RecoveryCase):
         target = [('shelf', '0023_enhance_current_state')]
         executor = MigrationExecutor(connection)
         executor.migrate(target)
+        self.assert_trusted_lineage_inventory(applied=False)
         historical = executor.loader.project_state(target).apps.get_model('shelf', 'SavedItem')
         self.assertEqual(historical.objects.get(pk=row.pk).title, row.title)
         ga._synthesis_guards()
@@ -263,6 +264,7 @@ class PortableObtainTests(RecoveryCase):
         with self.assertRaises(DatabaseError), transaction.atomic():
             historical.objects.filter(pk=row.pk).update(title='still protected')
         MigrationExecutor(connection).migrate([('shelf', '0024_portable_saved_lineage')])
+        self.assert_trusted_lineage_inventory(applied=True)
         row.refresh_from_db()
         self.assertIsNone(row.publication_lineage)  # Explicit rollback attribution loss only.
         ga._synthesis_guards()
@@ -439,3 +441,217 @@ class PortableObtainTests(RecoveryCase):
             self.assertEqual(duplicate.pk, legacy.pk)
             self.assertEqual(duplicate.title, 'Original legacy intent')
             self.assertIsNone(duplicate.publication_lineage)
+
+    def assert_trusted_lineage_inventory(self, *, applied):
+        import re
+        name = '0024_portable_saved_lineage' if applied else '0023_enhance_current_state'
+        definitions = import_module('shelf.migrations.' + name).TRIGGERS
+        expected = set()
+        for sql in definitions:
+            match = re.match(r'CREATE TRIGGER (\w+)\s+(?:BEFORE|AFTER) (?:INSERT|UPDATE|DELETE) ON (\w+)\b', sql)
+            self.assertIsNotNone(match)
+            expected.add((match[1], match[2], sql.strip().removesuffix(';').rstrip()))
+        raw = connection.connection
+        actual = {(n, t, sql.strip().removesuffix(';').rstrip()) for n, t, sql in
+            raw.execute("SELECT name,tbl_name,sql FROM sqlite_master WHERE type='trigger'")}
+        self.assertEqual(actual, expected)
+        recorded = raw.execute("SELECT 1 FROM django_migrations WHERE app='shelf' AND name='0024_portable_saved_lineage'").fetchone() is not None
+        self.assertEqual(recorded, applied)
+        self.assertEqual('publication_lineage' in {r[1] for r in raw.execute('PRAGMA table_info(shelf_saveditem)')}, applied)
+
+
+    def rotate_before_effect(self, original, *, ordinal=1):
+        from contextlib import contextmanager
+        calls = []
+        @contextmanager
+        def window(actor, profile_id, **kwargs):
+            calls.append(True)
+            if len(calls) == ordinal:
+                Context().run(select_portable_profile, self.authority, self.ref, profile_ref=self.profile_ref)
+            with original(actor, profile_id, **kwargs):
+                yield
+        return window
+
+
+    def test_pre_caps_stale_generation_never_acquires_backend_or_caps(self):
+        row = self.saved_item()
+        backend, factory = Mock(), Mock()
+        factory.return_value = backend
+        original = preview.effect_for
+        with self.scope(), patch.object(preview, 'effect_for', self.rotate_before_effect(original, ordinal=2)),              self.assertRaises(AuthorityFault):
+            preview.search(actor=self.actor, profile_id=self.state.profile_id, item_id=row.pk, factory=factory)
+        factory.assert_not_called()
+        backend.caps.assert_not_called()
+        backend.search.assert_not_called()
+        self.assertFalse(ObtainTransfer.objects.exists())
+
+
+    def test_pre_retrieve_stale_generation_never_creates_transfer_or_provider(self):
+        with self.scope():
+            job = self.choice()
+            args = self.submit_fixture(job)
+            with patch.object(args['retriever'], 'retrieve') as retrieved,                  patch.object(args['backend'], 'provider') as provider,                  patch.object(acquire, 'effect_for', self.rotate_before_effect(acquire.effect_for)),                  self.assertRaises(AuthorityFault):
+                acquire.submit(**args)
+            retrieved.assert_not_called()
+            provider.assert_not_called()
+            self.assertFalse(ObtainTransfer.objects.exists())
+
+
+    def test_pre_review_stale_generation_never_creates_reviewed_descriptor(self):
+        with self.scope():
+            job = self.choice()
+            args = self.submit_fixture(job)
+            exact, _ = acquire.exact_result(job, fresh=True)
+            media, episode = scope_family(job.provider, job.medium, job.scope)
+            evidence = Evidence(exact.snapshot, ConfirmedSelection(f'{job.provider}:{job.medium}:{job.source_id}',
+                media, job.edition, job.storage, True, True, True, True, True, True, episode))
+            with patch.object(args['retriever'], 'review', create=True) as reviewed,                  patch.object(args['retriever'], 'retrieve') as retrieved,                  patch.object(acquire, 'effect_for', self.rotate_before_effect(acquire.effect_for)),                  self.assertRaises(AuthorityFault):
+                acquire.review_submission(actor=self.actor, profile_id=self.state.profile_id, job_id=job.pk,
+                    context=args['context'], evidence=evidence, max_bytes=20000, retriever=args['retriever'])
+            reviewed.assert_not_called()
+            retrieved.assert_not_called()
+            from shelf.models import ObtainReviewedNZB
+            self.assertFalse(ObtainReviewedNZB.objects.exists())
+            self.assertFalse(ObtainTransfer.objects.exists())
+
+
+    def test_threaded_logout_waits_for_completed_effect_and_denies_next_effect(self):
+        import threading
+        started, completed = threading.Event(), threading.Event()
+        errors, events = [], []
+        def logout():
+            started.set()
+            try:
+                self.authority.logout(self.ref)
+                events.append('logout')
+            except BaseException as error:
+                errors.append(error)
+            finally:
+                completed.set()
+        worker = threading.Thread(target=logout)
+        self.addCleanup(lambda: worker.join(2) if worker.ident is not None else None)
+        with self.scope() as access:
+            try:
+                with access.effect_window(action='select'):
+                    worker.start()
+                    self.assertTrue(started.wait(1))
+                    self.assertFalse(completed.wait(0.05))
+                    events.append('completed earlier effect')
+            except AuthorityFault as fault:
+                # Logout may win after owner-lock release and before the outer
+                # recovery checkpoint exits. That truthful exit denial must not
+                # erase a completed earlier effect or authorize the next one.
+                self.assertEqual(fault.code, 'UNAUTHENTICATED')
+            worker.join(2)
+            self.assertFalse(worker.is_alive())
+            self.assertFalse(errors)
+            self.assertEqual(events, ['completed earlier effect', 'logout'])
+            later = Mock()
+            with self.assertRaises(AuthorityFault):
+                with access.effect_window(action='select'):
+                    later()
+            later.assert_not_called()
+
+
+    def test_upgraded_actual_backup_restore_preserves_saved_intent(self):
+        """Actual isolated restore, without bypassing writer/neutralization guards."""
+        import sqlite3
+        from pathlib import Path
+        self.saved_item()
+        historical = dict(self.lineage(), candidate_key='tmdb:movie:99')
+        self.saved_item(lineage=historical, source_id=99)
+        root = Path(self.directory.name)
+        coordinator = recovery.CurrentRecoveryCoordinator.provision_empty(
+            store_id=recovery.raw_store(connection.connection), journal_directory=root/'restore-journal',
+            trusted_empty_db=connection.connection)
+        self.addCleanup(coordinator.close)
+        folder = root/'restore-backups'
+        folder.mkdir(mode=0o700)
+        live = folder/'source.sqlite3'
+        disk = sqlite3.connect(live)
+        try:
+            connection.connection.backup(disk)
+        finally:
+            disk.close()
+        live.chmod(0o600)
+        source = sqlite3.connect(f'file:{live}?mode=ro', uri=True)
+        source.execute('PRAGMA query_only=ON')
+        with recovery.using_recovery(coordinator):
+            try:
+                manifest = recovery.consistent_backup(source=source,
+                    destination=recovery.ExclusiveScratchFile(folder/'backup.sqlite3'), recovery=coordinator)
+            finally:
+                source.close()
+            sandbox = root/'restored'
+            sandbox.mkdir(mode=0o700)
+            failed_sql = []
+            class ObservedConnection(sqlite3.Connection):
+                def execute(self, statement, *args, **kwargs):
+                    try:
+                        return super().execute(statement, *args, **kwargs)
+                    except sqlite3.Error as error:
+                        failed_sql.append((statement, str(error)))
+                        raise
+            original = sqlite3.connect
+            def observed(*args, **kwargs):
+                return original(*args, factory=ObservedConnection, **kwargs)
+            with patch.object(recovery.sqlite3, 'connect', side_effect=observed):
+                report = recovery.isolated_restore(backup=recovery.ReadOnlyBackup(folder/'backup.sqlite3', manifest),
+                    sandbox=sandbox, recovery=coordinator)
+            self.assertEqual(report.state, 'ISOLATED_READY', (report, failed_sql))
+            restored = sqlite3.connect(report.isolated_database)
+            try:
+                recovery._effective_guards(restored)
+                self.assertEqual(restored.execute('SELECT count(*) FROM shelf_saveditem').fetchone()[0], 2)
+                values = restored.execute('SELECT publication_lineage FROM shelf_saveditem ORDER BY source_id').fetchall()
+                self.assertIsNone(values[0][0])
+                self.assertEqual(json.loads(values[1][0]), historical)
+                self.assertEqual(restored.execute('SELECT count(*) FROM django_session').fetchone()[0], 0)
+                self.assertEqual(restored.execute('SELECT count(*) FROM auth_user WHERE is_active!=0').fetchone()[0], 0)
+                self.assertEqual(restored.execute('SELECT count(*) FROM shelf_grant WHERE can_view OR can_select OR can_mutate OR can_export').fetchone()[0], 0)
+                from hashlib import sha256
+                trusted = import_module('shelf.migrations.0024_portable_saved_lineage')
+                print('N1_ISOLATED_RESTORE_PROOF ' + json.dumps(dict(state=report.state, checks=report.checks,
+                    saved_rows=2, lineage_versions=['null', 'v1'], backup_sha256=manifest.database_sha256,
+                    restored_sha256=sha256(Path(report.isolated_database).read_bytes()).hexdigest(),
+                    exact_trigger_count=len(trusted.TRIGGERS), temporary_databases_removed_by_fixture=True)))
+                # Restore data checks and runtime inventory admission are distinct:
+                # the same restored store must still reject an altered definition.
+                guard = trusted.LINEAGE_GUARDS[1]
+                restored.execute('DROP TRIGGER saved_lineage_immutable')
+                restored.execute(guard.replace('BEGIN ', 'BEGIN SELECT 1; ', 1))
+                with self.assertRaises(recovery.RecoveryBlocked):
+                    recovery._effective_guards(restored)
+            finally:
+                restored.close()
+
+    def test_real_session_replacement_nested_and_closed_scopes_never_reuse_selection(self):
+        with self.scope() as outer:
+            with self.scope() as inner:
+                with self.assertRaises(AuthorityFault):
+                    outer.require(actor_id=self.actor.pk, profile_id=self.state.profile_id)
+                inner.require(actor_id=self.actor.pk, profile_id=self.state.profile_id)
+            outer.require(actor_id=self.actor.pk, profile_id=self.state.profile_id)
+            with self.assertRaises(AuthorityFault):
+                inner.require(actor_id=self.actor.pk, profile_id=self.state.profile_id)
+            previous = self.ref
+            response = self.json_post('/setup/login', {'passphrase': PASSWORD})
+            self.assertEqual(response.status_code, 200)
+            replacement = self.http.session['portable_session']
+            self.assertNotEqual(replacement, previous)
+            self.assertNotIn(previous, self.authority._saved_selections)
+            with self.assertRaises(AuthorityFault):
+                outer.require(actor_id=self.actor.pk, profile_id=self.state.profile_id)
+        with self.assertRaises(AuthorityFault):
+            outer.require(actor_id=self.actor.pk, profile_id=self.state.profile_id)
+        with self.assertRaises(AuthorityFault), portable_saved_scope(self.authority, replacement,
+                profile_ref=self.profile_ref, selection_token=self.selection_token):
+            self.fail('Old session selection accepted under replacement session')
+        selection = select_portable_profile(self.authority, replacement, profile_ref=self.profile_ref)
+        token = selected_context(self.authority, replacement, selection)
+        with portable_saved_scope(self.authority, replacement, profile_ref=self.profile_ref,
+                selection_token=token) as fresh:
+            fresh.require(actor_id=self.actor.pk, profile_id=self.state.profile_id)
+            with self.assertRaises(AuthorityFault):
+                fresh.require(actor_id=1, profile_id=self.state.profile_id)
+        self.assertNotIn('_auth_user_id', self.http.session)

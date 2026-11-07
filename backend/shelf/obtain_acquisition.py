@@ -148,7 +148,10 @@ def review_submission(*, actor, profile_id, job_id, context, evidence, max_bytes
     source = retriever or UnavailableRetriever()
     # Runtime stores the exact reviewed bytes; injected legacy/test retrievers
     # retain their explicit retrieval contract. Confirmation never normalizes NZBs.
-    nzb = getattr(source, 'review', source.retrieve)(exact)
+    # Review can persist/prune descriptors: check live PA1 under its owner fence
+    # before the descriptor/transport effect, with no enclosing SQL transaction.
+    with effect_for(actor, profile_id):
+        nzb = getattr(source, 'review', source.retrieve)(exact)
     if type(nzb) is not RetrievedNZB:
         raise ContractError('Exact result NZB binding required')
     context.require(actor, profile_id)
@@ -240,7 +243,8 @@ def submit(*, actor, profile_id, job_id, context, token, confirmed, retriever=No
     if completion_intent is not None:
         check_completion_intent(binding, before_send=True)
     exact_result(job, fresh=True)
-    nzb = (retriever or UnavailableRetriever()).retrieve(exact)
+    with effect_for(actor, profile_id):
+        nzb = (retriever or UnavailableRetriever()).retrieve(exact)
     if type(nzb) is not RetrievedNZB or nzb.sha256(exact) != binding['nzb_sha256']:
         raise ContractError('Reviewed NZB changed')
     # Serialize with saved.cancel and competing submitters using the existing job.

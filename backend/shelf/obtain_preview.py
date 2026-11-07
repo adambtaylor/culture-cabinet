@@ -126,8 +126,11 @@ def search(*, actor, profile_id, item_id, factory=None, season=None, episode=Non
     state, rows = 'failed', []
     private = None
     try:
-        backend = (factory or search_backend)(actor=actor, profile_id=profile_id)
-        caps = backend.caps(actor_id=actor.pk, profile_id=profile_id)
+        # Provider metadata cannot validate PA1's live generation. Fence backend
+        # acquisition and caps themselves, not only their later result consumer.
+        with effect_for(actor, profile_id):
+            backend = (factory or search_backend)(actor=actor, profile_id=profile_id)
+            caps = backend.caps(actor_id=actor.pk, profile_id=profile_id)
         # Caps is provider work too: do not start search after authority was revoked.
         current_item(actor, profile_id, preview)
         query = item.title

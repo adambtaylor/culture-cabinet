@@ -130,8 +130,9 @@ def portable_saved_scope(authority, session_ref, *, profile_ref, selection_token
     try:
         with ga.recovery_guard(authority, session_ref), authority._lock:
             access._check()
-        # Do not retain the owner lock across an entire request: another request
-        # can switch selection during caps/retrieval, and the next check sees it.
+        # Each external/descriptor effect takes its own recovery/owner fence.
+        # Requests may change selection between effects, so no earlier request
+        # snapshot can authorize the next one; the whole view is not locked.
         yield access
     finally:
         access.closed = True
