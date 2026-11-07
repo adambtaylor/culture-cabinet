@@ -272,7 +272,7 @@ def writer_window(actor, profile_id):
 def _connection(authority, session_ref, connection_ref, *, purpose=None):
     candidate = PortableConnection.objects.filter(pk=_uuid(connection_ref),
         installation_id=authority.boundary.installation_id, removed=False).first()
-    if candidate is not None and candidate.adapter == 'moshtix_public':
+    if candidate is not None and candidate.adapter in ('moshtix_public', 'tmdb_movie', 'tmdb_tv', 'hardcover'):
         # Public source consent never borrows a processor key or its validation.
         # The source issuer separately checks current rights and exact operation.
         _require(purpose == 'catalogue_lookup')
@@ -625,8 +625,7 @@ def current_view(authority, session_ref, *, profile_ref, connection_ref, purpose
         fixture = _fixture_database() if source else getattr(authority, '_disclosure_fixture_token', None) is _FIXTURE_TOKEN
         status = None if source else service.status(session_ref, row.pk, row.config_revision)
         if source:
-            from .source_authority import BUILD as source_build, ORIGIN as source_origin
-            adapter_build, destination = source_build, source_origin
+            adapter_build, destination = binding['build'], binding['origin']
         else:
             adapter_build, destination = BUILD, ORIGIN
         if fixture and not source:

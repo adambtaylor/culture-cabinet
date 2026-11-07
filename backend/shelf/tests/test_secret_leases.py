@@ -14,6 +14,26 @@ SECRET = b'SYNTHETIC-NOT-A-CREDENTIAL-42'
 
 
 class CredentialTests(BoundaryCase):
+    def test_media_ephemeral_generation_and_configuration_separation(self):
+        from shelf.portable_authority import AuthorityFault
+        for adapter in ('tmdb_movie', 'tmdb_tv', 'hardcover'):
+            row = self.vault.configure(self.ref, {'adapter': adapter, 'model': '', 'reasoning': ''})
+            self.vault.replace(self.ref, row.pk, row.config_revision, SECRET)
+            row.refresh_from_db()
+            self.assertEqual((row.model, row.reasoning, row.validation_generation), ('', '', 0))
+            with self.vault.ephemeral(self.ref, row.pk, row.config_revision,
+                                      credential_generation=row.credential_generation) as value:
+                self.assertEqual(value, bytearray(SECRET))
+            self.assertFalse(any(value))
+            self.vault.replace(self.ref, row.pk, row.config_revision, b'SYNTHETIC-ROTATED')
+            with self.assertRaises(AuthorityFault) as stale:
+                with self.vault.ephemeral(self.ref, row.pk, row.config_revision,
+                                          credential_generation=row.credential_generation):
+                    self.fail('Rotated lease must not resolve')
+            self.assertEqual(stale.exception.code, 'PREVIEW_STALE')
+            self.fault('CONTRACT_INVALID', self.vault.configure, self.ref, CONFIG,
+                       connection_id=row.pk, revision=row.config_revision)
+
     def setUp(self):
         super().setUp()
         self.ref = self.claim_owner()

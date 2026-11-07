@@ -13,7 +13,7 @@ from urllib.parse import urlsplit
 
 from .disclosure import canonical_bytes, read_json
 from .enhance_contract import EnhanceBindings, EnhanceFault, digest, require, text, utc
-from .source_evidence import SourceCard
+from .source_evidence import SourceCard, FieldPolicy
 
 
 @dataclass(frozen=True)
@@ -463,3 +463,96 @@ class MoshtixBackend(SourceBackend):
         finally:
             if slot is not None:
                 slot.finish(status, headers, now=utc(self.clock.now()))
+
+
+class MediaBackend(SourceBackend):
+    """Concrete accepted-wire composition with current issuer and vault only.
+
+    Never discovers credentials or synthesizes source rights. Exact search and
+    detail operations each need their own issuer preview and confirmation.
+    """
+    def __init__(self, issuer, vault, limiter, *, clock):
+        from .source_authority import SourceAuthority
+        from .secret_leases import MemoryCredentials
+        from .discovery_transport import MediaHostLimiter
+        require(type(issuer) is SourceAuthority and type(vault) is MemoryCredentials
+                and vault.authority is issuer.authority
+                and getattr(issuer.authority, '_source_vault', None) is vault, 'CAPABILITY_UNAVAILABLE')
+        self.source = issuer.source_key()
+        require(self.source in ('tmdb_movie', 'tmdb_tv', 'hardcover'), 'CAPABILITY_UNAVAILABLE')
+        require(type(limiter) is MediaHostLimiter and limiter.provider ==
+                ('hardcover' if self.source == 'hardcover' else 'tmdb'), 'CAPABILITY_UNAVAILABLE')
+        self.issuer, self.vault, self.limiter, self.clock = issuer, vault, limiter, clock
+        self._contexts, self._lock = {}, RLock()
+
+    def authorize(self, request, plan, *, now):
+        require(type(request) is SourceRequest and request.source == self.source, 'AUTHORITY_DENIED')
+        operation = self.issuer.operation_for(request, plan, now=now)
+        from .provider_catalogue import media_operation
+        require(operation == media_operation(request), 'PREVIEW_STALE')
+        permit = self.issuer.authorize(request, plan, operation, now=now)
+        require(type(permit) is SourcePermit and type(permit.credential_generation) is int,
+                'CREDENTIAL_REQUIRED')
+        permit.verify(request, plan, now)
+        with self._lock:
+            self._contexts = {key: value for key, value in self._contexts.items()
+                              if utc(now) < value.permit.expires_at}
+            require(len(self._contexts) < 128, 'CAPABILITY_UNAVAILABLE')
+            self._contexts[id(permit)] = _MoshtixContext(permit, request, plan, operation)
+        self.policy(permit, now=now)
+        return permit
+
+    def _context(self, permit):
+        context = self._contexts.get(id(permit))
+        require(context is not None and context.permit is permit, 'AUTHORITY_DENIED')
+        return context
+
+    def revalidate(self, permit, request, plan, *, now):
+        context = self._context(permit)
+        require(context.request == request and context.plan == plan, 'AUTHORITY_DENIED')
+        permit.verify(request, plan, now)
+        return self.issuer.revalidate(permit, request, plan, context.operation, now=now) is True
+
+    def policy(self, permit, *, now):
+        context = self._context(permit)
+        require(self.revalidate(permit, context.request, context.plan, now=now), 'PREVIEW_STALE')
+        policy = self.issuer.policy(permit, context.operation, now=now)
+        require(type(policy) is FieldPolicy and policy.current(now)
+                and policy.ref == permit.policy_ref and policy.revision == permit.policy_revision
+                and policy.allows('*', 'fetch'), 'AUTHORITY_DENIED')
+        require(not any('model_context' in uses for _, uses in policy.permissions)
+                or self.issuer.model_context_current(permit, context.operation, now=now) is True,
+                'AUTHORITY_DENIED')
+        return policy
+
+    def request(self, request, permit, *, response_bytes, request_seconds, parent_seconds):
+        from . import grant_authority as ga
+        from .discovery_transport import media_authorized, MoshtixRateLimited
+        from .discovery_sources import SourceError
+        context = self._context(permit)
+        require(context.request == request, 'AUTHORITY_DENIED')
+        with self._lock:
+            require(not context.sent, 'AUTHORITY_DENIED')
+            context.sent = True
+        def current():
+            self.policy(permit, now=utc(self.clock.now()))
+            return True
+        try:
+            with ga.recovery_guard(self.issuer.authority, self.issuer.session_ref,
+                                   profile_ref=self.issuer.profile_ref):
+                current()
+                with self.vault.ephemeral(self.issuer.session_ref,
+                    ga._uuid(self.issuer.connection_ref), permit.source_config_revision,
+                    credential_generation=permit.credential_generation) as secret:
+                    status, body, headers = media_authorized(context.operation, secret=secret,
+                        revalidate=current, limiter=self.limiter, response_bytes=response_bytes,
+                        request_seconds=min(5, request_seconds), parent_seconds=min(6, parent_seconds))
+                current()
+                reply = SourceReply(request.request_digest, status, body, utc(self.clock.now()), headers)
+                if status == 200 and request.operation == 'book_search':
+                    self.issuer.remember_details(permit, reply)
+                return reply
+        except MoshtixRateLimited:
+            raise EnhanceFault('RATE_LIMITED') from None
+        except SourceError:
+            raise EnhanceFault('SOURCE_UNAVAILABLE') from None

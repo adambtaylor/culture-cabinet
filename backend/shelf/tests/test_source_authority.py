@@ -37,6 +37,23 @@ class FixtureBackend(MoshtixBackend):
 
 
 class SourceAuthorityTests(AuthorityCase):
+    def test_media_identity_cannot_borrow_moshtix_rights_or_inference_purpose(self):
+        vault = self.authority._source_vault
+        row = vault.configure(self.ref, {'adapter': 'tmdb_movie', 'model': '', 'reasoning': ''})
+        vault.replace(self.ref, row.pk, row.config_revision, b'SYNTHETIC-SOURCE')
+        ga.change_grant(self.authority, self.ref, profile_ref=self.profile_ref,
+            expected_revision=0, purpose='catalogue_lookup', connection_ref=str(row.pk),
+            allowed_data_classes=['canonical_seed'], expires_at=self.expires, action='grant')
+        issuer = SourceAuthority(self.authority, self.ref, profile_ref=self.profile_ref,
+            connection_ref=str(row.pk), policy_provider=self.rights)
+        self.assertEqual(issuer._view().context['adapter_id'], 'tmdb_movie')
+        with self.assertRaises(EnhanceFault):
+            issuer._rights(self.authority.now())
+        self.rights.value = replace(self.rights.value, source='tmdb_movie')
+        self.assertEqual(issuer._rights(self.authority.now()).source, 'tmdb_movie')
+        self.fault('AUTHORITY_DENIED', ga.current_view, self.authority, self.ref,
+            profile_ref=self.profile_ref, connection_ref=str(row.pk), purpose='inference')
+
     def setUp(self):
         super().setUp()
         self.profile_ref = self.bind()

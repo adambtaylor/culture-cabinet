@@ -13,7 +13,7 @@ from types import MappingProxyType
 from uuid import uuid4
 
 from .category_registry import registry_view as current_registry
-from .disclosure import DisclosureError, canonical_bytes, read_json
+from .disclosure import DisclosureError, SCALARS, canonical_bytes, read_json
 from .enhance_contract import (CataloguePlan, CategoryOutcome, CollectionBudget,
     CollectionSeal, EnhanceFault, RegistryView, digest, require, utc)
 from .source_adapters import (SourceBackend, SourcePermit, SourceReply, SourceRequest,
@@ -42,6 +42,7 @@ class CollectionState:
         self.lock = RLock()
         self.not_before = {}
         self.cache = {}
+        self.pending = {}
 
 
 @dataclass(frozen=True)
@@ -75,30 +76,50 @@ class SourceCollection:
         self.isolated_fixture = isolated_fixture
         self._sealed = {}
 
-    def collect(self, authorized_query_plan, registry_view, budget):
+    def collect(self, authorized_query_plan, registry_view, budget, *, source_plans=None):
         require(type(authorized_query_plan) is CataloguePlan
                 and type(registry_view) is RegistryView and type(budget) is CollectionBudget)
         plan, registry = authorized_query_plan, registry_view
+        require(source_plans is None or type(source_plans) is dict)
+        require(source_plans is None or all(type(key) is str and type(value) is CataloguePlan
+                                            for key, value in source_plans.items()))
+        source_plans = None if source_plans is None else dict(source_plans)
+        if source_plans is not None:
+            known = {getattr(getattr(backend, 'issuer', None), 'connection_ref', None)
+                     for backend in self.backends.values()}
+            require(set(source_plans) <= known, 'AUTHORITY_DENIED')
         require(registry == current_registry(registry.categories), 'PREVIEW_STALE')
         require(plan.categories == registry.categories
                 and plan.bindings.registry_revision == registry.revision, 'PREVIEW_STALE')
         require(utc(self.clock.now()) < plan.expires_at, 'PREVIEW_STALE')
         queries = read_json(plan.body)['queries']
         require(set(self.configured) <= set(registry.categories))
-        allocations = {}
+        allocations, selected_plans, allocation_failures = {}, {}, {}
         for query in queries:
             category = query['category']
             names = self.configured.get(category, ())
             require(len(names) <= budget.sources_per_category, 'LIMIT_EXCEEDED')
             requests = []
+            allocation_failures[category] = []
             for name in names:
                 spec = registered_source(name)
-                if name not in self.backends or spec.search and not query['terms']:
+                if name not in self.backends:
+                    continue
+                try:
+                    selected = self._plan_for(name, plan, source_plans)
+                except EnhanceFault as error:
+                    allocation_failures[category].append(error.code)
+                    continue
+                selected_plans[name] = selected
+                source_terms = next(row['terms'] for row in read_json(selected.body)['queries']
+                                    if row['category'] == category)
+                if spec.search and not source_terms:
+                    allocation_failures[category].append('NO_GROUNDED_CANDIDATES')
                     continue
                 # Search coverage is explicitly bounded to the first permitted
                 # term per selected source. The full profile/history remains in
                 # the shared plan and later inference; nothing is silently cut.
-                terms = tuple(query['terms'][:1]) if spec.search else ()
+                terms = tuple(source_terms[:1]) if spec.search else ()
                 requests.append(SourceRequest(name, category, spec.operations[0], terms))
             allocations[category] = tuple(requests)
         # Reserve worst-case enrichment capacity for ALL categories before any
@@ -117,10 +138,10 @@ class SourceCollection:
             seen, total = set(), 0
             for query in queries:
                 category = query['category']
-                records, category_batches, failures = [], [], []
+                records, category_batches, failures = [], [], list(allocation_failures[category])
                 for request in allocations[category]:
                     try:
-                        result = self._read(request, plan, budget, usage, start, retained)
+                        result = self._read(request, selected_plans[request.source], budget, usage, start, retained)
                         material = read_json(result.batch.material)
                         # Exact IDs dedupe; names/titles/URLs never merge works,
                         # adaptations or distinct occurrences across sources.
@@ -160,7 +181,7 @@ class SourceCollection:
                 if records:
                     outcome = CategoryOutcome(category, 'fresh', len(records),
                         failures[0] if failures else 'OK')
-                elif not allocations[category]:
+                elif not allocations[category] and not failures:
                     outcome = CategoryOutcome(category, 'unavailable', 0, 'CAPABILITY_UNAVAILABLE')
                 elif failures:
                     code = failures[0]
@@ -173,15 +194,35 @@ class SourceCollection:
                 outcomes.append(outcome)
             # Revalidate every used source, including cached/empty reads. One
             # revoked source cannot remain in a sealed supposedly current pool.
-            for backend, permit, request, policy in retained:
-                self._current(backend, permit, request, plan, policy)
+            for backend, permit, request, policy, selected in retained:
+                self._current(backend, permit, request, selected, policy)
             revisions['_collection'] = {'sends': usage['sends'], 'response_bytes': usage['bytes'],
                 'initial_sends_reserved': cost, 'extension_sends': 0, 'retry_sends': 0,
                 'source_outcomes': attempts,
                 'configured_sources': {key: list(value) for key, value in self.configured.items()}}
+            revisions['_source_plans'] = self._plan_material(source_plans)
             end = min((batch.expires_at for batch in batches), default=plan.expires_at)
             return self._seal(plan, registry, tuple(outcomes), tuple(batches), revisions, end, budget,
-                              retained=tuple(retained))
+                              retained=tuple(retained), source_plans=source_plans)
+
+    def _plan_for(self, name, primary, plans):
+        if plans is None:
+            return primary
+        issuer = getattr(self.backends[name], 'issuer', None)
+        selected = plans.get(getattr(issuer, 'connection_ref', None))
+        require(type(selected) is CataloguePlan, 'AUTHORITY_DENIED')
+        shared = ('installation_id', 'actor_ref', 'profile_ref', 'snapshot_revision',
+                  'policy_epoch', 'restriction_watermark', 'registry_revision')
+        require(selected.categories == primary.categories and all(
+            getattr(selected.bindings, key) == getattr(primary.bindings, key) for key in shared),
+            'PREVIEW_STALE')
+        require(utc(self.clock.now()) < selected.expires_at, 'PREVIEW_STALE')
+        return selected
+
+    def _plan_material(self, plans):
+        return [] if plans is None else [{'connection': key, 'plan_ref': value.plan_ref,
+            'body_digest': value.body_digest, 'bindings': vars(value.bindings),
+            'expires_at': value.expires_at.isoformat()} for key, value in sorted(plans.items())]
 
     def _current(self, backend, permit, request, plan, policy):
         now = utc(self.clock.now())
@@ -196,7 +237,11 @@ class SourceCollection:
     def _read(self, request, plan, budget, usage, start, retained):
         spec, backend = registered_source(request.source), self.backends[request.source]
         now = utc(self.clock.now())
-        permit = backend.authorize(request, plan, now=now)
+        pending_key = (plan.plan_ref, request.request_digest)
+        pending = self.state.pending.get(pending_key)
+        if pending is not None:
+            require(now < pending[4], 'PREVIEW_STALE')
+        permit = pending[0] if pending is not None else backend.authorize(request, plan, now=now)
         require(type(permit) is SourcePermit, 'AUTHORITY_DENIED')
         policy = backend.policy(permit, now=now)
         self._current(backend, permit, request, plan, policy)
@@ -209,15 +254,31 @@ class SourceCollection:
             'parents': list(permit.parent_ids), 'fixture': self.isolated_fixture}))
         cached = self.state.cache.get(key)
         if cached and now < cached.batch.expires_at:
-            retained.append((backend, permit, request, policy))
+            retained.append((backend, permit, request, policy, plan))
             return _Result(cached_evidence(cached.batch), canonical_bytes({
                 **read_json(cached.revision_material), 'cache_hit': True}))
-        reply = self._send(backend, spec, request, permit, plan, policy, budget, usage, start)
+        reply = pending[2] if pending is not None else self._send(
+            backend, spec, request, permit, plan, policy, budget, usage, start)
         self._current(backend, permit, request, plan, policy)
         response_chain = [{'request_digest': request.request_digest,
-            'body_digest': digest(reply.body), 'observed_at': reply.observed_at.isoformat()}]
+            'body_digest': pending[3] if pending is not None else digest(reply.body),
+            'observed_at': reply.observed_at.isoformat()}]
         parsed = normalize(spec, request, reply, now=utc(self.clock.now()))
         if parsed.enrichment_ids:
+            # An exact detail preview may need another owner action. Retain
+            # only validated public IDs, original digest/time and issuer handle;
+            # never the response's unselected text. Resume does not resend search.
+            headers = dict(reply.headers)
+            if (all(policy.allows(target, use) for target in SCALARS for use in ('cache', 'retain'))
+                    and not any(x in headers.get('cache-control', '').lower() for x in ('no-store', 'no-cache'))):
+                end = min(permit.expires_at, policy.expires_at, plan.expires_at,
+                          moshtix_response_expiry(reply, ttl=min(900, spec.ttl_seconds)))
+                if now < end:
+                    safe = SourceReply(reply.request_digest, 200, canonical_bytes({'data': {'search': {
+                        'ids': list(parsed.enrichment_ids), 'error': None}}}), reply.observed_at, reply.headers)
+                    require(pending_key in self.state.pending or len(self.state.pending) < 128,
+                            'CAPABILITY_UNAVAILABLE')
+                    self.state.pending[pending_key] = (permit, policy, safe, response_chain[0]['body_digest'], end)
             details = SourceRequest(request.source, request.category, 'book_details',
                                     request.terms, parsed.enrichment_ids)
             second = backend.authorize(details, plan, now=utc(self.clock.now()))
@@ -231,8 +292,9 @@ class SourceCollection:
             self._current(backend, second, details, plan, policy)
             response_chain.append({'request_digest': details.request_digest,
                 'body_digest': digest(reply.body), 'observed_at': reply.observed_at.isoformat()})
-            retained.append((backend, second, details, policy))
+            retained.append((backend, second, details, policy, plan))
             parsed = normalize(spec, details, reply, now=utc(self.clock.now()))
+            self.state.pending.pop(pending_key, None)
         now = utc(self.clock.now())
         require(reply.observed_at <= now, 'CONTRACT_INVALID')
         ttl = min(spec.ttl_seconds, 900 if request.category in
@@ -263,7 +325,7 @@ class SourceCollection:
         # proof that this source returned no inventory in its bounded request.
         if parsed.cards and not read_json(batch.material)['records']:
             raise EnhanceFault('AUTHORITY_DENIED')
-        retained.append((backend, permit, request, policy))
+        retained.append((backend, permit, request, policy, plan))
         result = _Result(batch, canonical_bytes({'source_revision': permit.source_revision,
             'source_config_revision': permit.source_config_revision,
             'policy_ref': policy.ref, 'policy_revision': policy.revision,
@@ -328,9 +390,9 @@ class SourceCollection:
         require(reply.status == 200, 'SOURCE_UNAVAILABLE')
         return reply
 
-    def _seal(self, plan, registry, outcomes, batches, revisions, end, budget, *, retained=()):
-        for backend, permit, request, policy in retained:
-            self._current(backend, permit, request, plan, policy)
+    def _seal(self, plan, registry, outcomes, batches, revisions, end, budget, *, retained=(), source_plans=None):
+        for backend, permit, request, policy, selected in retained:
+            self._current(backend, permit, request, selected, policy)
         value = seal(outcomes, batches, revisions, plan=plan, registry=registry,
                      budget=budget, now=utc(self.clock.now()), expires_at=end)
         with self.state.lock:
@@ -339,10 +401,10 @@ class SourceCollection:
                 del self._sealed[key]
             require(len(self._sealed) < 128, 'CAPABILITY_UNAVAILABLE')
             self._sealed[value.collection_ref] = (value.collection_digest, plan, registry,
-                                                  retained, value.expires_at)
+                                                  retained, value.expires_at, self._plan_material(source_plans))
         return value
 
-    def revalidate_collection(self, value, plan, registry):
+    def revalidate_collection(self, value, plan, registry, *, source_plans=None):
         """Broker use gate for this exact server-retained seal, including cache.
 
         A restart has no retained issuer capabilities and therefore requires
@@ -355,8 +417,9 @@ class SourceCollection:
             require(retained is not None
                     and retained[:3] == (value.collection_digest, plan, registry), 'PREVIEW_STALE')
             value.verify(plan, registry, now=utc(self.clock.now()))
-            for backend, permit, request, policy in retained[3]:
-                self._current(backend, permit, request, plan, policy)
+            require(retained[5] == self._plan_material(source_plans), 'PREVIEW_STALE')
+            for backend, permit, request, policy, selected in retained[3]:
+                self._current(backend, permit, request, selected, policy)
         return True
 
 
@@ -388,9 +451,9 @@ def seal(category_outcomes, observation_refs, rights_revisions, *, plan, registr
     return value
 
 
-def collect(authorized_query_plan, registry_view, budget):
+def collect(authorized_query_plan, registry_view, budget, *, source_plans=None):
     """Unconfigured public seam is honest unavailable coverage, never legacy I/O."""
-    return SourceCollection().collect(authorized_query_plan, registry_view, budget)
+    return SourceCollection().collect(authorized_query_plan, registry_view, budget, source_plans=source_plans)
 
 
 def moshtix_response_expiry(reply, *, ttl=900):

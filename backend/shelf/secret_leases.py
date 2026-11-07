@@ -5,6 +5,7 @@ cannot promise byte erasure and this boundary cannot protect against OS admins.
 Configuration is unproven metadata; it supplies no validation/dispatch authority.
 """
 from dataclasses import dataclass, field
+from contextlib import contextmanager
 from datetime import datetime, timedelta
 import secrets
 import uuid
@@ -42,6 +43,7 @@ class MemoryCredentials:
         # Shared lock establishes one order for session callbacks and vault access.
         self._lock = authority._lock
         authority._revokers.append(self._revoke_session)
+        authority._source_vault = self  # Explicit host-owned vault, never a store lookup.
 
     def _revoke_session(self, ref):
         for key, lease in list(self._leases.items()):
@@ -68,8 +70,11 @@ class MemoryCredentials:
     def configure(self, ref, config, *, connection_id=None, revision=None):
         with self._lock:
             self.authority.authorize(ref, sensitive=True)
-            if (type(config) is not dict or set(config) != {'adapter', 'model', 'reasoning'}
-                    or config != {'adapter': 'openai_responses', 'model': 'gpt-6-astra', 'reasoning': 'high'}):
+            inference = {'adapter': 'openai_responses', 'model': 'gpt-6-astra', 'reasoning': 'high'}
+            media = (type(config) is dict and set(config) == {'adapter', 'model', 'reasoning'}
+                and config['adapter'] in ('tmdb_movie', 'tmdb_tv', 'hardcover')
+                and config['model'] == config['reasoning'] == '')
+            if type(config) is not dict or config != inference and not media:
                 raise AuthorityFault('CONTRACT_INVALID', 422)
             with transaction.atomic():
                 if connection_id is None:
@@ -77,6 +82,8 @@ class MemoryCredentials:
                         installation_id=self.authority.boundary.installation_id, **config)
                 else:
                     row = self._connection(connection_id, revision)
+                    if row.adapter != config['adapter']:
+                        raise AuthorityFault('CONTRACT_INVALID', 422)
                     row.adapter, row.model, row.reasoning = config['adapter'], config['model'], config['reasoning']
                     row.config_revision += 1
                     row.credential_generation += 1
@@ -150,3 +157,18 @@ class MemoryCredentials:
             remaining = min(lease.expires, session.created + 28800, session.last_seen + 1800) - self.authority.monotonic()
             return {'configured': True, 'credential_generation': row.credential_generation,
                     'usable_until': self.authority.now() + timedelta(seconds=max(0, remaining))}
+
+    @contextmanager
+    @sensitive_variables()
+    def ephemeral(self, ref, connection_id, revision, *, credential_generation):
+        """Resolve only at send under the same lock as rotation and revocation."""
+        with self._lock:
+            row = self._connection(connection_id, revision)
+            if type(credential_generation) is not int or row.credential_generation != credential_generation:
+                raise AuthorityFault('PREVIEW_STALE', 409)
+            value = bytearray(self.resolve(ref, connection_id, revision))
+            try:
+                yield value
+            finally:
+                for index in range(len(value)):
+                    value[index] = 0

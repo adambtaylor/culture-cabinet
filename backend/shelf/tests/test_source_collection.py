@@ -66,6 +66,33 @@ class Backend(SourceBackend):
 
 
 class SourceCollectionTests(TestCase):
+    def test_per_connection_plan_uses_own_terms_and_seal_rejects_changed_map(self):
+        from types import SimpleNamespace
+        registry, primary = plan(('movie',))
+        body = read_json(primary.body)
+        body['queries'][0]['terms'] = ['Synthetic separately permitted title']
+        encoded = canonical_bytes(body)
+        own = replace(primary, plan_ref='synthetic-other-plan',
+            bindings=replace(primary.bindings, grants_digest='synthetic-other-grant',
+                             connection_digest='synthetic-other-connection'),
+            body=encoded, body_digest=digest(encoded))
+        clock = Clock()
+        backend = Backend('tmdb_movie', clock,
+            [(200, {'results': [{'id': 81001, 'title': 'Synthetic movie'}]}, ())])
+        backend.issuer = SimpleNamespace(connection_ref='synthetic-source')
+        collector = SourceCollection((('movie', ('tmdb_movie',)),), {'tmdb_movie': backend},
+            clock=clock, isolated_fixture=True)
+        source_plans = {'synthetic-source': own}
+        result = collector.collect(primary, registry, CollectionBudget(), source_plans=source_plans)
+        self.assertEqual(len(result.records), 1)
+        self.assertTrue(collector.revalidate_collection(result, primary, registry, source_plans=source_plans))
+        self.assertEqual(read_json(result.source_revisions)['_source_plans'][0]['body_digest'], own.body_digest)
+        with self.assertRaises(EnhanceFault):
+            collector.revalidate_collection(result, primary, registry, source_plans={'synthetic-source': primary})
+        foreign = replace(own, bindings=replace(own.bindings, profile_ref='foreign'))
+        with self.assertRaises(EnhanceFault):
+            collector._plan_for('tmdb_movie', primary, {'synthetic-source': foreign})
+
     def test_every_enabled_category_settles_with_enrichment_and_partial_failure(self):
         registry, query = plan(('book', 'movie', 'artist', 'event', 'outing'))
         clock = Clock()
