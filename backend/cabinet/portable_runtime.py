@@ -224,16 +224,31 @@ def make_server(boundary, application):
         raise
 
 
-def _compose_enhance(authority, connections, *, approved_policies):
+def _compose_enhance(authority, connections, *, approved_policies=None, approved_policies_factory=None):
     from shelf.native_source_policy import build_native_source_policy
     from shelf.portable_enhance_service import EnhanceService
-    policy = build_native_source_policy(authority,
-        approved_policies={} if approved_policies is None else approved_policies)
+    if (approved_policies is not None and approved_policies_factory is not None
+            or approved_policies_factory is not None and not callable(approved_policies_factory)):
+        raise RuntimeFailure('PORTABLE_SOURCE_POLICY_REFUSED')
+    # Trusted host code can import model-dependent rights only after Django
+    # setup. Consume it once here; requests never retain a factory/loader hook.
+    entries = approved_policies_factory() if approved_policies_factory is not None else (
+        {} if approved_policies is None else approved_policies)
+    if type(entries) is not dict:
+        raise RuntimeFailure('PORTABLE_SOURCE_POLICY_REFUSED')
+    policy = build_native_source_policy(authority, approved_policies=entries)
+    for rights in entries.values():
+        rights.validate(authority.now())
+        if rights.source == 'musicbrainz_recording':
+            from shelf.musicbrainz_source import MusicBrainzOperation
+            MusicBrainzOperation('Contact validation', rights.application_identity)
     EnhanceService.compose(authority, connections, policy_provider=policy)
+    if not entries:
+        print('PORTABLE_SOURCE_POLICY_UNAVAILABLE', flush=True)
     return policy
 
 
-def run(root, *, port=0, approved_policies=None):
+def run(root, *, port=0, approved_policies=None, approved_policies_factory=None):
     os.umask(0o077)
     boundary = server = None
     lifetime = ExitStack()
@@ -250,6 +265,9 @@ def run(root, *, port=0, approved_policies=None):
             raise PortableStop()
 
     try:
+        if (approved_policies is not None and approved_policies_factory is not None
+                or approved_policies_factory is not None and not callable(approved_policies_factory)):
+            raise RuntimeFailure('PORTABLE_SOURCE_POLICY_REFUSED')
         protect_core()
         # This process is a dedicated local server. Disabling logging avoids
         # accidental exception-value disclosure; terminal output is fixed below.
@@ -281,9 +299,8 @@ def run(root, *, port=0, approved_policies=None):
         # Only trusted host construction supplies reviewed entries; CLI defaults
         # deny. Credentials and HTTP input cannot manufacture source permissions.
         settings.PORTABLE_SOURCE_POLICY = _compose_enhance(authority,
-            settings.PORTABLE_CONNECTIONS, approved_policies=approved_policies)
-        if not approved_policies:
-            print('PORTABLE_SOURCE_POLICY_UNAVAILABLE', flush=True)
+            settings.PORTABLE_CONNECTIONS, approved_policies=approved_policies,
+            approved_policies_factory=approved_policies_factory)
         server = make_server(boundary, get_wsgi_application())
         if not stopping:
             print('Origin: ' + boundary.origin, flush=True)
