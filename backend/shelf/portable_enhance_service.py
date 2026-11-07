@@ -1,11 +1,10 @@
 """Owner-scoped durable Enhance composition with explicit source/send authority.
 
-The frozen HTTP interface accepts opaque references and explicit confirmations,
-never authority/body/source dictionaries. The source-independent store is real;
-the unleased current-evidence/writer and personal transport producers remain
-explicit gates. No legacy key, private profile, transport or selector fallback.
+The HTTP interface accepts opaque references and explicit confirmations. Normal
+composition authenticates source and personal ports independently; it never
+imports a legacy key/profile or substitutes the neutral probe for personal work.
 """
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 from datetime import timedelta
 from dataclasses import replace
 import math
@@ -32,7 +31,7 @@ class _DurablePorts:
         self.reservation = None
 
     def revalidate(self, intent, plan, seal, body):
-        with self.store.scope() as cabinet:
+        with self.service._collection_lock(self.service._memory.get(self.run_ref)), self.store.scope() as cabinet:
             current = self.store.current()
             row = self.store._run(cabinet, self.run_ref)
             self.store._match(row, current)
@@ -54,6 +53,11 @@ class _DurablePorts:
                 if type(self.store.provider) is CurrentProfile:
                     require(memory['coordinator'].catalogue.revalidate_collection(seal, plan, current.registry,
                         source_plans=dict(planned.source_plans)), 'PREVIEW_STALE', 409)
+                    preparation = memory.get('preparatory')
+                    if preparation is not None:
+                        producer, prepared_seal = preparation
+                        require(producer.revalidate_collection(prepared_seal, plan, current.registry,
+                            source_plans=dict(planned.source_plans)), 'PREVIEW_STALE', 409)
             if body is not None and row.body_digest:
                 require(digest(body) == row.body_digest, 'PREVIEW_STALE', 409)
 
@@ -84,7 +88,7 @@ class _DurablePorts:
             def credential_scope():
                 # Preserve recovery -> owner -> vault lock order while checking
                 # the original durable reservation at the final send boundary.
-                with ga.recovery_guard(self.service.authority, self.store.session_ref,
+                with self.service._collection_lock(memory), ga.recovery_guard(self.service.authority, self.store.session_ref,
                                        profile_ref=self.store.profile_ref), self.service.authority._lock:
                     planned = self.service._planned(memory)
                     self.revalidate(planned.intent, planned.plan, memory['work'].collected.seal, body)
@@ -195,6 +199,20 @@ class EnhanceService:
             return provider, catalogue
 
     @staticmethod
+    def _collection_lock(memory):
+        # Producer collection holds its state lock before entering issuer
+        # recovery/owner scope. Every consumer uses that SAME order, including
+        # final-send validation; RLock alone cannot fix cross-thread inversion.
+        from .source_collection import SourceCollection
+        catalogue = memory['coordinator'].catalogue if memory else None
+        return catalogue.state.lock if type(catalogue) is SourceCollection else nullcontext()
+
+    @staticmethod
+    def _settled_outcomes(memory, outcomes):
+        retained = memory.get('preparatory_outcomes', {}) if memory else {}
+        return tuple(retained.get(row.category, row) for row in outcomes)
+
+    @staticmethod
     def _planned(memory):
         work = memory['work']
         return work if type(work) is PlannedEnhance else work.collected.planned
@@ -271,8 +289,8 @@ class EnhanceService:
             actions.append('cancel')
         if row.portable_stage == 'published' and not redacted:
             actions.append('current')
-        if memory and memory.get('detail_dependency'):
-            value['dependency'] = memory['detail_dependency']
+        if (memory and memory.get('detail_dependency')) or row.evidence.get('phase') == 'inference_detail_confirmation_unavailable':
+            value['dependency'] = 'exact_hardcover_detail_confirmation_unavailable'
         value.update(revision=row.revision, actions=actions, allowed_actions=list(actions),
                      cancel_requested=row.cancel_requested)
         return value
@@ -336,6 +354,7 @@ class EnhanceService:
 
     @sensitive_variables()
     def _install_preview(self, store, row, phase, work, body, expires_at, coordinator):
+        prior = self._memory.get(str(row.pk), {})
         source_preview, issuer, source_previews = None, None, []
         if phase == 'catalogue' and self._isolated is not _ISOLATED:
             for key, plan in work.source_plans:
@@ -355,6 +374,8 @@ class EnhanceService:
         require(self.authority.now() < expires, 'PREVIEW_STALE', 409)
         metadata = {'phase': phase, 'preview_ref': preview_ref, 'preview_digest': digest(body),
                     'session_digest': digest(store.session_ref.encode())}
+        if phase == 'inference' and prior.get('detail_dependency'):
+            metadata['phase'] = 'inference_detail_confirmation_unavailable'
         sealed = {'portable_expires_at': expires}
         outcomes = ()
         if phase == 'inference':
@@ -364,7 +385,7 @@ class EnhanceService:
                                   {fact['id'] for fact in candidate['facts']})} for candidate in submitted['candidates']]}
             metadata['submitted_refs'] = refs
             seal = work.collected.seal
-            outcomes = [vars(value) for value in seal.outcomes]
+            outcomes = [vars(value) for value in self._settled_outcomes(prior, seal.outcomes)]
             sealed.update(body_digest=digest(body), collection_digest=seal.collection_digest,
                 sealed_run_digest=digest(canonical_bytes({'intent': row.input_digest,
                     'collection': seal.collection_digest, 'body': digest(body), 'bindings': row.portable_bindings})))
@@ -373,6 +394,8 @@ class EnhanceService:
             'expires_at': expires, 'session_digest': metadata['session_digest'], 'coordinator': coordinator,
             'source_preview': source_preview, 'issuer': issuer, 'source_previews': source_previews,
             'source_index': 0, 'details_prepared': False,
+            'preparatory': prior.get('preparatory'), 'preparatory_outcomes': prior.get('preparatory_outcomes', {}),
+            'detail_dependency': prior.get('detail_dependency'),
             'source_connection_ref': work.query_view.connection_ref if phase == 'catalogue' else work.collected.planned.query_view.connection_ref}
 
     def _next_source_preview(self, store, row, memory):
@@ -413,13 +436,20 @@ class EnhanceService:
             aggregate_bytes=budget.aggregate_bytes-usage['response_bytes'], collection_seconds=budget.collection_seconds-seconds)
         details = book.issuer.pending_details(planned.plan.plan_ref)
         if not details or not catalogue.state.pending:
-            # Missing retention/derived-operation UI authority holds only this
-            # source. Never resend search to try to recover an unretained proposal.
+            # Keep the authenticated preparatory seal, including actual empty or
+            # failure provenance. Only issuer-retained derived requests prove a
+            # successful search reached the detail handoff. A search denial
+            # has no such proof, even when a network send was charged.
+            memory['preparatory'] = (stage, seal)
+            actual = next(outcome for outcome in seal.outcomes if outcome.category == 'book')
+            memory['preparatory_outcomes'] = {'book': actual}
+
             configured = tuple((key, tuple(name for name in names if name != 'hardcover'))
                                for key, names in catalogue.configured.items())
             memory['coordinator'].catalogue = SourceCollection(configured, dict(catalogue.backends),
                 clock=catalogue.clock, state=catalogue.state)
-            memory['detail_dependency'] = 'exact_hardcover_detail_confirmation_unavailable'
+            memory['detail_dependency'] = ('exact_hardcover_detail_confirmation_unavailable'
+                if details and actual.code == 'AUTHORITY_DENIED' else None)
             return False
         own = dict(planned.source_plans)[book.issuer.connection_ref]
         memory['source_previews'] = [(book.issuer, book.issuer.preview(own, request=request)) for request in details]
@@ -531,10 +561,14 @@ class EnhanceService:
                 submitted = read_json(read_json(memory['body'])['input'].encode())
                 from .enhance_selection import GroundedSelector
                 arguments = {'snapshot': profile_snapshot.capture(work.inference_view)} if type(self.selector) is GroundedSelector else {}
-                manifest = self.selector.build(completed.output, submitted, work.collected.seal.outcomes, **arguments)
+                manifest = self.selector.build(completed.output, submitted,
+                    self._settled_outcomes(memory, work.collected.seal.outcomes), **arguments)
                 expected_revision = completed.evidence['expected_publication_revision']
-                store.publish(run_ref, manifest=manifest, expected_publication_revision=expected_revision,
-                              allowed_candidates=submitted['candidates'])
+                with self._collection_lock(memory):
+                    coordinator._host_check(work.collected.planned.intent, work.collected.planned.plan,
+                                            work.collected.seal, memory['body'])
+                    store.publish(run_ref, manifest=manifest, expected_publication_revision=expected_revision,
+                                  allowed_candidates=submitted['candidates'])
             self._memory.pop(str(row.pk), None)
             return self.status(session_ref, run_ref=run_ref)
         except (AuthorityFault, EnhanceFault, DisclosureError) as error:

@@ -196,3 +196,88 @@ class NormalCompositionReadinessTests(StoreCase):
         self.assertEqual(service._contexts, {})
         service.close()
         self.assertEqual(service._memory, {})
+
+
+class PreparatoryOutcomeTests(__import__('unittest').TestCase):
+    def prepare(self, state, code, sends, *, derived=False):
+        from types import SimpleNamespace as N
+        from unittest.mock import patch
+        from shelf.source_adapters import SourceBackend
+        from shelf.source_collection import SourceCollection
+        from shelf.enhance_contract import CollectionBudget, RegistryView
+        class Backend(SourceBackend):
+            isolated_fixture = False
+            def authorize(self, *a, **kw): raise AssertionError('no resend')
+            def revalidate(self, *a, **kw): raise AssertionError('no resend')
+            def policy(self, *a, **kw): raise AssertionError('no resend')
+            def request(self, *a, **kw): raise AssertionError('no resend')
+        book = Backend(); book.issuer = N(connection_ref='book-connection', pending_details=lambda ref:('issuer-authenticated-detail-request',) if derived else ())
+        clock = N(now=lambda:None, monotonic=lambda:0)
+        catalogue = SourceCollection((('book', ('hardcover',)),), {'hardcover':book}, clock=clock)
+        planned = N(plan=N(plan_ref='original'), registry=RegistryView('r', ('book',)), source_plans=(('book-connection',object()),))
+        coordinator = N(catalogue=catalogue, budget=CollectionBudget())
+        memory = dict(work=planned, coordinator=coordinator)
+        outcome = CategoryOutcome('book', state, 0, code)
+        seal = N(outcomes=(outcome,), source_revisions=canonical_bytes({'_collection':{'sends':sends,'response_bytes':0}}))
+        with patch.object(SourceCollection, 'collect', return_value=seal) as collect:
+            self.assertFalse(EnhanceService._prepare_details(object(), None, None, memory))
+            collect.assert_called_once()
+        actual = EnhanceService._settled_outcomes(memory, (CategoryOutcome('book','unavailable',0,'CAPABILITY_UNAVAILABLE'),))
+        self.assertEqual(actual, (outcome,))
+        self.assertIs(memory['preparatory'][1], seal)
+        self.assertNotIn('hardcover', coordinator.catalogue.configured['book'])
+        return memory
+
+    def test_empty_search_retains_empty_success_and_no_detail_dependency(self):
+        self.assertIsNone(self.prepare('empty_bounded', 'OK', 1)['detail_dependency'])
+
+    def test_unretained_detail_preserves_denial_and_specific_dependency(self):
+        self.assertEqual(self.prepare('unavailable', 'AUTHORITY_DENIED', 1, derived=True)['detail_dependency'],
+                         'exact_hardcover_detail_confirmation_unavailable')
+
+    def test_search_http403_without_derived_ids_retains_denial_without_detail_claim(self):
+        # The collector maps search HTTP403 to this same aggregate denial;
+        # only issuer-derived requests distinguish the later detail handoff.
+        memory = self.prepare('unavailable', 'AUTHORITY_DENIED', 1)
+        self.assertEqual(memory['preparatory_outcomes']['book'].code, 'AUTHORITY_DENIED')
+        self.assertIsNone(memory['detail_dependency'])
+
+    def test_source_failure_retains_its_failure_code_without_detail_claim(self):
+        self.assertIsNone(self.prepare('failed', 'SOURCE_UNAVAILABLE', 1)['detail_dependency'])
+
+    def test_collection_lock_is_acquired_before_owner_validation(self):
+        import threading
+        from contextlib import contextmanager
+        from types import SimpleNamespace as N
+        from shelf.source_collection import SourceCollection
+        from shelf.portable_enhance_service import _DurablePorts
+        catalogue = SourceCollection(); owner = threading.RLock()
+        held, started, released, entered = [threading.Event() for _ in range(4)]
+        binding = object()
+        @contextmanager
+        def scope():
+            with owner:
+                entered.set(); yield object()
+        store = N(scope=scope, current=lambda:N(bindings=binding), provider=object(),
+            _run=lambda *a:N(body_digest=''), _match=lambda *a:None)
+        service = N(_memory={'run':{'coordinator':N(catalogue=catalogue)}},
+                    _collection_lock=EnhanceService._collection_lock)
+        failures = []
+        def collect():
+            try:
+                with catalogue.state.lock:
+                    held.set(); self.assertTrue(started.wait(1))
+                    self.assertFalse(entered.wait(.05))
+                    with owner: released.set()
+            except BaseException as e: failures.append(type(e).__name__)
+        def validate():
+            try:
+                self.assertTrue(held.wait(1)); started.set()
+                _DurablePorts(service,store,'run').revalidate(N(bindings=binding),None,None,None)
+            except BaseException as e: failures.append(type(e).__name__)
+        threads=[threading.Thread(target=fn,daemon=True) for fn in (collect,validate)]
+        for thread in threads: thread.start()
+        for thread in threads: thread.join(2)
+        self.assertTrue(released.is_set()); self.assertTrue(entered.is_set())
+        self.assertFalse(any(thread.is_alive() for thread in threads))
+        self.assertEqual(failures, [])

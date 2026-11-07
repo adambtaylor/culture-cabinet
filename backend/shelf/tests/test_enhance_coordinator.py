@@ -198,7 +198,9 @@ class SourcePlanMapTests(SnapshotCase):
     def test_server_plan_retains_each_view_and_does_not_import_a_client_map(self):
         import uuid
         from shelf.category_registry import registry_view
-        view = self.view(self.profile_ref)
+        self.consent(self.profile_ref, purpose='catalogue_lookup')
+        view = ga.current_view(self.authority, self.ref, profile_ref=self.profile_ref,
+            connection_ref=str(self.config.pk), purpose='catalogue_lookup')
         planned = EnhanceCoordinator(None, now=self.authority.now).plan(view, registry_view(),
             run_ref=str(uuid.uuid4()), client_key=str(uuid.uuid4()), refresh_nonce=str(uuid.uuid4()),
             source_views=(view,))
