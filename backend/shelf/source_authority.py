@@ -328,16 +328,23 @@ class SourceAuthority(SourceAuthorityIssuer):
             self._check(saved[1], utc(now)); permit.verify(request, plan, now)
             return True
 
+    def policy_context(self, permit, operation, *, now):
+        # Only these adjacent results share an evaluation. The enclosing barrier
+        # must finish successfully before either result can escape; later calls
+        # revalidate again rather than retaining an authorization cache.
+        with ga.recovery_guard(self.authority, self.session_ref, profile_ref=self.profile_ref), self.authority._lock:
+            saved = self._permits.get(id(permit))
+            require(saved is not None and saved[0] is permit, 'AUTHORITY_DENIED')
+            self.revalidate(permit, saved[1].request, saved[1].plan, operation, now=now)
+            rights = saved[1].rights
+            self._validate_policy(rights, permit, now)
+            return rights.policy, rights.processor_ref is not None
+
     def policy(self, permit, operation, *, now):
-        saved = self._permits.get(id(permit))
-        require(saved is not None and saved[0] is permit, 'AUTHORITY_DENIED')
-        self.revalidate(permit, saved[1].request, saved[1].plan, operation, now=now)
-        self._validate_policy(saved[1].rights, permit, now)
-        return saved[1].rights.policy
+        return self.policy_context(permit, operation, now=now)[0]
 
     def model_context_current(self, permit, operation, *, now):
-        self.policy(permit, operation, now=now)
-        return self._permits[id(permit)][1].rights.processor_ref is not None
+        return self.policy_context(permit, operation, now=now)[1]
 
     def remember_details(self, permit, reply):
         """Only an authenticated search observation can propose detail IDs.

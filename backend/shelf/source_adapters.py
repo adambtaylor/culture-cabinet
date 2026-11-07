@@ -354,6 +354,18 @@ class SourceAuthorityIssuer(ABC):
     @abstractmethod
     def model_context_current(self, permit, operation, *, now): ...
 
+    def policy_context(self, permit, operation, *, now):
+        """Compatibility path: a generic issuer still proves processor rights.
+
+        Concrete issuers may validate both results together. The default retains
+        independent checks and never infers processor permission from a policy.
+        """
+        policy = self.policy(permit, operation, now=now)
+        require(type(policy) is FieldPolicy, 'AUTHORITY_DENIED')
+        model_current = (self.model_context_current(permit, operation, now=now) is True
+                         if any('model_context' in uses for _, uses in policy.permissions) else False)
+        return policy, model_current
+
 
 @dataclass
 class _MoshtixContext:
@@ -516,12 +528,12 @@ class MediaBackend(SourceBackend):
     def policy(self, permit, *, now):
         context = self._context(permit)
         require(self.revalidate(permit, context.request, context.plan, now=now), 'PREVIEW_STALE')
-        policy = self.issuer.policy(permit, context.operation, now=now)
+        policy, model_current = self.issuer.policy_context(permit, context.operation, now=now)
         require(type(policy) is FieldPolicy and policy.current(now)
                 and policy.ref == permit.policy_ref and policy.revision == permit.policy_revision
                 and policy.allows('*', 'fetch'), 'AUTHORITY_DENIED')
         require(not any('model_context' in uses for _, uses in policy.permissions)
-                or self.issuer.model_context_current(permit, context.operation, now=now) is True,
+                or model_current is True,
                 'AUTHORITY_DENIED')
         return policy
 
