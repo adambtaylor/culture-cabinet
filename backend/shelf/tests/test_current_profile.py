@@ -18,10 +18,13 @@ class CurrentProfileTests(RecoveryCase):
             profile_id=self.state.profile_id, confirmed=True), self.profile_ref)
         self.state.refresh_from_db()
         self.consent(self.profile_ref, classes=sorted(ga.CLASSES))
+        self.target = FeedbackTarget.objects.create(id=uuid.UUID('00000000-0000-4000-8000-00000000c001'),
+            kind='item', title='Synthetic current-profile target', category='book',
+            source_namespace='current-profile-fixture', source_key='typed-values')
         self.provider = CurrentProfile(self.authority)
 
     def post(self, signal, value, *, revision=0, context=None, operation='set', reverses=None):
-        target = FeedbackTarget.objects.filter(kind='item').first()
+        target = FeedbackTarget.objects.get(pk=self.target.pk)
         actor = get_user_model().objects.get(pk=self.state.actor_id)
         command = MutationCommand(str(uuid.uuid4()), str(target.pk), 'item', signal, 'item',
             operation, revision, context, value, reverses)

@@ -4,6 +4,7 @@ Terminal bootstrap values stay in RAM. The child runs the normal entrypoint with
 an audit hook that denies every outbound socket/lookup; parent HTTP may reach
 only the recorded private loopback origin. stop() owns only this child session.
 """
+import atexit
 import fcntl
 import json
 import os
@@ -16,8 +17,28 @@ import socket
 import subprocess
 import sys
 import time
+import threading
 
 _CLI_STARTS = 0
+_USAGE = []
+_ACTIVE = set()
+
+
+def _usage_summary():
+    # Exit cleanup covers a runner interruption as well as normal test cleanup.
+    for fixture in tuple(_ACTIVE):
+        try:
+            fixture.stop()
+        except BaseException:
+            # Keep the incomplete record visible; never replace it with success.
+            pass
+    print('PORTABLE_FIXTURE_AGGREGATE ' + json.dumps(dict(
+        starts=len(_USAGE), records=_USAGE,
+        complete=all(row.get('complete') is True for row in _USAGE))), flush=True)
+
+
+atexit.register(_usage_summary)
+
 _CHILD = r'''
 import os, runpy, sys
 entry, audit = sys.argv[1:3]
@@ -63,6 +84,10 @@ class PortableFixture:
         self.graceful_exit_code = None
         self.emergency_kill_used = False
         self.teardown_errors = []
+        self._stop_lock = threading.RLock()
+        self._timer = None
+        self._usage = None
+        self._stop_receipt = None
 
     @property
     def pid(self):
@@ -82,18 +107,27 @@ class PortableFixture:
         env = {'PATH': '/usr/bin:/bin', 'LANG': 'C.UTF-8', **self.environment}
         try:
             try:
+                spawned_at = time.monotonic()
                 self.process = subprocess.Popen([sys.executable, '-I', '-B', '-c', _CHILD,
                     str(self.source_root / 'backend/portable.py'), str(self.audit_path),
                     '--data-root', str(self.data_root), '--port', str(self.port)],
                     stdin=subprocess.DEVNULL, stdout=slave, stderr=slave, env=env,
                     cwd=self.source_root, start_new_session=True)
                 _CLI_STARTS += 1  # Count actual children, not injected spawn failures.
+                self._usage = dict(pid=self.process.pid, start=spawned_at, complete=False)
+                _USAGE.append(self._usage)
+                _ACTIVE.add(self)
+                # Shutdown has up to 6.2 seconds of bounded waits/probes. Start
+                # at 20 seconds to leave headroom inside the whole-life cap.
+                self._timer = threading.Timer(max(0, spawned_at + 20 - time.monotonic()), self.stop)
+                self._timer.daemon = True
+                self._timer.start()
             finally:
                 os.close(slave)
         except BaseException:
             self.stop()  # Includes master ownership even when Popen never returns.
             raise
-        end = time.monotonic() + self.timeout
+        end = min(time.monotonic() + self.timeout, spawned_at + 20)
         try:
             while time.monotonic() < end:
                 ready, _, _ = select.select([self.master], [], [], min(0.1, max(0, end-time.monotonic())))
@@ -130,6 +164,34 @@ class PortableFixture:
             pass
 
     def stop(self):
+        # The deadline callback and caller must never race signals or reaping.
+        with self._stop_lock:
+            if self._stop_receipt is not None:
+                return dict(self._stop_receipt)
+            if self._timer is not None:
+                self._timer.cancel()
+            result = self._stop()
+            if self._usage is not None:
+                ended = time.monotonic()
+                elapsed = ended - self._usage['start']
+                reaped = self.process.poll() is not None
+                self._usage.update(reap=ended, elapsed=elapsed,
+                    termination='KILL' if self.emergency_kill_used else 'TERM_OR_EXIT',
+                    remaining_owned_pids=result['remaining_owned_pids'],
+                    complete=(reaped and elapsed <= 30 and
+                              result['remaining_owned_pids'] == [] and
+                              result['listener_closed'] is True and
+                              result['lock_released'] is True))
+                print('PORTABLE_FIXTURE_USAGE ' + json.dumps(self._usage), flush=True)
+                # Unknown cleanup stays active for the exit safety attempt.
+                if self._usage['complete']:
+                    _ACTIVE.discard(self)
+                    self._stop_receipt = dict(result)
+                else:
+                    raise PortableFixtureFailure('CLI_LIFETIME_OR_CLEANUP_UNPROVEN')
+            return result
+
+    def _stop(self):
         """Each probe is independent; local descriptor/secret cleanup always runs.
 
         Emergency containment is not graceful product shutdown. None in the PID

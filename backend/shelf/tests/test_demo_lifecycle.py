@@ -201,6 +201,8 @@ class DemoLifecycleTests(TransactionTestCase):
                                         'existing_journal','symlink','hardlink','mode','directory_mode','replaced_db','wrong_store')):
             root,path,store=self.fixture(str(index))
             raw=sqlite3.connect(path)
+            from shelf.models import register_closed_sql_guards
+            register_closed_sql_guards(raw)
             try:
                 if attack=='marker': raw.execute('PRAGMA application_id=77')
                 elif attack=='unknown_schema': raw.execute('CREATE TABLE unapproved (payload TEXT)')
@@ -672,3 +674,108 @@ class DemoLifecycleTests(TransactionTestCase):
                 definitions = {normalize(row[0]) for row in cursor.execute("SELECT sql FROM sqlite_master WHERE type='trigger'").fetchall()}
             self.assertEqual(definitions, {normalize(sql) for sql in list(prior.TRIGGERS) + list(broker.TRIGGERS)})
             self.assertIn(('shelf', '0022_portable_enhance_state'), MigrationRecorder(wrapper).applied_migrations())
+
+
+    def test_reverse_legacy_roundtrip_restores_exact_guard_sets_and_rows(self):
+        from importlib import import_module
+        from django.db.migrations.executor import MigrationExecutor
+        root, _, _ = self.fixture('reverse-roundtrip', issue=False)
+        path = root / 'db' / 'reverse.sqlite3'
+        with self.wrapper(path) as wrapper:
+            executor = MigrationExecutor(wrapper)
+            executor.migrate([('shelf', '0023_enhance_current_state')])
+            historical = executor.loader.project_state([('shelf', '0023_enhance_current_state')]).apps
+            profile = historical.get_model('shelf', 'Profile').objects.create(kind='owner', label='Fictional reverse retained', active=True)
+            for target, count in (('0022_portable_enhance_state', 24),
+                                  ('0021_portable_disclosure_authority', 17),
+                                  ('0023_enhance_current_state', 77)):
+                MigrationExecutor(wrapper).migrate([('shelf', target)])
+                with wrapper.cursor() as cursor:
+                    self.assertEqual(cursor.execute('SELECT label FROM shelf_profile WHERE id=%s', [profile.pk]).fetchone(),
+                                     ('Fictional reverse retained',))
+                    definitions = {row[0].strip().removesuffix(';').rstrip() for row in cursor.execute(
+                        "SELECT sql FROM sqlite_master WHERE type='trigger'").fetchall()}
+                expected = list(import_module('shelf.migrations.0021_portable_disclosure_authority').TRIGGERS)
+                if count == 24:
+                    expected += list(import_module('shelf.migrations.0022_portable_enhance_state').TRIGGERS)
+                elif count == 77:
+                    expected = import_module('shelf.migrations.0023_enhance_current_state').TRIGGERS
+                self.assertEqual(len(definitions), count)
+                self.assertEqual(definitions, {sql.strip().removesuffix(';').rstrip() for sql in expected})
+
+    def test_reverse_refuses_protected_nondefault_unknown_and_redacted_rows_unchanged(self):
+        from django.db.migrations.executor import MigrationExecutor
+        from django.utils import timezone
+        for scenario in ('installation', 'v2', 'nondefault', 'binding', 'unknown', 'redacted', 'unknown_schema', 'unknown_index', 'unknown_view'):
+            with self.subTest(scenario=scenario):
+                root, _, _ = self.fixture('reverse-refuse-' + scenario, issue=False)
+                path = root / 'db' / 'reverse.sqlite3'
+                with self.wrapper(path) as wrapper:
+                    executor = MigrationExecutor(wrapper)
+                    executor.migrate([('shelf', '0023_enhance_current_state')])
+                    historical = executor.loader.project_state([('shelf', '0023_enhance_current_state')]).apps
+                    if scenario in ('installation', 'v2'):
+                        actor = historical.get_model('auth', 'User').objects.create(username='fictional-protected')
+                        installation = historical.get_model('shelf', 'PortableInstallation').objects.create(
+                            id=uuid.uuid4(), root_identity='fictional-reverse', process_generation=uuid.uuid4(),
+                            owner_id=actor.pk, owner_revision=1)
+                        if scenario == 'v2':
+                            from django.db import transaction
+                            from shelf.grant_authority import _write_window
+                            profile = historical.get_model('shelf', 'Profile').objects.create(
+                                kind='owner', label='Fictional protected v2', active=True)
+                            with transaction.atomic(), _write_window():
+                                historical.get_model('shelf', 'ProfileCabinetState').objects.create(
+                                    profile_id=profile.pk, installation_id=installation.pk,
+                                    actor_id=actor.pk, owner_revision=1, data_schema_version=2)
+                    elif scenario in ('unknown_schema', 'unknown_index', 'unknown_view'):
+                        statements = dict(unknown_schema='CREATE TABLE unexpected_authority (id integer)',
+                            unknown_index='CREATE INDEX unexpected_authority ON shelf_profile(label)',
+                            unknown_view='CREATE VIEW unexpected_authority AS SELECT id FROM shelf_profile')
+                        with wrapper.cursor() as cursor:
+                            cursor.execute(statements[scenario])
+                    else:
+                        actor = historical.get_model('auth', 'User').objects.create(username='fictional-reverse')
+                        profile = historical.get_model('shelf', 'Profile').objects.create(kind='owner', label='Fictional reverse', active=True)
+                        fields = dict(actor_id=actor.pk, profile_id=profile.pk, input_snapshot={}, input_digest='f'*64)
+                        fields.update({'nondefault': dict(portable_stage='collected'),
+                            'binding': dict(portable_bindings={'schema': 2}),
+                            'unknown': dict(state='unknown', attempts=1, transport_request_id=uuid.uuid4()),
+                            'redacted': dict(content_redacted_at=timezone.now(), content_digest='f'*64)}[scenario])
+                        historical.get_model('shelf', 'SynthesisRun').objects.create(**fields)
+                    before = tuple(wrapper.connection.iterdump())
+                    for target in ('0022_portable_enhance_state', '0021_portable_disclosure_authority'):
+                        with self.assertRaises(RuntimeError):
+                            MigrationExecutor(wrapper).migrate([('shelf', target)])
+                        self.assertEqual(tuple(wrapper.connection.iterdump()), before)
+
+    def test_reverse_failures_roll_back_guard_removal_and_partial_restoration(self):
+        from importlib import import_module
+        from django.db.migrations.executor import MigrationExecutor
+        for version, target in (('0023_enhance_current_state', '0022_portable_enhance_state'),
+                                ('0022_portable_enhance_state', '0021_portable_disclosure_authority')):
+            for stage in ('removed', 'restoring'):
+                with self.subTest(version=version, stage=stage):
+                    root, _, _ = self.fixture('reverse-atomic-' + version[:4] + '-' + stage, issue=False)
+                    path = root / 'db' / 'reverse.sqlite3'
+                    with self.wrapper(path) as wrapper:
+                        MigrationExecutor(wrapper).migrate([('shelf', version)])
+                        before = tuple(wrapper.connection.iterdump())
+                        migration = import_module('shelf.migrations.' + version)
+                        operations = [op for op in migration.Migration.operations if hasattr(op, 'reverse_code')]
+                        operation = operations[-1] if stage == 'removed' else operations[0]
+                        original = operation.reverse_code
+                        reached = []
+                        def fail(apps, editor):
+                            if stage == 'removed':
+                                original(apps, editor)
+                            else:
+                                prior = import_module('shelf.migrations.0021_portable_disclosure_authority')
+                                editor.execute(prior.TRIGGERS[0])
+                            reached.append(True)
+                            raise RuntimeError('fictional reverse interruption')
+                        with patch.object(operation, 'reverse_code', side_effect=fail):
+                            with self.assertRaisesRegex(RuntimeError, '^fictional reverse interruption$'):
+                                MigrationExecutor(wrapper).migrate([('shelf', target)])
+                        self.assertEqual(reached, [True])
+                        self.assertEqual(tuple(wrapper.connection.iterdump()), before)

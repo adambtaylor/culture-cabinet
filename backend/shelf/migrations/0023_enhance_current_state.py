@@ -159,9 +159,21 @@ def install_owned(apps, editor):
             raise RuntimeError('PORTABLE_GUARD_INSTALL_FAILED:' + name(sql)) from error
 
 
+def reverse_install_owned(apps, editor):
+    predecessor = import_module('shelf.migrations.0022_portable_enhance_state')
+    predecessor.guard_inventory(editor, TRIGGERS)
+    predecessor.legacy_reverse_eligible(apps, editor)
+    predecessor.drop_inventory(editor, TRIGGERS)
+
+
+def reverse_drop_owned(apps, editor):
+    predecessor = import_module('shelf.migrations.0022_portable_enhance_state')
+    predecessor.restore_inventory(editor, list(PRIOR) + list(BROKER))
+
+
 class Migration(migrations.Migration):
     dependencies = [('shelf', '0022_portable_enhance_state')]
-    operations = [migrations.RunPython(drop_owned)] + [
+    operations = [migrations.RunPython(drop_owned, reverse_drop_owned)] + [
         migrations.AddField(model_name=model, name=field, field=definition)
         for model in ('synthesisrun', 'portablecabinetmanifest')
         for field, definition in [('content_redacted_at', models.DateTimeField(null=True)),
@@ -169,4 +181,4 @@ class Migration(migrations.Migration):
     ] + [migrations.RemoveConstraint(model_name='profilecabinetstate', name='cabinet_schema_v1'),
          migrations.AddConstraint(model_name='profilecabinetstate', constraint=models.CheckConstraint(
              condition=models.Q(data_schema_version__in=[1, 2]), name='cabinet_schema_v1')),
-         migrations.RunPython(install_owned)]
+         migrations.RunPython(install_owned, reverse_install_owned)]
