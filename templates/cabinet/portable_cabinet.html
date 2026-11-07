@@ -1,6 +1,90 @@
 {% extends enhancement_base %}
 {% block content %}
-{% if consent %}
+{% if source_setup %}
+<section class="paper-panel cabinet-source-setup" aria-labelledby="musicbrainz-heading">
+  <h1 id="musicbrainz-heading">MusicBrainz recordings</h1>
+  <p>{{ profile_label }}</p>
+  <p>Find recording identities by an artist name you have chosen to share. MusicBrainz needs no API key. Configuration, source permission and each actual API request are separate choices.</p>
+  <p>Only the selected artist title is used for this search, not raw notes. A name match does not verify an exact artist identity. Core recording titles, artist credits and identifiers come from <a href="https://musicbrainz.org" rel="noreferrer noopener">MusicBrainz</a> under <a href="https://musicbrainz.org/doc/About/Data_License" rel="noreferrer noopener">CC0</a>; this grants no audio rights.</p>
+  <p>This source supports recordings. Films, books and other categories still need their own available permitted sources. Their outcomes remain visible when Enhance runs.</p>
+  {% comment %}Configuration never grants catalogue access. These current-owner projections expose only the appropriate native action; GET changes no authority. A saved expired grant must be revoked before regranting.{% endcomment %}
+  {% if not source_configured %}
+  <h2>1. Configure this source</h2>
+  <form method="post" action="/cabinet/source/musicbrainz/configure" data-source-configure>{% csrf_token %}
+    <input type="hidden" name="profile_ref" value="{{ profile_ref }}"><input type="hidden" name="expected_revision" value="{{ source_revision }}">
+    <label class="cabinet-check"><input type="checkbox" name="confirmed" value="yes" required autocomplete="off"> Configure MusicBrainz recordings for this cabinet.</label>
+    <button type="submit">Configure MusicBrainz</button>
+  </form>
+  {% else %}
+  <p role="status">MusicBrainz is configured. Configuration alone does not grant source permission.</p>
+  <h2>2. Review source permission</h2>
+  <p>Source permission is separate from inference permission. It does not send a request or approve model use. You will review the exact API request before collection, then the separate inference body before any model send.</p>
+  {% if source_consent_active %}<p role="status">Current source permission is active until {{ source_consent_expires }}.</p>{% elif source_consent_record_active %}<p role="status">The saved source permission has expired or no longer matches. Revoke it before explicitly granting new permission.</p>{% else %}<p role="status">No current source permission is active.</p>{% endif %}
+  {% if source_consent_groups %}<p>Previously selected groups:</p><ul>{% for group in source_consent_groups %}<li>{{ group }}</li>{% endfor %}</ul>{% endif %}
+  <form method="post" action="/cabinet/source/musicbrainz/consent" data-source-consent>{% csrf_token %}
+    <input type="hidden" name="profile_ref" value="{{ profile_ref }}"><input type="hidden" name="source_connection_ref" value="{{ source_connection_ref }}"><input type="hidden" name="expected_revision" value="{{ source_consent_revision }}">
+    {% if source_consent_record_active %}
+    <input type="hidden" name="action" value="revoke">
+    <p>Revocation cannot undo a request already sent.</p>
+    <label class="cabinet-check"><input type="checkbox" name="confirmed" value="yes" required autocomplete="off"> Revoke this source permission.</label>
+    <button type="submit">Revoke source permission</button>
+    {% else %}
+    <input type="hidden" name="action" value="{{ source_consent_action }}">
+    <fieldset><legend>Choose the artist signal groups for source lookup</legend>{% for choice in source_choices %}<label class="cabinet-check"><input type="checkbox" name="allow_{{ choice.code }}" value="yes" autocomplete="off"> {{ choice.label }}</label>{% endfor %}</fieldset>
+    <p>Only permitted artist signals can supply the search name. No notes or inference permission are included here. Permission lasts up to five minutes or the current owner session’s end, whichever comes first.</p>
+    <label class="cabinet-check"><input type="checkbox" name="confirmed" value="yes" required autocomplete="off"> Allow only the selected groups for MusicBrainz catalogue lookup during this permission window.</label>
+    <button type="submit">Grant source permission</button>
+    {% endif %}
+  </form>
+  {% endif %}
+  <p><a href="/cabinet/taste/artist?profile_ref={{ profile_ref|urlencode }}">Add an artist you know</a></p>
+  <p><a href="{{ cabinet_url }}">Return to your cabinet</a></p>
+</section>
+{% elif artist_input %}
+<section class="paper-panel cabinet-artist-input" aria-labelledby="artist-input-heading">
+  <h1 id="artist-input-heading">Add an artist you know</h1>
+  <p>{{ profile_label }}</p>
+  <p>Your entry is an artist name you state, not a verified MusicBrainz identity or imported history. Saving a response does not run Enhance or share it with a source or model.</p>
+  <p>Use one of the forms below: interest in exploring an artist, or enjoyment of work you have experienced. A name alone is not a rating.</p>
+  {% comment %}Two native forms keep each fixed signal and its valid value set together, with no script or inferred default. Both carry the server-issued entry/mutation/revision; handlers own replay and current-owner validation.{% endcomment %}
+  <h2>Interest in exploring an artist</h2>
+  <form method="post" action="/cabinet/taste/artist" data-artist-interest>{% csrf_token %}
+    <input type="hidden" name="profile_ref" value="{{ profile_ref }}"><input type="hidden" name="entry_ref" value="{{ entry_ref }}"><input type="hidden" name="mutation_id" value="{{ newmutation_id }}"><input type="hidden" name="base_revision" value="{{ base_revision }}"><input type="hidden" name="operation" value="set"><input type="hidden" name="signal" value="interest">
+    <label for="artist-interest-title">Artist name</label><input id="artist-interest-title" name="title" type="text" maxlength="200" required aria-describedby="artist-title-help">
+    <p id="artist-title-help">Enter only an artist name, up to 200 characters. Notes and private history are not imported by this form.</p>
+    <label for="artist-interest">How interested are you in exploring this artist?</label><select id="artist-interest" name="value" required><option value="">Choose explicitly</option><option value="no">No</option><option value="maybe">Maybe</option><option value="yes">Yes</option></select>
+    <button type="submit">Save artist interest</button>
+  </form>
+  <h2>Enjoyment of an artist you have experienced</h2>
+  <form method="post" action="/cabinet/taste/artist" data-artist-enjoyment>{% csrf_token %}
+    <input type="hidden" name="profile_ref" value="{{ profile_ref }}"><input type="hidden" name="entry_ref" value="{{ entry_ref }}"><input type="hidden" name="mutation_id" value="{{ newmutation_id }}"><input type="hidden" name="base_revision" value="{{ base_revision }}"><input type="hidden" name="operation" value="set"><input type="hidden" name="signal" value="enjoyment">
+    <label for="artist-enjoyment-title">Artist name</label><input id="artist-enjoyment-title" name="title" type="text" maxlength="200" required aria-describedby="artist-title-help">
+    <label for="artist-enjoyment">How much did you enjoy this artist?</label><select id="artist-enjoyment" name="value" required><option value="">Choose explicitly</option><option value="1">1 — least enjoyed</option><option value="2">2</option><option value="3">3</option><option value="4">4</option><option value="5">5 — most enjoyed</option></select>
+    <label class="cabinet-check"><input type="checkbox" name="experienced_ack" value="yes" required autocomplete="off"> I have experienced this artist’s work.</label>
+    <button type="submit">Save artist enjoyment</button>
+  </form>
+  <section aria-labelledby="artist-responses-heading">
+    <h2 id="artist-responses-heading">Your artist responses</h2>
+    {% comment %}Only the current owner's projected entries and effective events appear here. Undo reverses the exact supplied event at its current revision; it never submits title/value or guesses a replacement response.{% endcomment %}
+    {% for entry in artist_entries %}
+    <article class="cabinet-artist-response">
+      <h3>{{ entry.title }}</h3>
+      {% for response in entry.signals %}
+      <p>{% if response.signal == 'interest' %}Interest{% else %}Enjoyment{% endif %}: {% if response.can_undo %}{{ response.value }}{% if response.signal == 'enjoyment' %} / 5{% endif %}{% else %}No current response{% endif %}</p>
+      {% if response.can_undo %}
+      <form method="post" action="/cabinet/taste/artist" data-artist-undo>{% csrf_token %}
+        <input type="hidden" name="profile_ref" value="{{ profile_ref }}"><input type="hidden" name="entry_ref" value="{{ entry.entry_ref }}"><input type="hidden" name="mutation_id" value="{{ response.undo_mutation_id }}"><input type="hidden" name="base_revision" value="{{ response.revision }}"><input type="hidden" name="operation" value="reverse"><input type="hidden" name="signal" value="{{ response.signal }}"><input type="hidden" name="reverses_id" value="{{ response.event_ref }}">
+        <button type="submit" aria-label="Undo {% if response.signal == 'interest' %}interest{% else %}enjoyment{% endif %} for {{ entry.title }}">Undo {% if response.signal == 'interest' %}interest{% else %}enjoyment{% endif %}</button>
+      </form>
+      {% endif %}
+      {% endfor %}
+    </article>
+    {% empty %}<p>No artist responses have been saved through this form yet. Existing profile history is not replaced.</p>{% endfor %}
+  </section>
+  <p><a href="/cabinet/source/musicbrainz?profile_ref={{ profile_ref|urlencode }}">Review MusicBrainz source permission</a></p>
+  <p><a href="{{ cabinet_url }}">Return to your cabinet</a></p>
+</section>
+{% elif consent %}
 <section class="paper-panel cabinet-consent" aria-labelledby="inference-consent-heading">
   <h1 id="inference-consent-heading">Inference permission</h1>
   <p>{{ profile_label }} · destination {{ consent_destination }}</p>
@@ -70,6 +154,7 @@
   {% if round_url and not round_blocks_start %}<p class="cabinet-round-status" role="status"><a href="{{ round_url }}">Review this round’s recorded status</a>{% if round_pending %}. Pending, failed or uncertain work does not replace the publication shown below.{% endif %}</p>{% endif %}
   <details class="cabinet-options"><summary>Cabinet options and permissions</summary>
     <p><a href="/setup/cabinet">Choose a cabinet or connection</a></p>
+    {% if profile_ref %}<p><a href="/cabinet/source/musicbrainz?profile_ref={{ profile_ref|urlencode }}">Configure MusicBrainz and review source permission</a></p><p><a href="/cabinet/taste/artist?profile_ref={{ profile_ref|urlencode }}">Add an artist you know</a></p>{% endif %}
     {% if inference_consent_url %}<p><a href="{{ inference_consent_url }}">Review inference permission</a>. Source collection permission remains separate.</p>{% endif %}
   </details>
 </header>

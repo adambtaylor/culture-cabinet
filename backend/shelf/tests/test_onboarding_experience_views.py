@@ -122,6 +122,23 @@ class OnboardingExperienceTests(SimpleTestCase):
                 self.assertIn('href="#about-credits"', html)
                 self.assertNotIn('https://www.themoviedb.org/assets/', html)
 
+    def test_musicbrainz_credit_is_core_only_and_does_not_advertise_other_category_coverage(self):
+        for context in ({'state': 'claim'}, {'state': 'login'}, self.model()):
+            with self.subTest(state=context['state']):
+                _, html, doc = self.render(context)
+                for phrase in ('recording titles, artist credits and recording identifiers',
+                               'CC0 core data', 'no audio rights are implied',
+                               'matches names, not a verified artist identity',
+                               'supports recordings only',
+                               'TMDB and Hardcover are unavailable'):
+                    self.assertIn(phrase, html)
+                self.assertTrue(any(tag == 'a' and attrs.get('href') ==
+                                    'https://musicbrainz.org/doc/About/Data_License'
+                                    for tag, attrs in doc.tags))
+                # Credits are links, never automatic external asset/source loads.
+                self.assertFalse(any(tag in ('img', 'script', 'iframe') and
+                    'musicbrainz' in attrs.get('src', '') for tag, attrs in doc.tags))
+
     def test_processor_disclosure_precedes_credentials_without_promising_zero_retention(self):
         _, html, doc = self.render(self.model(credential_configured=True, secret=CANARY))
         self.assertLess(html.index('Before sharing a request'), html.index('name="secret"'))
@@ -219,7 +236,8 @@ class OnboardingExperienceTests(SimpleTestCase):
         self.assertEqual(doc.body['data-connection-ready'], 'true')
         self.assertEqual(doc.body['data-run-ready'], 'false')
         self.assertFalse({'run', 'enhance', 'start'} & set(doc.forms))
-        self.assertIn('Personal Run is unavailable', html)
+        self.assertIn('Prepare Enhance in your cabinet', html)
+        self.assertIn('Each API request and inference request still needs its own review', html)
 
     def test_synthetic_result_remains_visibly_unproved(self):
         context = self.model()
