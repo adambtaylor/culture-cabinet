@@ -17,7 +17,9 @@ def main():
     from django.core.management import execute_from_command_line
 
     argv = list(sys.argv)
-    if argv[1] == "test":
+    # prepare has already validated every positional token. Bare test retains
+    # its historical app discovery; explicit methods reach Django unchanged.
+    if argv[1] == "test" and not any(not arg.startswith("-") for arg in argv[2:]):
         argv.insert(2, "shelf")
     execute_from_command_line(argv)
 
