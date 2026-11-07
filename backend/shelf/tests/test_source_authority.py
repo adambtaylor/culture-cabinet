@@ -37,6 +37,43 @@ class FixtureBackend(MoshtixBackend):
 
 
 class SourceAuthorityTests(AuthorityCase):
+    def test_moshtix_material_origin_survives_preview_confirm_and_authorize(self):
+        preview = self.approved()
+        operation = self.issuer.operation_for(self.request, self.query, now=self.authority.now())
+        permit = self.issuer.authorize(self.request, self.query, operation, now=self.authority.now())
+        self.assertEqual(preview['destination'], 'https://api.moshtix.com')
+        self.assertEqual(permit.origin, operation.material['origin'])
+
+    def test_derived_proposals_obey_retention_and_expire_or_invalidate(self):
+        from shelf.source_adapters import SourceReply
+        from shelf.disclosure import read_json
+        request = SourceRequest('hardcover', 'book', 'book_search', ('Synthetic',))
+        now = self.authority.now()
+        permit = SimpleNamespace(expires_at=now + timedelta(seconds=300))
+        approval = SimpleNamespace(request=request, plan=self.query, rights=self.rights.value,
+            operation=object(), expires_at=permit.expires_at)
+        self.issuer._permits[id(permit)] = (permit, approval)
+        reply = SourceReply(request.request_digest, 200,
+            canonical_bytes({'data': {'search': {'ids': [81001], 'error': None}}}), now)
+        # Isolate retention from owner/history fixtures; normal authority checks
+        # remain covered by the existing confirmation/revocation regressions.
+        with patch.object(self.issuer, '_check', return_value=True), \
+             patch.object(self.issuer, 'revalidate', return_value=True):
+            for denied in ('cache', 'retain'):
+                approval.rights = replace(self.rights.value, policy=replace(self.rights.value.policy,
+                    permissions=tuple((key, tuple(use for use in uses if use != denied))
+                                      for key, uses in self.rights.value.policy.permissions)))
+                self.assertIsNone(self.issuer.remember_details(permit, reply))
+                self.assertEqual(self.issuer._derived, {})
+            approval.rights = self.rights.value
+            self.assertIsNone(self.issuer.remember_details(permit, replace(reply, headers=(('cache-control', 'no-store'),))))
+            self.assertIsNone(self.issuer.remember_details(permit, replace(reply, headers=(('cache-control', 'max-age=0'),))))
+            detail = self.issuer.remember_details(permit, reply)
+            self.assertEqual(detail.ids, (81001,))
+            self.clock.advance(301)
+            self.assertEqual(self.issuer.pending_details(self.query.plan_ref), ())
+            self.assertEqual(self.issuer._derived, {})
+
     def test_media_identity_cannot_borrow_moshtix_rights_or_inference_purpose(self):
         vault = self.authority._source_vault
         row = vault.configure(self.ref, {'adapter': 'tmdb_movie', 'model': '', 'reasoning': ''})

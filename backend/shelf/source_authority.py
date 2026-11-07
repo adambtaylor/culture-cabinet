@@ -142,10 +142,24 @@ class SourceAuthority(SourceAuthorityIssuer):
         self._previews, self._approved, self._permits = {}, {}, {}
         self._derived = {}
         authority.boundary._closing.append(self.close)
+        authority._revokers.append(lambda ref: self.close() if ref == self.session_ref else None)
 
     def close(self):
         self._previews.clear(); self._approved.clear(); self._permits.clear()
         self._derived.clear()
+
+    def _purge_derived(self, now):
+        """Expired/invalidated proposals release their IDs and approval handles.
+
+        Cleanup is fail-closed: an unavailable issuer or revoked grant cannot
+        leave an old proposal alive merely because its send would be refused.
+        """
+        for key, value in list(self._derived.items()):
+            try:
+                require(now < value[4], 'PREVIEW_STALE')
+                self._check(value[1], now)
+            except Exception:
+                self._derived.pop(key, None)
 
     def source_key(self):
         row, _, _ = _connection(self.authority, self.session_ref, self.connection_ref)
@@ -210,6 +224,7 @@ class SourceAuthority(SourceAuthorityIssuer):
         with ga.recovery_guard(self.authority, self.session_ref, profile_ref=self.profile_ref), self.authority._lock:
             ga._bound(self.authority, self.session_ref, self.profile_ref, sensitive=True)
             now = utc(self.authority.now()); view = self._view(); self._match(plan, view)
+            self._purge_derived(now)
             rights = self._rights(now)
             source = self.source_key()
             if source == 'moshtix':
@@ -242,7 +257,7 @@ class SourceAuthority(SourceAuthorityIssuer):
             return {'preview_ref': ref, 'plan_ref': plan.plan_ref, 'plan_digest': plan.body_digest,
                 'operation_digest': operation.operation_digest, **operation.material,
                 'body': operation.body.decode('utf-8'), 'expires_at': ga._stamp(expires),
-                'kind': 'catalogue', 'destination': operation.origin,
+                'kind': 'catalogue', 'destination': operation.material['origin'],
                 'locale': 'VIC' if source == 'moshtix' else ''}
 
     def confirm(self, preview_ref, *, plan_digest, operation_digest, confirmed):
@@ -258,12 +273,18 @@ class SourceAuthority(SourceAuthorityIssuer):
             return saved.plan.plan_ref
 
     def _check(self, saved, now):
-        current = utc(self.authority.now())
-        require(utc(now) < saved.expires_at and current < saved.expires_at, 'PREVIEW_STALE')
-        ga.assert_current(saved.view)
-        self._match(saved.plan, saved.view)
-        require(self._rights(current) == saved.rights, 'PREVIEW_STALE')
-        return True
+        try:
+            current = utc(self.authority.now())
+            require(utc(now) < saved.expires_at and current < saved.expires_at, 'PREVIEW_STALE')
+            ga.assert_current(saved.view)
+            self._match(saved.plan, saved.view)
+            require(self._rights(current) == saved.rights, 'PREVIEW_STALE')
+            return True
+        except Exception:
+            for key, value in list(self._derived.items()):
+                if value[1] is saved:
+                    self._derived.pop(key, None)
+            raise
 
     def operation_for(self, request, plan, *, now):
         with ga.recovery_guard(self.authority, self.session_ref, profile_ref=self.profile_ref), self.authority._lock:
@@ -281,7 +302,7 @@ class SourceAuthority(SourceAuthorityIssuer):
             rights = saved.rights
             generation = saved.view.connection_binding['credential_generation'] if request.source != 'moshtix' else None
             parents = self._parents(saved.view) if request.terms else ()
-            permit = SourcePermit(request.source, operation.origin, 'catalogue_lookup', plan.plan_ref, plan.bindings,
+            permit = SourcePermit(request.source, operation.material['origin'], 'catalogue_lookup', plan.plan_ref, plan.bindings,
                 request.request_digest, saved.view.context['config_revision'], rights.revision,
                 rights.policy.ref, rights.policy.revision, saved.expires_at, parents, generation)
             self._validate_policy(rights, permit, now)
@@ -330,23 +351,39 @@ class SourceAuthority(SourceAuthorityIssuer):
         approval = saved[1]
         with ga.recovery_guard(self.authority, self.session_ref, profile_ref=self.profile_ref), self.authority._lock:
             now = utc(self.authority.now())
+            self._purge_derived(now)
             self.revalidate(permit, approval.request, approval.plan, approval.operation, now=now)
             require(approval.request.operation == 'book_search' and type(reply) is SourceReply
                     and reply.request_digest == approval.request.request_digest
                     and reply.observed_at <= now < permit.expires_at, 'AUTHORITY_DENIED')
+            from .disclosure import SCALARS
+            from .source_collection import checkpoint_end
+            policy = approval.rights.policy
+            for key, value in list(self._derived.items()):
+                if value[1] is approval:
+                    self._derived.pop(key, None)
+            cache_control = dict(reply.headers).get('cache-control', '').lower()
+            if (not all(policy.allows(target, use) for target in SCALARS for use in ('cache', 'retain'))
+                    or any(flag in cache_control for flag in ('no-store', 'no-cache'))):
+                return None  # No hidden retained copy when continuation is denied.
+            end = checkpoint_end(reply, expires_at=min(approval.expires_at, policy.expires_at))
+            if now >= end:
+                return None
             parsed = normalize(registered_source('hardcover'), approval.request, reply, now=now)
             if not parsed.enrichment_ids:
                 return None
             request = SourceRequest('hardcover', 'book', 'book_details',
                 approval.request.terms, parsed.enrichment_ids)
-            self._derived[(approval.plan.plan_ref, request.request_digest)] = (request, approval,
-                digest(reply.body), reply.observed_at)
+            key = (approval.plan.plan_ref, request.request_digest)
+            require(key in self._derived or len(self._derived) < 128, 'CAPABILITY_UNAVAILABLE')
+            self._derived[key] = (request, approval, digest(reply.body), reply.observed_at, end)
             return request
 
     def pending_details(self, plan_ref):
         now = utc(self.authority.now())
+        self._purge_derived(now)
         return tuple(value[0] for key, value in self._derived.items()
-                     if key[0] == plan_ref and now < value[1].expires_at)
+                     if key[0] == plan_ref)
 
 
 def authorize_request(issuer, request, plan, operation, *, now):

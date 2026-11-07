@@ -76,7 +76,18 @@ class SourceCollection:
         self.isolated_fixture = isolated_fixture
         self._sealed = {}
 
+    def _purge_pending(self):
+        now = utc(self.clock.now())
+        for key, value in list(self.state.pending.items()):
+            try:
+                require(now < value[4], 'PREVIEW_STALE')
+                self._current(value[7], value[0], value[6], value[5], value[1])
+            except Exception:
+                self.state.pending.pop(key, None)
+
     def collect(self, authorized_query_plan, registry_view, budget, *, source_plans=None):
+        with self.state.lock:
+            self._purge_pending()
         require(type(authorized_query_plan) is CataloguePlan
                 and type(registry_view) is RegistryView and type(budget) is CollectionBudget)
         plan, registry = authorized_query_plan, registry_view
@@ -271,14 +282,15 @@ class SourceCollection:
             headers = dict(reply.headers)
             if (all(policy.allows(target, use) for target in SCALARS for use in ('cache', 'retain'))
                     and not any(x in headers.get('cache-control', '').lower() for x in ('no-store', 'no-cache'))):
-                end = min(permit.expires_at, policy.expires_at, plan.expires_at,
-                          moshtix_response_expiry(reply, ttl=min(900, spec.ttl_seconds)))
+                end = checkpoint_end(reply, expires_at=min(permit.expires_at, policy.expires_at,
+                    plan.expires_at, reply.observed_at + timedelta(seconds=spec.ttl_seconds)))
                 if now < end:
                     safe = SourceReply(reply.request_digest, 200, canonical_bytes({'data': {'search': {
                         'ids': list(parsed.enrichment_ids), 'error': None}}}), reply.observed_at, reply.headers)
                     require(pending_key in self.state.pending or len(self.state.pending) < 128,
                             'CAPABILITY_UNAVAILABLE')
-                    self.state.pending[pending_key] = (permit, policy, safe, response_chain[0]['body_digest'], end)
+                    self.state.pending[pending_key] = (permit, policy, safe, response_chain[0]['body_digest'], end,
+                                                        plan, request, backend)
             details = SourceRequest(request.source, request.category, 'book_details',
                                     request.terms, parsed.enrichment_ids)
             second = backend.authorize(details, plan, now=utc(self.clock.now()))
@@ -475,5 +487,16 @@ def moshtix_response_expiry(reply, *, ttl=900):
         return end
     except (ValueError, TypeError, OverflowError):
         raise EnhanceFault('SOURCE_UNAVAILABLE') from None
+
+
+def checkpoint_end(reply, *, expires_at):
+    """Original freshness bounds apply before either producer retains IDs."""
+    ttl = 900
+    for directive in dict(reply.headers).get('cache-control', '').lower().split(','):
+        if directive.strip().startswith('max-age='):
+            value = directive.strip()[8:].strip('"')
+            require(value.isascii() and value.isdigit() and len(value) <= 10, 'SOURCE_UNAVAILABLE')
+            ttl = min(ttl, int(value))
+    return min(utc(expires_at), moshtix_response_expiry(reply, ttl=ttl))
 
 
