@@ -3,7 +3,8 @@
 Only enumerated operations reach curl. Provider text remains plain, bounded data;
 no images, caches on disk, user-library operations, or model calls are supported.
 """
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
+from hashlib import sha256
 from datetime import datetime, timezone
 from enum import StrEnum
 import json
@@ -139,6 +140,88 @@ def validate_query(query):
     return query.strip()
 
 
+@dataclass(frozen=True, repr=False)
+class MediaOperation:
+    """Fixed wire operation only; no credential, permit or rights are implied."""
+    source: str
+    operation: str
+    term: str = field(default='', repr=False)
+    ids: tuple[int, ...] = field(default=(), repr=False)
+
+    def __post_init__(self):
+        allowed = {'tmdb_movie': ('search_movie',), 'tmdb_tv': ('search_tv',),
+                   'hardcover': ('book_search', 'book_details')}
+        if (type(self.source) is not str or self.operation not in allowed.get(self.source, ())
+                or type(self.ids) is not tuple or len(self.ids) > 9):
+            raise CatalogueError(Status.INVALID)
+        if self.operation == 'book_details':
+            if self.term != '':
+                raise CatalogueError(Status.INVALID)
+            for value in self.ids:
+                _id(value)
+        elif self.ids or validate_query(self.term) != self.term:
+            raise CatalogueError(Status.INVALID)
+
+    @property
+    def provider(self):
+        return 'hardcover' if self.source == 'hardcover' else 'tmdb'
+
+    @property
+    def method(self):
+        return 'POST' if self.provider == 'hardcover' else 'GET'
+
+    @property
+    def origin(self):
+        return 'https://api.hardcover.app' if self.provider == 'hardcover' else 'https://api.themoviedb.org'
+
+    @property
+    def path(self):
+        return '/v1/graphql' if self.provider == 'hardcover' else '/3/search/' + self.operation.removeprefix('search_')
+
+    @property
+    def query(self):
+        return '' if self.provider == 'hardcover' else urlencode(
+            {'include_adult': 'false', 'language': 'en-US', 'page': 1, 'query': self.term})
+
+    @property
+    def body(self):
+        if self.provider != 'hardcover':
+            return b''
+        document = BOOK_DETAILS if self.operation == 'book_details' else BOOK_SEARCH
+        variables = {'ids': list(self.ids)} if self.operation == 'book_details' else {'q': self.term}
+        # Preserve the existing GraphQL documents and JSON bytes. Both legacy
+        # and authorized sends consume these same bytes, never a second builder.
+        return json.dumps({'query': document, 'variables': variables}, ensure_ascii=True).encode('ascii')
+
+    @property
+    def material(self):
+        return {'method': self.method, 'origin': self.origin, 'path': self.path,
+                'query': self.query, 'body_digest': sha256(self.body).hexdigest()}
+
+    @property
+    def operation_digest(self):
+        from .disclosure import canonical_bytes
+        return sha256(canonical_bytes(self.material)).hexdigest()
+
+
+def media_operation(request):
+    from .source_adapters import SourceRequest
+    if type(request) is not SourceRequest:
+        raise CatalogueError(Status.INVALID)
+    if request.operation == 'book_details':
+        return MediaOperation(request.source, request.operation, ids=request.ids)
+    if len(request.terms) != 1:
+        raise CatalogueError(Status.INVALID)
+    return MediaOperation(request.source, request.operation, validate_query(request.terms[0]))
+
+
+def _media_arguments(operation):
+    args = ['--request', operation.method]
+    if operation.body:
+        args += ['--header', 'Content-Type: application/json', '--data-binary', operation.body.decode('ascii')]
+    return args + ['--url', operation.origin + operation.path + ('?' + operation.query if operation.query else '')]
+
+
 def _command(operation, value=None):
     """Map an enum-like operation to fixed documents/paths, never a caller URL."""
     common = [CURL, '-q', '--silent', '--proto', '=https', '--proto-redir', '=https',
@@ -150,6 +233,15 @@ def _command(operation, value=None):
     params = {'include_adult': 'false', 'language': 'en-US', 'page': 1}
     document = None
     variables = {}
+    if operation in ('search_movie', 'search_tv', 'book_search', 'book_details'):
+        source = {'search_movie': 'tmdb_movie', 'search_tv': 'tmdb_tv'}.get(operation, 'hardcover')
+        if operation == 'book_details':
+            if type(value) is not list:
+                raise CatalogueError(Status.INVALID)
+            wire = MediaOperation(source, operation, ids=tuple(value))
+        else:
+            wire = MediaOperation(source, operation, validate_query(value))
+        return wire.provider, common + _media_arguments(wire)
     if operation in ('search_movie', 'search_tv'):
         medium = operation.removeprefix('search_')
         params['query'] = validate_query(value)

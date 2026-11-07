@@ -456,3 +456,187 @@ class _MoshtixReservation:
         finally:
             os.close(self.fd)
             self.fd = None
+
+
+@dataclass(frozen=True)
+class MediaHostLimiter:
+    """Host-owner reservations: movie/TV share TMDB; Hardcover is separate."""
+    provider: str
+
+    def __post_init__(self):
+        if self.provider not in ('tmdb', 'hardcover'):
+            raise SourceError('Unknown media provider.')
+
+    def reserve(self):
+        import fcntl
+        import math
+        from pathlib import Path
+        import stat
+        from uuid import UUID
+        boot = Path('/proc/sys/kernel/random/boot_id').read_text().strip()
+        if str(UUID(boot)) != boot:
+            raise SourceError('Host clock identity unavailable.')
+        path = f'/tmp/culture-cabinet-media-{os.geteuid()}-{self.provider}.rate'
+        fd = os.open(path, os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW | os.O_CLOEXEC, 0o600)
+        try:
+            info = os.fstat(fd)
+            if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.geteuid()
+                    or stat.S_IMODE(info.st_mode) != 0o600 or info.st_nlink != 1):
+                raise SourceError('Media reservation is not private.')
+            try:
+                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError:
+                raise MoshtixRateLimited('Media provider already reserved.') from None
+            raw, now = os.read(fd, 513), time.monotonic()
+            if len(raw) > 512 or not math.isfinite(now) or now < 0:
+                raise SourceError('Invalid media reservation.')
+            if raw:
+                previous = strict_json(raw)
+                if (type(previous) is not dict or set(previous) != {'boot', 'not_before'}
+                        or type(previous['boot']) is not str or str(UUID(previous['boot'])) != previous['boot']
+                        or type(previous['not_before']) not in (int, float)
+                        or not math.isfinite(previous['not_before']) or previous['not_before'] < 0):
+                    raise SourceError('Invalid media reservation.')
+                if previous['boot'] == boot and now < previous['not_before']:
+                    raise MoshtixRateLimited('Media cooldown has not elapsed.')
+            slot = _MoshtixReservation(fd, boot, now + 6)
+            slot.write()
+            return slot
+        except BaseException:
+            os.close(fd)
+            raise
+
+
+def media_authorized(operation, *, secret, revalidate, limiter, response_bytes=262144,
+                     request_seconds=5, parent_seconds=6):
+    """A single fixed media send with an ephemeral stdin-only bearer secret.
+
+    Current credential generation and purpose belong to the trusted callback,
+    not a token digest. No caller JSON, legacy key store or default profile can
+    create that authority. Neither a successful response nor a retry grants it.
+    """
+    from .provider_catalogue import MediaOperation, _media_arguments
+    child, slot, header = None, None, bytearray()
+    status, headers, input_closed = None, (), False
+    end = time.monotonic() + (parent_seconds if type(parent_seconds) in (int, float)
+                              and 0 < parent_seconds <= 6 else 6)
+    try:
+        import re
+        if (type(operation) is not MediaOperation or type(secret) is not bytearray
+                or not 1 <= len(secret) <= 4096
+                or not re.fullmatch(rb'[A-Za-z0-9._~+/-]+=*', secret)
+                or not callable(revalidate) or type(limiter) is not MediaHostLimiter
+                or limiter.provider != operation.provider
+                or type(response_bytes) is not int or not 0 < response_bytes <= 262144
+                or type(request_seconds) not in (int, float) or not 0 < request_seconds <= 5
+                or type(parent_seconds) not in (int, float) or not 0 < parent_seconds <= 6):
+            raise SourceError('Media transport unavailable.')
+
+        def current():
+            try:
+                if revalidate() is not True or slot is not None and slot.current() is not True:
+                    raise SourceError('Media authority unavailable.')
+            except Exception:
+                raise SourceError('Media authority unavailable.') from None
+
+        current()
+        slot = limiter.reserve()
+        current()
+        # Leave cleanup time INSIDE the parent bound. Stdin and stdout both
+        # remain nonblocking, so a slow/partial header write cannot bypass it.
+        io_end = end - min(0.2, parent_seconds / 4)
+        if time.monotonic() >= io_end:
+            raise TimeoutError
+        command = _base(response_bytes)
+        command[command.index('--connect-timeout') + 1] = str(min(5, request_seconds))
+        command[command.index('--max-time') + 1] = str(min(request_seconds, parent_seconds))
+        command += ['--include', '--header', '@-'] + _media_arguments(operation)
+        header.extend(b'Authorization: Bearer ')
+        header.extend(secret)
+        header.extend(b'\n')
+        child = subprocess.Popen(command, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL, close_fds=True, env={'LANG': 'C', 'LC_ALL': 'C'})
+        output, offset = bytearray(), 0
+        cap = response_bytes + 8192 + 8
+        with selectors.DefaultSelector() as ready:
+            os.set_blocking(child.stdin.fileno(), False)
+            os.set_blocking(child.stdout.fileno(), False)
+            ready.register(child.stdin, selectors.EVENT_WRITE, 'input')
+            ready.register(child.stdout, selectors.EVENT_READ, 'output')
+            while ready.get_map():
+                remaining = io_end - time.monotonic()
+                if remaining <= 0:
+                    raise TimeoutError
+                events = ready.select(remaining)
+                if not events:
+                    raise TimeoutError
+                for key, _ in events:
+                    try:
+                        if key.data == 'input':
+                            count = os.write(child.stdin.fileno(), memoryview(header)[offset:])
+                            if not 0 < count <= len(header) - offset:
+                                raise SourceError('Media header write failed.')
+                            offset += count
+                            if offset == len(header):
+                                ready.unregister(child.stdin)
+                                child.stdin.close()
+                                input_closed = True
+                        else:
+                            block = os.read(child.stdout.fileno(), min(8192, cap + 1 - len(output)))
+                            if not block:
+                                ready.unregister(child.stdout)
+                            else:
+                                output.extend(block)
+                                if len(output) > cap:
+                                    raise SourceError('Media response budget exceeded.')
+                    except BlockingIOError:
+                        continue
+            if offset != len(header):
+                raise SourceError('Incomplete media header.')
+            child.wait(timeout=max(0.001, io_end - time.monotonic()))
+        if child.returncode == 28:
+            raise TimeoutError
+        if child.returncode:
+            raise SourceError('Media transport failed.')
+        status, body, headers = _moshtix_envelope(bytes(output), response_bytes=response_bytes)
+        if 300 <= status < 400:
+            raise SourceError('Media redirect refused.')
+        current()
+        if time.monotonic() >= io_end:
+            raise TimeoutError
+        return status, body, headers
+    except TimeoutError:
+        raise
+    except (OSError, subprocess.SubprocessError):
+        raise SourceError('Media transport failed.') from None
+    finally:
+        cleanup_failed = False
+        if child is not None:
+            try:
+                if child.poll() is None:
+                    child.kill()
+                child.wait(timeout=max(0.001, end - time.monotonic()))
+            except (OSError, subprocess.SubprocessError):
+                cleanup_failed = True
+            finally:
+                if not input_closed:
+                    try:
+                        child.stdin.close()
+                    except Exception:
+                        cleanup_failed = True
+                try:
+                    child.stdout.close()
+                except Exception:
+                    cleanup_failed = True
+        # Wipe both caller lease bytes and the temporary header even on denial.
+        for buffer in (secret, header):
+            if type(buffer) is bytearray:
+                for index in range(len(buffer)):
+                    buffer[index] = 0
+        if slot is not None:
+            try:
+                slot.finish(status, headers, now=datetime.now(timezone.utc))
+            except Exception:
+                cleanup_failed = True
+        if cleanup_failed:
+            raise SourceError('Media child cleanup failed.') from None
