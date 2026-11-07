@@ -368,14 +368,18 @@ def _synthesis_guards():
     prior = import_module('shelf.migrations.0021_portable_disclosure_authority').TRIGGERS
     broker = import_module('shelf.migrations.0022_portable_enhance_state').TRIGGERS
     normalize = lambda sql: sql.strip().removesuffix(';').rstrip()
-    current = import_module('shelf.migrations.0023_enhance_current_state')
+    current = import_module('shelf.migrations.0024_portable_saved_lineage')
+    try:
+        definitions = current.effective_inventory(connection.connection)
+    except RuntimeError:
+        _require(False, 'CAPABILITY_UNAVAILABLE', 503)
     expected = set()
-    for sql in current.TRIGGERS:
+    for sql in definitions:
         match = re.match(r'CREATE TRIGGER (\w+)\s+(?:BEFORE|AFTER) (?:INSERT|UPDATE|DELETE) ON (\w+)\b', sql)
         _require(match is not None, 'CAPABILITY_UNAVAILABLE', 503)
         expected.add((match[1], match[2], normalize(sql)))
-    _require(len(prior) == 17 and len(broker) == 7 and len(expected) == len(current.TRIGGERS)
-             and len({row[0] for row in expected}) == len(current.TRIGGERS),
+    _require(len(prior) == 17 and len(broker) == 7 and len(expected) == len(definitions)
+             and len({row[0] for row in expected}) == len(definitions),
              'CAPABILITY_UNAVAILABLE', 503)
     with connection.cursor() as cursor:
         actual = {(name, table, normalize(sql)) for name, table, sql in cursor.execute(

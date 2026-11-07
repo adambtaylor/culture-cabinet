@@ -791,17 +791,21 @@ def _fictional_target(target):
 def _effective_guards(raw):
     from importlib import import_module
     import re
-    current = import_module('shelf.migrations.0023_enhance_current_state')
+    current = import_module('shelf.migrations.0024_portable_saved_lineage')
+    try:
+        definitions = current.effective_inventory(raw)
+    except RuntimeError:
+        raise RecoveryBlocked() from None
     normalize = lambda sql: sql.strip().removesuffix(';').rstrip()
     expected = set()
-    for sql in current.TRIGGERS:
+    for sql in definitions:
         match = re.match(r'CREATE TRIGGER (\w+)\s+(?:BEFORE|AFTER) (?:INSERT|UPDATE|DELETE) ON (\w+)\b', sql)
         if match is None:
             raise RecoveryBlocked()
         expected.add((match[1], match[2], normalize(sql)))
     actual = {(name, table, normalize(sql)) for name, table, sql in
               raw.execute("SELECT name,tbl_name,sql FROM sqlite_master WHERE type='trigger'")}
-    if (len(expected) != len(current.TRIGGERS) or len({row[0] for row in expected}) != len(expected)
+    if (len(expected) != len(definitions) or len({row[0] for row in expected}) != len(expected)
             or actual != expected or raw.execute("SELECT 1 FROM sqlite_master WHERE type='view'").fetchone()):
         raise RecoveryBlocked()
 
