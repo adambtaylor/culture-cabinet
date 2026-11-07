@@ -271,8 +271,8 @@ class SourceAuthorityTests(AuthorityCase):
         original_guard = ga.recovery_guard
         @contextmanager
         def deny_on_exit(*args, **kwargs):
-            with original_guard(*args, **kwargs):
-                yield
+            with original_guard(*args, **kwargs) as checkpoint:
+                yield checkpoint
             raise ga.AuthorityFault('CAPABILITY_UNAVAILABLE', 503)
         with patch.object(ga, 'recovery_guard', deny_on_exit), self.assertRaises(ga.AuthorityFault):
             self.issuer.policy_context(permit, op, now=now)
