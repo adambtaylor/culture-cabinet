@@ -34,6 +34,28 @@ def stamp(value):
     return value.isoformat().replace('+00:00', 'Z')
 
 
+def checked_source_use(value, categories, *, outcomes=None):
+    """Closed status counts; source permission still comes from the producer."""
+    require(type(value) is list and len(value) == len(categories) <= 100)
+    counts = {}
+    for category, item in zip(categories, value):
+        require(type(item) is dict
+            and set(item) == {'category', 'collected_count', 'model_eligible_count'}
+            and item['category'] == category)
+        collected, eligible = item['collected_count'], item['model_eligible_count']
+        require(type(collected) is int and type(eligible) is int
+                and 0 <= eligible <= collected <= 100)
+        counts[category] = collected
+    require(len(counts) == len(categories) and sum(counts.values()) <= 100)
+    if outcomes is not None:
+        require(len(outcomes) == len(categories))
+        for category, outcome in zip(categories, outcomes):
+            require(type(outcome) is dict and outcome.get('category') == category
+                and type(outcome.get('candidate_count')) is int
+                and outcome['candidate_count'] == counts[category])
+    return read_json(canonical_bytes(value))
+
+
 @dataclass(frozen=True, repr=False)
 class CurrentState:
     view: ga.AuthorityView
@@ -199,7 +221,16 @@ class CabinetStore:
                     'RUN_STALE', 409)
             evidence = dict(row.evidence, code=code, outcomes=list(outcomes))
             if metadata:
-                require(set(metadata) <= {'phase', 'preview_ref', 'preview_digest', 'session_digest', 'submitted_refs'})
+                require(set(metadata) <= {'phase', 'preview_ref', 'preview_digest', 'session_digest', 'submitted_refs',
+                                         'source_use'})
+                if 'source_use' in metadata:
+                    summary = checked_source_use(metadata['source_use'], current.registry.categories,
+                                                 outcomes=evidence['outcomes'])
+                    require(len(sealed.get('collection_digest', row.collection_digest)) == 64)
+                    # Counts describe the immutable collection, even when a later
+                    # publication projects a model-denied category as unavailable.
+                    require('source_use' not in row.evidence or row.evidence['source_use'] == summary)
+                    metadata = {**metadata, 'source_use': summary}
                 evidence.update(metadata)
             canonical_bytes(evidence)
             return self._change(row, portable_stage=stage, evidence=evidence, **sealed)

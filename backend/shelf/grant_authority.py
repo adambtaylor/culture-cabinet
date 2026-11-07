@@ -449,8 +449,33 @@ def _broker_history_row(row, state):
     require(type(evidence) is dict and {'code', 'outcomes', 'phase', 'expected_publication_revision'} <= set(evidence))
     require(set(evidence) <= {'code', 'outcomes', 'phase', 'expected_publication_revision',
                             'preview_ref', 'preview_digest', 'session_digest', 'submitted_refs',
-                            'publication_revision', 'publication_ref'})
-    require(evidence['code'] in SAFE_CODES and evidence['phase'] in ('catalogue', 'inference'))
+                            'publication_revision', 'publication_ref', 'source_use'})
+    require(evidence['code'] in SAFE_CODES and evidence['phase'] in
+            ('catalogue', 'inference', 'source_model_context_unavailable'))
+    if 'source_use' in evidence:
+        summary = evidence['source_use']
+        require(type(summary) is list and len(summary) == len(registry.categories))
+        collected = eligible = 0
+        for category, item in zip(registry.categories, summary):
+            require(type(item) is dict and set(item) ==
+                    {'category', 'collected_count', 'model_eligible_count'}
+                    and item['category'] == category)
+            count, usable = item['collected_count'], item['model_eligible_count']
+            require(type(count) is int and type(usable) is int and 0 <= usable <= count <= 100)
+            collected += count
+            eligible += usable
+        require(collected <= 100 and sha(row['collection_digest']))
+        # These are historical collection counts, not today's permissions or
+        # the smaller queues later published after model/personal filtering.
+    if evidence['phase'] == 'source_model_context_unavailable':
+        require('source_use' in evidence and collected > 0 and eligible == 0
+                and row['attempts'] == 0 and row['transport_request_id'] is None
+                and row['output'] == {} and row['body_digest'] == row['sealed_run_digest'] == ''
+                and not {'submitted_refs', 'publication_revision', 'publication_ref'} & set(evidence))
+        require((row['state'] == 'queued' and row['portable_stage'] == 'sealed'
+                 and evidence['code'] == 'AUTHORITY_DENIED' and not row['cancel_requested'])
+                or (row['state'] == 'failed' and row['portable_stage'] in
+                    ('blocked', 'failed', 'cancelled', 'stale')))
     require(type(evidence['expected_publication_revision']) is int
             and 0 <= evidence['expected_publication_revision'] <= state.publication_revision)
     require(type(evidence['outcomes']) is list)

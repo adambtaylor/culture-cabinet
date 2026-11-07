@@ -241,3 +241,39 @@ class PortableCabinetStoreTests(StoreCase):
         resolved = self.store.reconcile(str(pending.pk), receipt_ref=str(uuid.uuid4()), reconciler=Receipt())
         self.assertEqual((resolved.state, resolved.attempts, resolved.transport_request_id), ('failed', 1, request))
         self.assertEqual(resolved.output, {})
+
+
+class SourceUseMetadataTests(StoreCase):
+    def summary(self):
+        return [{'category': key, 'collected_count': int(key == 'books'),
+                 'model_eligible_count': 0} for key in self.registry.categories]
+
+    def test_source_use_summary_rejects_unknown_fields_categories_types_and_wrong_counts(self):
+        summary = self.summary()
+        variants = [summary[:-1], summary + [summary[0]],
+            [{**summary[0], 'secret': 'never-status'}, *summary[1:]],
+            [{**summary[0], 'collected_count': True}, *summary[1:]],
+            [{**summary[0], 'model_eligible_count': 2}, *summary[1:]],
+            [{**summary[0], 'collected_count': 2}, *summary[1:]],
+            [summary[0], summary[0], *summary[2:]]]
+        outcomes = [{'category': key, 'state': 'fresh' if key == 'books' else 'unavailable',
+            'candidate_count': int(key == 'books'), 'code': 'OK'} for key in self.registry.categories]
+        for invalid in variants:
+            with self.subTest(invalid=invalid):
+                row = self.store.admit(self.intent())
+                self.fault('CONTRACT_INVALID', self.store.checkpoint, str(row.pk), stage='sealed',
+                    outcomes=outcomes, metadata={'source_use': invalid}, collection_digest='a' * 64)
+                row.refresh_from_db()
+                self.assertNotIn('source_use', row.evidence)
+
+    def test_collection_counts_remain_fixed_when_later_outcome_projection_changes(self):
+        row = self.sealed()
+        row = self.store.checkpoint(str(row.pk), stage='sealed', outcomes=row.evidence['outcomes'],
+            metadata={'source_use': self.summary()}, collection_digest=row.collection_digest)
+        unavailable = [{**outcome, 'state': 'unavailable', 'candidate_count': 0,
+                        'code': 'AUTHORITY_DENIED'} for outcome in row.evidence['outcomes']]
+        row = self.store.checkpoint(str(row.pk), stage='awaiting_preview', outcomes=unavailable)
+        self.assertEqual(row.evidence['source_use'], self.summary())
+        changed = [{**item, 'collected_count': 0} for item in self.summary()]
+        self.fault('CONTRACT_INVALID', self.store.checkpoint, str(row.pk), stage='sealed',
+            outcomes=unavailable, metadata={'source_use': changed}, collection_digest=row.collection_digest)
