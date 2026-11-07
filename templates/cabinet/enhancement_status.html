@@ -139,7 +139,7 @@
           {% if outcome.state == 'fresh' %}{{ outcome.candidate_count }} sourced candidate{{ outcome.candidate_count|pluralize }} collected; new picks are not confirmed by collection alone.
           {% elif outcome.state == 'empty_bounded' %}No candidates within this round’s collection limits.
           {% elif outcome.state == 'unavailable' %}
-            {% if outcome.code == 'AUTHORITY_DENIED' and enhancement.source_use %}Model use is not cleared for this category; this is not an empty search.{% elif outcome.code == 'CAPABILITY_UNAVAILABLE' %}Not available with the current connections or integration.{% else %}Source unavailable; no fresh result.{% endif %}
+            {% if outcome.code == 'AUTHORITY_DENIED' and enhancement.source_use %}Unavailable under current permissions; this is not an empty search.{% elif outcome.code == 'CAPABILITY_UNAVAILABLE' %}Not available with the current connections or integration.{% else %}Source unavailable; no fresh result.{% endif %}
           {% elif outcome.state == 'failed' %}Collection failed; this is not an empty result.
           {% elif outcome.state == 'cancelled' %}Collection cancelled; no fresh result.
           {% elif outcome.state == 'retained_previous_stale' %}Older picks retained; not refreshed by this round.

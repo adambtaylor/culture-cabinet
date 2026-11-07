@@ -169,8 +169,25 @@ class EnhancePresentationTests(SimpleTestCase):
         self.assertIn('3 collected; 2 eligible for model use', counts)
         self.assertIn('5 collected; 0 eligible for model use', counts)
         outcomes = doc.marked('data-enhance-outcomes').text()
-        self.assertIn('Model use is not cleared for this category; this is not an empty search', outcomes)
+        self.assertIn('Unavailable under current permissions; this is not an empty search', outcomes)
         self.assertIn('No candidates within this round’s collection limits', outcomes)
+
+    def test_mixed_zero_collection_denial_does_not_infer_model_permission_cause(self):
+        # Another category's collected pool cannot explain this category's
+        # denial: missing local retention or consent can also produce 0/0.
+        _, doc = self.render(self.stage('sealed', source_use=[
+            {'category': 'movie', 'collected_count': 3, 'model_eligible_count': 2},
+            {'category': 'book', 'collected_count': 0, 'model_eligible_count': 0}],
+            category_outcomes=[{'category': 'movie', 'state': 'fresh', 'candidate_count': 3, 'code': 'OK'},
+                {'category': 'book', 'state': 'unavailable', 'candidate_count': 0, 'code': 'AUTHORITY_DENIED'}]))
+        items = [n for n in doc.marked('data-enhance-outcomes').nodes() if n.tag == 'li']
+        denied = next(n for n in items if any(child.tag == 'strong' and child.text() == 'book'
+                                            for child in n.nodes()))
+        self.assertIn('Unavailable under current permissions', denied.text())
+        self.assertIn('not an empty search', denied.text())
+        self.assertNotIn('Model use', denied.text())
+        self.assertNotIn('collected', denied.text())
+        self.assertNotIn('No candidates', denied.text())
 
     def test_source_summary_absence_preserves_legacy_and_summary_text_is_escaped(self):
         _, legacy = self.render({'state': 'queued', 'status_url': '/existing-status'})
