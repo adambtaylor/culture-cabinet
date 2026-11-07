@@ -261,7 +261,8 @@ class SourceAuthorityTests(AuthorityCase):
              self.assertRaises(EnhanceFault):
             self.issuer.policy_context(permit, op, now=now)
         expired_rights = replace(saved.rights,
-            policy=replace(saved.rights.policy, expires_at=now - timedelta(seconds=1)))
+            policy=replace(saved.rights.policy, checked_at=now - timedelta(seconds=2),
+                           expires_at=now - timedelta(seconds=1)))
         with patch.object(self.rights, 'value', expired_rights), \
              patch.dict(self.issuer._permits, {id(permit): (permit, replace(saved, rights=expired_rights))}), \
              self.assertRaises(EnhanceFault):
