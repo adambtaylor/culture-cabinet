@@ -133,7 +133,7 @@ class EnhancePresentationTests(SimpleTestCase):
         self.assertEqual([next(n for n in item.nodes() if n.tag == 'strong').text() for item in items],
                          [row['category'] for row in rows])
         for phrase in ('2 sourced candidates', 'within this round’s collection limits',
-                       'Unsupported by the current source connections', 'not an empty result',
+                       'Not available with the current connections or integration', 'not an empty result',
                        'Collection cancelled', 'Older picks retained; not refreshed'):
             self.assertIn(phrase, outcomes.text())
         self.assertIn('hidden', doc.marked('data-enhance-coverage-pending').attrs)
@@ -212,3 +212,84 @@ class EnhancePresentationTests(SimpleTestCase):
                 self.assertNotIn(doc.marked('data-enhance-outcomes'), list(summary.nodes()))
                 self.assertNotIn(doc.marked('data-enhance-outcomes'),
                                  list(doc.marked('data-enhance-stages').nodes()))
+
+    def cabinet(self, **changes):
+        engine = Engine(dirs=[ROOT / 'templates'], loaders=[
+            ('django.template.loaders.locmem.Loader', {
+                'test-parent': '<main id="main">{% block content %}{% endblock %}</main>'}),
+            'django.template.loaders.filesystem.Loader'])
+        context = {'enhancement_base': 'test-parent', 'profile_label': 'Fictional cabinet',
+            'enhance_url': '/enhance?profile_ref=fictional-profile&connection_ref=fictional-connection',
+            'all_url': '/cabinet?profile_ref=fictional-profile', 'published': True,
+            'publication_revision': 4, 'categories': [{'category': 'book', 'label': 'Books',
+                'state': 'fresh', 'status': 'Published picks', 'visible': True,
+                'url': '/cabinet?profile_ref=fictional-profile&category=book', 'cards': [{
+                    'title': 'Fictional <img> book', 'medium': 'Book', 'provider': 'Fictional source',
+                    'observed_at': '2026-01-01T00:00:00Z', 'valid_until': '2026-01-02T00:00:00Z',
+                    'source_url': 'https://source.invalid/work', 'facts': [], 'reasons': []}]}],
+            **changes}
+        html = engine.get_template('cabinet/portable_cabinet.html').render(Context(context, use_l10n=False))
+        return html, Document(html)
+
+    def test_one_primary_enhance_action_keeps_profile_scope_and_discloses_provenance(self):
+        html, doc = self.cabinet(active_category='book')
+        actions = [n for n in doc.tagged('a') if 'cabinet-action' in n.attrs.get('class', '').split()]
+        self.assertEqual(len(actions), 1)
+        self.assertEqual(actions[0].text(), 'Enhance this cabinet')
+        self.assertEqual(actions[0].attrs['href'],
+            '/enhance?profile_ref=fictional-profile&connection_ref=fictional-connection')
+        self.assertNotIn('category=', actions[0].attrs['href'])
+        self.assertIn('Every enabled category participates', doc.root.text(visible=True))
+        self.assertEqual(doc.tagged('img'), [])
+        self.assertIn('Fictional &lt;img&gt; book', html)
+        source = next(n for n in doc.tagged('details') if n.attrs.get('class') == 'cabinet-source')
+        self.assertNotIn('open', source.attrs)
+        self.assertIn('Fictional source', source.text())
+        self.assertEqual(doc.tagged('h1')[0].attrs['id'], 'cabinet-title')
+
+    def test_unknown_has_one_recorded_action_and_retains_only_supplied_current_cards(self):
+        _, doc = self.cabinet(round_blocks_start=True, round_url='/enhance?run_ref=existing', round_pending=True)
+        actions = [n for n in doc.tagged('a') if 'cabinet-action' in n.attrs.get('class', '').split()]
+        self.assertEqual([n.attrs['href'] for n in actions], ['/enhance?run_ref=existing'])
+        self.assertNotIn('Enhance this cabinet', doc.root.text(visible=True))
+        self.assertIn('must not be replaced by a new round', doc.root.text(visible=True))
+        self.assertIn('Fictional <img> book', doc.root.text(visible=True))
+        _, denied = self.cabinet(published=False, categories=[], read_code='PREVIEW_STALE')
+        self.assertNotIn('Fictional <img> book', denied.root.text(visible=True))
+        self.assertIn('No older copy has been restored', denied.root.text(visible=True))
+
+    def test_current_only_explanations_do_not_reconstruct_suppressed_personal_reasons(self):
+        _, doc = self.cabinet()
+        self.assertIn('No current For You explanation is available', doc.root.text(visible=True))
+        self.assertEqual(doc.tagged('h4'), [])
+        categories = [{'category': 'movie', 'label': 'Films', 'visible': True,
+            'url': '/cabinet?category=movie', 'status': 'Published picks', 'cards': [{
+                'title': 'Fictional film', 'facts': [], 'reasons': [{'label': 'Source evidence',
+                    'text': 'Current <script> sourced relationship', 'evidence_count': 1}]}]}]
+        html, current = self.cabinet(categories=categories)
+        self.assertIn('Source evidence', current.root.text(visible=True))
+        self.assertIn('Current &lt;script&gt; sourced relationship', html)
+        self.assertEqual(current.tagged('script'), [])
+        self.assertNotIn('No current For You explanation', current.root.text(visible=True))
+
+    def test_native_next_action_preserves_csrf_exact_confirmation_and_stable_stage_target(self):
+        disclosure = {'kind': 'inference', 'preview_ref': 'fictional-preview', 'body_digest': 'a' * 64,
+            'body': '{"input":"fictional <script>"}', 'destinations': ['https://processor.invalid'],
+            'expires_at': '2026-01-01T00:05:00Z'}
+        _, doc = self.render(self.stage('ready', revision=2), portable_ui=True,
+            portable_commands={'confirm': '/authorized-confirm', 'status': '/authorized-status'},
+            disclosure=disclosure)
+        forms = doc.tagged('form')
+        self.assertEqual([n.attrs['action'] for n in forms], ['/authorized-confirm'])
+        fields = {n.attrs.get('name'): n.attrs.get('value') for n in forms[0].nodes() if n.tag == 'input'}
+        self.assertEqual(fields['csrfmiddlewaretoken'], 's' * 64)
+        self.assertEqual(fields['preview_ref'], 'fictional-preview')
+        self.assertEqual(fields['body_digest'], 'a' * 64)
+        checkbox = next(n for n in doc.tagged('input') if n.attrs.get('name') == 'confirmed')
+        self.assertIn('required', checkbox.attrs)
+        self.assertNotIn('checked', checkbox.attrs)
+        stage = doc.marked('data-enhance-stages')
+        self.assertEqual(stage.attrs['id'], 'enhance-current-stage')
+        self.assertEqual(stage.attrs['tabindex'], '-1')
+        self.assertTrue(any(n.attrs.get('href') == '#enhance-current-stage' for n in doc.tagged('a')))
+        self.assertEqual(doc.tagged('script')[0].attrs['type'], 'application/json')
