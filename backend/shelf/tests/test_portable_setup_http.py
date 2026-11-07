@@ -8,13 +8,84 @@ from django.core.signals import got_request_exception
 from django.views.debug import ExceptionReporter
 
 from django.contrib.sessions.models import Session
+from django.db import transaction
 from django.test import Client, override_settings
 
 from .test_portable_authority import BoundaryCase, PASSWORD
 from shelf import grant_authority as ga
 from shelf.models import Profile, ProfileCabinetState, Grant
-from .test_grant_authority import AuthorityCase
+from .test_grant_authority import AuthorityCase, RecoveryCase
 from .test_enhance_presentation import Document
+
+
+class NativeV2ChooserHTTPTests(RecoveryCase):
+    """Normal fresh navigation, with the real recovered writer boundary."""
+    def setUp(self):
+        super().setUp()
+        self.enterContext(override_settings(ROOT_URLCONF='cabinet.portable_urls',
+            PORTABLE_AUTHORITY=self.authority, PORTABLE_CONNECTIONS=self.service,
+            SESSION_COOKIE_NAME=self.boundary.session_cookie, CSRF_COOKIE_NAME=self.boundary.csrf_cookie,
+            MIDDLEWARE=['cabinet.portable_boundary.PortableSecurityMiddleware',
+                        'django.contrib.sessions.middleware.SessionMiddleware',
+                        'django.middleware.csrf.CsrfViewMiddleware']))
+        self.http = Client(enforce_csrf_checks=True)
+        self.headers = {'HTTP_HOST': self.boundary.origin.removeprefix('http://'),
+                        'HTTP_ORIGIN': self.boundary.origin}
+        session = self.http.session
+        session['portable_session'] = self.ref
+        session.save()
+
+    def test_real_create_redirect_chooser_and_rendered_selection_open_fresh_v2_cabinet(self):
+        from shelf.portable_enhance_service import EnhanceService
+        EnhanceService.compose(self.authority, self.service)
+        with self.controlled_recovery_state('clear'):
+            token = self.http.get('/setup/status', **self.headers).json()['csrf_token']
+            response = self.http.post('/setup/cabinet/create',
+                urlencode({'expected_owner_revision': self.authority.authorize(self.ref).owner_revision}),
+                content_type='application/x-www-form-urlencoded', HTTP_X_CSRFTOKEN=token, **self.headers)
+            self.assertEqual(response.status_code, 303)
+            state = ProfileCabinetState.objects.get()
+            self.assertEqual(state.data_schema_version, 2)
+            # Follow the actual returned redirect and submit its rendered choice;
+            # constructing a profile URL ourselves would miss this caller defect.
+            with patch.object(ga, '_bound', wraps=ga._bound) as bound:
+                chooser = self.http.get(response['Location'], **self.headers)
+            self.assertEqual(chooser.status_code, 200)
+            self.assertTrue(any(call.args[2] == str(state.profile_ref) for call in bound.call_args_list))
+            form = Document(chooser.content.decode()).marked('data-cabinet-select')
+            selected = {}
+            for select in (node for node in form.nodes() if node.tag == 'select'):
+                options = [node for node in select.nodes() if node.tag == 'option' and node.attrs.get('value')]
+                option = next((node for node in options if 'selected' in node.attrs), options[0])
+                selected[select.attrs['name']] = option.attrs['value']
+            self.assertEqual(selected['profile_ref'], str(state.profile_ref))
+            cabinet = self.http.get(form.attrs['action'], selected, **self.headers)
+            self.assertEqual(cabinet.status_code, 200)
+            self.assertIn('Your cabinet', cabinet.content.decode())
+
+    def test_eligible_v1_choice_remains_read_only_and_get_preserves_history_and_floors(self):
+        from shelf.portable_setup_views import cabinet_choices
+        from django.test import RequestFactory
+        # Construct genuine old-format state using its unchanged model default,
+        # rather than downgrading a newly created native v2 cabinet.
+        with transaction.atomic(), ga._write_window():
+            profile = Profile.objects.create(kind='owner', label='Synthetic existing v1', active=True)
+            Grant.objects.create(profile=profile, user_id=self.authority.authorize(self.ref).owner_id,
+                                 can_view=True, can_select=True, can_mutate=True)
+            state = ProfileCabinetState.objects.create(profile=profile,
+                installation_id=self.boundary.installation_id, actor_id=self.authority.authorize(self.ref).owner_id,
+                owner_revision=1)
+        before = ProfileCabinetState.objects.values().get(pk=state.pk)
+        request = RequestFactory().get('/setup/cabinet')
+        request.portable_authority, request.session = self.authority, {'portable_session': self.ref}
+        with self.controlled_recovery_state('clear'):
+            choices = cabinet_choices(request)
+            self.assertIn(str(state.profile_ref), [row['profile_ref'] for row in choices['profiles']])
+            def write():
+                with ga.current_writer(self.authority, self.ref, str(state.profile_ref)):
+                    self.fail('Old v1 navigation must not grant native writer authority')
+            self.fault('CAPABILITY_UNAVAILABLE', write)
+        self.assertEqual(ProfileCabinetState.objects.values().get(pk=state.pk), before)
 
 
 class SetupHTTPTests(BoundaryCase):

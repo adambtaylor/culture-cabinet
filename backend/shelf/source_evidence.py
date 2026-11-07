@@ -145,10 +145,11 @@ def build_evidence(cards, *, category, observation_ref, source_revision, respons
     for card in cards:
         require(card.key not in seen)
         seen.add(card.key)
-        # A required scalar with unknown rights excludes the identity as a whole;
-        # optional facts may be omitted individually without inventing a value.
+        # Collection needs local fetch/display/retention rights. External model
+        # permission remains a separate per-binding gate in the sole serializer;
+        # it cannot erase useful, locally authorized collection progress.
         if not all(policy.allows(target, use) for target in SCALARS
-                   for use in ('fetch', 'display', 'model_context', 'retain')):
+                   for use in ('fetch', 'display', 'retain')):
             continue
         record_ref = 'source:' + digest(canonical_bytes([observation_ref, category, card.key]))
         candidate = {'key': card.key, 'category': category, 'title': card.title,
@@ -176,7 +177,11 @@ def build_evidence(cards, *, category, observation_ref, source_revision, respons
                     'observed_at': candidate['observed_at'], 'expires_at': candidate['valid_until']}}
             material = {**binding, 'value': value}
             binding['rights'] = {'policy_ref': policy.ref, 'revision': policy.revision,
-                'disposition': 'allowed',
+                # In this existing wire shape disposition describes external
+                # model use. Unknown includes absent/denied model permission;
+                # local collection never turns it into an implicit allowance.
+                'disposition': ('allowed' if policy.allows(permission_target or target,
+                                                          'model_context') else 'unknown'),
                 'checked_at': policy.checked_at.isoformat().replace('+00:00', 'Z'),
                 'expires_at': (end if card.provider == 'moshtix' else policy.expires_at).isoformat().replace('+00:00', 'Z'),
                 'binding_digest': digest(canonical_bytes(material))}
@@ -186,7 +191,7 @@ def build_evidence(cards, *, category, observation_ref, source_revision, respons
         for target in sorted(SCALARS):
             bind(target, candidate[target])
         for prop, value in card.facts:
-            if all(policy.allows(prop, use) for use in ('fetch', 'display', 'model_context', 'retain')):
+            if all(policy.allows(prop, use) for use in ('fetch', 'display', 'retain')):
                 fact_id = 'fact:' + digest(canonical_bytes([card.key, prop]))
                 fact = {'id': fact_id, 'property': prop, 'value': value,
                         'observation_ref': observation_ref}

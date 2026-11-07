@@ -23,3 +23,29 @@
 .cabinet-check { display: block; font-size: 1rem; margin-block: .75rem; }
 .cabinet-check input[type="checkbox"] { width: 1.25rem; min-height: 1.25rem; margin-right: .5rem; vertical-align: middle; }
 .cabinet-consent fieldset { margin-block: 1.25rem; }
+/* Native forms keep one reading order and labelled controls on narrow screens.
+   No client-side selection grants permission or fills in an artist response. */
+.cabinet-source-setup, .cabinet-artist-input { max-width: 48rem; overflow-wrap: anywhere; }
+.cabinet-source-setup form, .cabinet-artist-input form { margin-block: 1.25rem; }
+.cabinet-source-setup fieldset { margin-block: 1rem; }
+.cabinet-artist-input label:not(.cabinet-check) { display: block; margin-top: 1rem; }
+.cabinet-artist-input input[type="text"], .cabinet-artist-input select { width: 100%; max-width: 30rem; box-sizing: border-box; }
+
+/* The selected profile and its one authorized next action share the first row.
+   Category navigation changes only the view; it never starts another round. */
+.cabinet-workflow { display: flex; flex-wrap: wrap; align-items: start; gap: 1rem 2rem; }
+.cabinet-workflow > div { flex: 1 1 18rem; min-width: 0; }
+.cabinet-header h1 { margin: .35rem 0 .75rem; }
+.cabinet-next-action p { margin-bottom: .65rem; font-size: 1rem; }
+.cabinet-next-action .cabinet-action { background: var(--green); color: var(--cream); text-decoration: none; }
+.cabinet-options, .cabinet-publication { margin-block: .75rem; font-size: 1rem; }
+.cabinet-options summary, .cabinet-publication summary, .cabinet-source summary { cursor: pointer; padding-block: .4rem; }
+.cabinet-source { border-top: 1px solid var(--line); margin-top: .75rem; font-size: 1rem; }
+.cabinet-no-reason { font-size: 1rem; margin-top: 1rem; }
+.cabinet-round-status { border-left: 3px solid var(--green); padding-left: .75rem; }
+.enhance-stage-link { font-size: 1rem; margin-bottom: .75rem; }
+@media (max-width: 48rem) {
+  .cabinet-workflow { gap: .5rem; }
+  .cabinet-workflow > div { flex-basis: 100%; }
+  .cabinet-categories { margin-block: 1rem; }
+}

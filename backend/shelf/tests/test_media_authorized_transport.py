@@ -247,7 +247,11 @@ class MediaAuthorizedTests(TestCase):
         denied = replace(policy, permissions=tuple((key, tuple(u for u in value if u != 'model_context'))
                                                   for key, value in policy.permissions))
         backend.policy.return_value = denied
-        result = SourceCollection((('book', ('hardcover',)),), {'hardcover': backend}, clock=clock,
-            isolated_fixture=True).collect(plan, registry, CollectionBudget())
-        self.assertEqual(result.outcomes[0].code, 'AUTHORITY_DENIED')
-        self.assertEqual(result.records, [])
+        local_collector = SourceCollection((('book', ('hardcover',)),), {'hardcover': backend},
+            clock=clock, isolated_fixture=True)
+        result = local_collector.collect(plan, registry, CollectionBudget())
+        # API-first collection retains locally permitted facts; the separate
+        # model boundary must still exclude this complete search/detail chain.
+        self.assertEqual(result.outcomes[0].state, 'fresh')
+        self.assertEqual(result.records[0]['candidate']['key'], 'hardcover:book:81001')
+        self.assertEqual(local_collector.model_eligible_keys(result, plan, registry), frozenset())

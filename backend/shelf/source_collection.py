@@ -13,7 +13,7 @@ from types import MappingProxyType
 from uuid import uuid4
 
 from .category_registry import registry_view as current_registry
-from .disclosure import DisclosureError, SCALARS, canonical_bytes, read_json
+from .disclosure import DisclosureError, SCALARS, _sources, canonical_bytes, read_json
 from .enhance_contract import (CataloguePlan, CategoryOutcome, CollectionBudget,
     CollectionSeal, EnhanceFault, RegistryView, digest, require, utc)
 from .source_adapters import (SourceBackend, SourcePermit, SourceReply, SourceRequest,
@@ -433,6 +433,26 @@ class SourceCollection:
             for backend, permit, request, policy, selected in retained[3]:
                 self._current(backend, permit, request, selected, policy)
         return True
+
+    def model_eligible_keys(self, seal, plan, registry, *, source_plans=None):
+        """Authenticate this pool and return its currently model-cleared keys.
+
+        This is only a necessary source-use check. Personal lineage, consent,
+        validation, spend and final model bytes still belong to the existing
+        serializer and effect gates; the returned keys grant none of them.
+        """
+        with self.state.lock:
+            require(self.revalidate_collection(seal, plan, registry,
+                source_plans=source_plans) is True, 'PREVIEW_STALE')
+            # Reuse the canonical source-binding filter instead of introducing
+            # another rights decoder. Accepting parents here deliberately asks
+            # ONLY about source rights; final serialization must still validate
+            # the actual personal dependencies. Optional denied facts are omitted
+            # by that same filter and do not disqualify an eligible identity.
+            candidates, _, _ = _sources(seal.records, lambda _: True,
+                {'isolated_fixture': self.isolated_fixture}, seal.observations,
+                seal.policies, utc(self.clock.now()))
+            return frozenset(row['key'] for row in candidates)
 
 
 def seal(category_outcomes, observation_refs, rights_revisions, *, plan, registry,

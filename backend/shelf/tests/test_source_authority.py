@@ -216,15 +216,82 @@ class SourceAuthorityTests(AuthorityCase):
         op = self.issuer.operation_for(self.request, self.query, now=self.authority.now())
         permit = self.issuer.authorize(self.request, self.query, op, now=self.authority.now())
         self.assertTrue(self.issuer.revalidate(permit, self.request, self.query, op, now=self.authority.now()))
+        # One combined lookup validates once; calling either legacy entrypoint
+        # separately must still perform a new full check, not reuse that result.
+        now = self.authority.now()
+        with patch.object(self.issuer, '_check', wraps=self.issuer._check) as checked:
+            self.assertEqual(self.issuer.policy_context(permit, op, now=now),
+                             (self.rights.value.policy, True))
+            self.assertEqual(checked.call_count, 1)
+            self.assertIs(self.issuer.policy(permit, op, now=now), self.rights.value.policy)
+            self.assertTrue(self.issuer.model_context_current(permit, op, now=now))
+            self.assertEqual(checked.call_count, 3)
+        with self.assertRaises(EnhanceFault):
+            self.issuer.policy_context(replace(permit), op, now=now)
+        with self.assertRaises(EnhanceFault):
+            self.issuer.policy_context(permit, object(), now=now)
+        with self.assertRaises(EnhanceFault):
+            self.issuer.policy_context(permit, op, now=now + timedelta(minutes=11))
+
+        saved = self.issuer._permits[id(permit)][1]
+        from shelf.enhance_contract import digest
+        changed_body = saved.plan.body + b' '
+        changed_binding = dict(saved.view.connection_binding)
+        changed_binding['config_revision'] += 1
+        stale_approvals = (
+            replace(saved, request=SourceRequest('tmdb_movie', 'movie', 'search_movie', ('Other',))),
+            replace(saved, plan=replace(saved.plan, plan_ref=str(uuid.uuid4()))),
+            replace(saved, plan=replace(saved.plan, body=changed_body, body_digest=digest(changed_body))),
+            replace(saved, view=replace(saved.view, actor_ref='foreign-owner')),
+            replace(saved, view=replace(saved.view, profile_ref=str(uuid.uuid4()))),
+            replace(saved, view=replace(saved.view, _session='unknown-session')),
+            replace(saved, view=replace(saved.view, policy_epoch=saved.view.policy_epoch + 1)),
+            replace(saved, view=replace(saved.view, profile_revision_digest='0' * 64)),
+            replace(saved, view=replace(saved.view, _connection_binding=canonical_bytes(changed_binding))),
+        )
+        for index, stale in enumerate(stale_approvals):
+            with self.subTest(binding=index), \
+                 patch.dict(self.issuer._permits, {id(permit): (permit, stale)}), \
+                 self.assertRaises((EnhanceFault, ga.AuthorityFault)):
+                self.issuer.policy_context(permit, op, now=now)
+        # Even matching saved/current rights cannot grant a missing processor.
+        missing_processor = replace(saved.rights, processor_ref=None)
+        with patch.object(self.rights, 'value', missing_processor), \
+             patch.dict(self.issuer._permits, {id(permit): (permit, replace(saved, rights=missing_processor))}), \
+             self.assertRaises(EnhanceFault):
+            self.issuer.policy_context(permit, op, now=now)
+        expired_rights = replace(saved.rights,
+            policy=replace(saved.rights.policy, checked_at=now - timedelta(seconds=2),
+                           expires_at=now - timedelta(seconds=1)))
+        with patch.object(self.rights, 'value', expired_rights), \
+             patch.dict(self.issuer._permits, {id(permit): (permit, replace(saved, rights=expired_rights))}), \
+             self.assertRaises(EnhanceFault):
+            self.issuer.policy_context(permit, op, now=now)
+        from contextlib import contextmanager
+        original_guard = ga.recovery_guard
+        @contextmanager
+        def deny_on_exit(*args, **kwargs):
+            with original_guard(*args, **kwargs) as checkpoint:
+                yield checkpoint
+            raise ga.AuthorityFault('CAPABILITY_UNAVAILABLE', 503)
+        with patch.object(ga, 'recovery_guard', deny_on_exit), self.assertRaises(ga.AuthorityFault):
+            self.issuer.policy_context(permit, op, now=now)
+        self.assertEqual(self.issuer.policy_context(permit, op, now=now),
+                         (self.rights.value.policy, True))
         self.rights.value = replace(self.rights.value, revision=2)
         with self.assertRaises(EnhanceFault):
             self.issuer.revalidate(permit, self.request, self.query, op, now=self.authority.now())
+        for method in (self.issuer.policy_context, self.issuer.policy, self.issuer.model_context_current):
+            with self.assertRaises(EnhanceFault):
+                method(permit, op, now=now)
         self.rights.value = replace(self.rights.value, revision=1)
         ga.change_grant(self.authority, self.ref, profile_ref=self.profile_ref,
             expected_revision=1, purpose='catalogue_lookup', connection_ref=self.source_ref,
             allowed_data_classes=['canonical_seed'], expires_at=self.expires, action='revoke')
         with self.assertRaises(ga.AuthorityFault):
             self.issuer.revalidate(permit, self.request, self.query, op, now=self.authority.now())
+        with self.assertRaises(ga.AuthorityFault):
+            self.issuer.policy_context(permit, op, now=now)
 
     def test_absent_policy_provider_or_new_issuer_cannot_mint_or_reconstruct_authority(self):
         unconfigured = SourceAuthority(self.authority, self.ref, profile_ref=self.profile_ref,

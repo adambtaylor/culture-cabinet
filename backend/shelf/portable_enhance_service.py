@@ -20,7 +20,7 @@ from .enhance_coordinator import (EnhanceCoordinator, EnhanceOutcome, PlannedEnh
     CollectedEnhance, InferencePreview)
 from .models import ProfileCabinetState, SynthesisRun, PortableConnection
 from .portable_authority import AuthorityFault
-from .portable_cabinet_store import CabinetStore, StateProvider, require, stamp
+from .portable_cabinet_store import CabinetStore, StateProvider, checked_source_use, require, stamp
 
 _ISOLATED = object()
 
@@ -170,7 +170,7 @@ class EnhanceService:
             clock = self._clock or CollectionClock()
             sources, backends, configured, limiters = [], {}, {}, {}
             for row in rows:
-                if row.adapter not in ('tmdb_movie', 'tmdb_tv', 'hardcover', 'moshtix_public'):
+                if row.adapter not in ('tmdb_movie', 'tmdb_tv', 'hardcover', 'moshtix_public', 'musicbrainz_recording'):
                     continue
                 issuer = SourceAuthority(self.authority, session_ref, profile_ref=profile_ref,
                     connection_ref=str(row.pk), policy_provider=self._policy_provider)
@@ -178,7 +178,11 @@ class EnhanceService:
                 require(name not in backends, 'REVISION_CONFLICT', 409)
                 sources.append(issuer)
                 try:
-                    if name == 'moshtix':
+                    if name == 'musicbrainz_recording':
+                        from .musicbrainz_source import MusicBrainzBackend
+                        limiter = limiters.setdefault('musicbrainz', MediaHostLimiter('musicbrainz'))
+                        backend = MusicBrainzBackend(issuer, limiter, clock=clock)
+                    elif name == 'moshtix':
                         backend = MoshtixBackend(issuer, MoshtixHostLimiter(), clock=clock)
                     else:
                         provider_name = 'hardcover' if name == 'hardcover' else 'tmdb'
@@ -210,7 +214,36 @@ class EnhanceService:
     @staticmethod
     def _settled_outcomes(memory, outcomes):
         retained = memory.get('preparatory_outcomes', {}) if memory else {}
-        return tuple(retained.get(row.category, row) for row in outcomes)
+        denied = {row['category'] for row in (memory or {}).get('source_use', ())
+                  if row['collected_count'] and not row['model_eligible_count']}
+        # Collection counts remain sealed. Only the publication/status outcome
+        # changes: facts that cannot reach the model are unavailable, not empty.
+        return tuple(CategoryOutcome(row.category, 'unavailable', 0, 'AUTHORITY_DENIED')
+                     if row.category in denied else retained.get(row.category, row) for row in outcomes)
+
+    @sensitive_variables()
+    def _source_use(self, memory, collected):
+        planned, seal = collected.planned, collected.seal
+        producer = memory['coordinator'].catalogue
+        query = getattr(producer, 'model_eligible_keys', None)
+        require(callable(query), 'CAPABILITY_UNAVAILABLE', 503)
+        with self._collection_lock(memory):
+            eligible = query(seal, planned.plan, planned.registry,
+                source_plans=dict(planned.source_plans) if planned.source_plans else None)
+            seal.verify(planned.plan, planned.registry, now=self.authority.now())
+            require(type(eligible) is frozenset)
+            records = seal.records
+            require(eligible <= {record['candidate']['key'] for record in records})
+            counts = {category: 0 for category in planned.registry.categories}
+            for record in records:
+                candidate = record['candidate']
+                if candidate['key'] in eligible:
+                    counts[candidate['category']] += 1
+            outcomes = {row.category: row for row in seal.outcomes}
+            return checked_source_use([{'category': category,
+                'collected_count': outcomes[category].candidate_count,
+                'model_eligible_count': counts[category]} for category in planned.registry.categories],
+                planned.registry.categories)
 
     @staticmethod
     def _planned(memory):
@@ -291,6 +324,10 @@ class EnhanceService:
             actions.append('current')
         if (memory and memory.get('detail_dependency')) or row.evidence.get('phase') == 'inference_detail_confirmation_unavailable':
             value['dependency'] = 'exact_hardcover_detail_confirmation_unavailable'
+        if not redacted and 'source_use' in row.evidence:
+            value['source_use'] = checked_source_use(row.evidence['source_use'], row.portable_bindings['categories'])
+            if row.evidence.get('phase') == 'source_model_context_unavailable':
+                value['dependency'] = 'source_model_context_unavailable'
         value.update(revision=row.revision, actions=actions, allowed_actions=list(actions),
                      cancel_requested=row.cancel_requested)
         return value
@@ -356,6 +393,7 @@ class EnhanceService:
     def _install_preview(self, store, row, phase, work, body, expires_at, coordinator):
         prior = self._memory.get(str(row.pk), {})
         source_preview, issuer, source_previews = None, None, []
+        missing_artist = False
         if phase == 'catalogue' and self._isolated is not _ISOLATED:
             for key, plan in work.source_plans:
                 source = next((source for source in store.provider.sources if source.connection_ref == key), None)
@@ -365,7 +403,10 @@ class EnhanceService:
                 except EnhanceFault as error:
                     if error.code not in ('NO_GROUNDED_CANDIDATES', 'CAPABILITY_UNAVAILABLE', 'AUTHORITY_DENIED'):
                         raise
-            require(source_previews, 'CAPABILITY_UNAVAILABLE', 503)
+                    if error.code == 'NO_GROUNDED_CANDIDATES' and source.source_key() == 'musicbrainz_recording':
+                        missing_artist = True
+            require(source_previews, 'NO_GROUNDED_CANDIDATES' if missing_artist else 'CAPABILITY_UNAVAILABLE',
+                    422 if missing_artist else 503)
             issuer, source_preview = source_previews[0]
             body = source_preview['body'].encode('utf-8')
         preview_ref = str(uuid.uuid4())
@@ -396,6 +437,7 @@ class EnhanceService:
             'source_index': 0, 'details_prepared': False,
             'preparatory': prior.get('preparatory'), 'preparatory_outcomes': prior.get('preparatory_outcomes', {}),
             'detail_dependency': prior.get('detail_dependency'),
+            'source_use': prior.get('source_use', []),
             'source_connection_ref': work.query_view.connection_ref if phase == 'catalogue' else work.collected.planned.query_view.connection_ref}
 
     def _next_source_preview(self, store, row, memory):
@@ -501,7 +543,11 @@ class EnhanceService:
                 source_count=len(value['source_previews']))
             source = value['source_preview']
             public['disclosure'].update({key: source[key] for key in
-                ('plan_digest', 'operation_digest', 'method', 'origin', 'path', 'query', 'headers')})
+                ('plan_digest', 'operation_digest', 'method', 'origin', 'path', 'query')})
+            # Public headers are adapter-specific; missing required wire fields
+            # must still fail instead of becoming an incomplete disclosure.
+            if 'headers' in source:
+                public['disclosure']['headers'] = source['headers']
         return public
 
     @sensitive_variables()
@@ -533,11 +579,26 @@ class EnhanceService:
                         return self.status(session_ref, run_ref=run_ref)
                 collected = coordinator.collect(work, approved_query_digest=work.plan.body_digest if source is not None else body_digest)
                 if type(collected) is EnhanceOutcome:
-                    store.finish(run_ref, stage=collected.event.stage, code=collected.event.code)
+                    # A policy-denied local pool can be empty without being an
+                    # empty search. Keep the producer's all-category explanation.
+                    store.finish(run_ref, stage=collected.event.stage, code=collected.event.code,
+                                 outcomes=[vars(value) for value in collected.event.outcomes])
                     self._memory.pop(str(row.pk), None)
                     return self.status(session_ref, run_ref=run_ref)
                 require(type(collected) is CollectedEnhance)
                 collected.seal.verify(work.plan, work.registry, now=self.authority.now())
+                summary = self._source_use(memory, collected)
+                memory['source_use'] = summary
+                eligible = sum(value['model_eligible_count'] for value in summary)
+                expiry = min(memory['expires_at'], collected.seal.expires_at)
+                store.checkpoint(run_ref, stage='sealed', code='OK' if eligible else 'AUTHORITY_DENIED',
+                    outcomes=[vars(value) for value in collected.seal.outcomes],
+                    metadata={'source_use': summary, **({} if eligible else
+                        {'phase': 'source_model_context_unavailable'})},
+                    collection_digest=collected.seal.collection_digest, portable_expires_at=expiry)
+                if not eligible:
+                    memory.update(phase='source_sealed', work=collected, body=b'', expires_at=expiry)
+                    return self.status(session_ref, run_ref=run_ref)
                 if not self._inference_available():
                     store.checkpoint(run_ref, stage='sealed', code='CAPABILITY_UNAVAILABLE',
                         outcomes=[vars(value) for value in collected.seal.outcomes],
