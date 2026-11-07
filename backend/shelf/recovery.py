@@ -53,11 +53,8 @@ def using_recovery(coordinator):
 
 
 def _closed_sql_guards(raw):
-    # Raw backup/recovery connections also compile scoped guards on legacy rows.
-    # Register denial by default; only the owning recovery transaction opens it.
-    from shelf.models import _content_digest
-    raw.create_function('cabinet_disclosure_write', 0, lambda: 0)
-    raw.create_function('cabinet_content_digest', -1, _content_digest)
+    from shelf.models import register_closed_sql_guards
+    register_closed_sql_guards(raw)
 
 
 def raw_store(raw):
@@ -195,6 +192,7 @@ class CurrentRecoveryCoordinator:
         try:
             if getattr(self, '_trusted_restart_seal', None) is _TRUSTED_RESTART_SEAL:
                 _trusted_boundary(self.trusted_boundary)
+                _trusted_journal_binding(self.trusted_boundary, self.bound_db, self.store_fds, self)
             if getattr(self,'owns_control',False):
                 _validate_store_identities(self.validated_store, self.store_fds)
                 if raw_store(self.bound_db)!=self.store_id or self.bound_db.execute('SELECT 1').fetchone()!=(1,): self._block()
@@ -1023,6 +1021,52 @@ def _trusted_boundary(boundary):
     return root
 
 
+
+def _trusted_journal_binding(boundary, raw, fds, obj, *, create=False):
+    """Bind separate owned directories/inodes, not a claim of disk freshness."""
+    parent = boundary.root.parent
+    safe_directory(parent)
+    if parent.stat().st_uid != os.geteuid() or stat.S_IMODE(parent.stat().st_mode) != 0o700:
+        raise RecoveryBlocked()
+    journal = obj.directory
+    if (journal != parent / ('.portable-recovery-' + boundary.installation_id.hex)
+            or {p.name for p in journal.iterdir()} != ({'lock', 'journal'} if create else {'lock', 'journal', 'binding.json'})):
+        raise RecoveryBlocked()
+    expected = {'schema': 1, 'installation_id': str(boundary.installation_id),
+        'root_identity': boundary.root_identity, 'store_id': raw_store(raw),
+        'database': list(_store_identity(boundary.root / 'portable.sqlite3', fds[0], directory=False)),
+        'root': list(_store_identity(boundary.root, fds[1], directory=True)),
+        'parent': list(_store_identity(parent, fds[2], directory=True)),
+        'journal': list(_store_identity(journal, obj.directory_fd, directory=True))}
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL if create else os.O_RDONLY
+    fd = os.open('binding.json', flags | os.O_NOFOLLOW, 0o600, dir_fd=obj.directory_fd)
+    try:
+        binding_identity = identity(journal / 'binding.json', fd)
+        if ('binding.json' in obj.identities and
+                obj.identities['binding.json'] != binding_identity):
+            raise RecoveryBlocked()
+        if os.fstat(fd).st_uid != os.geteuid():
+            raise RecoveryBlocked()
+        if create:
+            encoded = canonical(expected)
+            if os.write(fd, encoded) != len(encoded):
+                raise RecoveryBlocked()
+            os.fsync(fd); os.fsync(obj.directory_fd)
+        else:
+            data = os.read(fd, 4097)
+            if len(data) > 4096 or json.loads(data) != expected:
+                raise RecoveryBlocked()
+        if 'binding.json' not in obj.fds:
+            # Keep the first descriptor: an equal-byte pathname replacement is
+            # still a loss of this uninterrupted witness, not a new authority.
+            obj.fds['binding.json'] = fd
+            obj.identities['binding.json'] = binding_identity
+            fd = None
+    finally:
+        if fd is not None:
+            os.close(fd)
+
+
 def _load_trusted_journal(obj):
     """Reconstruct the original protocol, refusing unknown/incomplete evidence."""
     obj.length = os.fstat(obj.fds['journal']).st_size
@@ -1093,11 +1137,14 @@ def trusted_restart_fixture(boundary, *, confirmed, fresh=False):
     root = _trusted_boundary(boundary)
     if not root.is_relative_to(Path(tempfile.gettempdir()).resolve()):
         raise RecoveryBlocked()
-    path, journal = root / 'portable.sqlite3', root / 'recovery'
+    parent = safe_directory(root.parent)
+    if parent.stat().st_uid != os.geteuid() or stat.S_IMODE(parent.stat().st_mode) != 0o700:
+        raise RecoveryBlocked()
+    path, journal = root / 'portable.sqlite3', parent / ('.portable-recovery-' + boundary.installation_id.hex)
     raw = None; obj = None; fds = {}
     try:
         # Keep descriptor identities pinned throughout schema/journal inspection.
-        for index, target in enumerate((path, root, root)):
+        for index, target in enumerate((path, root, parent)):
             fd = os.open(target, os.O_RDONLY | os.O_NOFOLLOW | (os.O_DIRECTORY if index else 0))
             fds[index] = fd
             _store_identity(target, fd, directory=index != 0)
@@ -1116,7 +1163,11 @@ def trusted_restart_fixture(boundary, *, confirmed, fresh=False):
                 raise RecoveryBlocked()
             obj = CurrentRecoveryCoordinator.provision_empty(store_id=raw_store(raw),
                 journal_directory=journal, trusted_empty_db=raw)
+            # The exclusive binding becomes durable before the application marker.
+            # Interrupted initialization is retained and cannot be re-provisioned.
+            _trusted_journal_binding(boundary, raw, fds, obj, create=True)
             raw.execute(f'PRAGMA application_id={APPLICATION_ID}')
+            os.fsync(fds[0])
         else:
             if raw.execute('PRAGMA application_id').fetchone()[0] != APPLICATION_ID:
                 raise RecoveryBlocked()
@@ -1134,10 +1185,11 @@ def trusted_restart_fixture(boundary, *, confirmed, fresh=False):
                 fd = os.open(journal / name, os.O_RDWR | os.O_NOFOLLOW)
                 obj.fds[name] = fd; obj.identities[name] = identity(journal / name, fd)
             fcntl.flock(obj.fds['lock'], fcntl.LOCK_EX | fcntl.LOCK_NB)
+            _trusted_journal_binding(boundary, raw, fds, obj)
             _load_trusted_journal(obj)
         descriptor = ValidatedSyntheticStore('fixture', path, journal, obj.store_id,
             tuple(_store_identity(target, fds[index], directory=index != 0)
-                for index, target in enumerate((path, root, root))), _STORE_SEAL)
+                for index, target in enumerate((path, root, parent))), _STORE_SEAL)
         obj.validated_store, obj.store_fds, obj.owns_control = descriptor, fds, True
         obj._trusted_restart_seal, obj.trusted_boundary = _TRUSTED_RESTART_SEAL, boundary
         obj.verify_current()

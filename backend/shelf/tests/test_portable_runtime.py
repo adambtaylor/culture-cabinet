@@ -320,6 +320,55 @@ class FixtureFailureTests(SimpleTestCase):
         self.assert_terminal_released(master)
 
 
+    def test_measured_stop_records_whole_lifetime_and_is_idempotent(self):
+        from unittest.mock import Mock
+        self.f.process = Mock(pid=987654321, returncode=0)
+        self.f.process.poll.return_value = 0
+        self.f._usage = dict(pid=987654321, start=100.0, complete=False)
+        self.f._timer = Mock()
+        with patch.object(self.fixture_module.time, 'monotonic', return_value=125.0), \
+             patch.object(self.fixture_module, 'members', return_value=[]), \
+             patch('builtins.print') as output:
+            first = self.f.stop()
+            self.assertEqual(self.f.stop(), first)
+        self.f._timer.cancel.assert_called_once()
+        self.assertEqual(self.f._usage['elapsed'], 25.0)
+        self.assertTrue(self.f._usage['complete'])
+        self.assertEqual(self.f._usage['remaining_owned_pids'], [])
+        output.assert_called_once()
+
+    def test_measured_stop_refuses_overdue_or_unreaped_children(self):
+        from unittest.mock import Mock
+        for elapsed, survivors in ((31.0, []), (25.0, [987654321])):
+            with self.subTest(elapsed=elapsed, survivors=survivors):
+                self.f._usage = dict(pid=987654321, start=100.0, complete=False)
+                self.f._stop_receipt = None
+                self.f.process = Mock(pid=987654321, returncode=0)
+                self.f.process.poll.return_value = 0
+                receipt = dict(remaining_owned_pids=survivors, listener_closed=True, lock_released=True)
+                with patch.object(self.f, '_stop', return_value=receipt), \
+                     patch.object(self.fixture_module.time, 'monotonic', return_value=100.0+elapsed), \
+                     patch('builtins.print'):
+                    with self.assertRaises(self.fixture_module.PortableFixtureFailure):
+                        self.f.stop()
+                self.assertFalse(self.f._usage['complete'])
+
+
+    def test_measured_stop_refuses_unreaped_primary_child(self):
+        from unittest.mock import Mock
+        self.f.process = Mock(pid=987654321, returncode=None)
+        self.f.process.poll.return_value = None
+        self.f._usage = dict(pid=987654321, start=100.0, complete=False)
+        receipt = dict(remaining_owned_pids=[], listener_closed=True, lock_released=True)
+        with patch.object(self.f, '_stop', return_value=receipt), \
+             patch.object(self.fixture_module.time, 'monotonic', return_value=125.0), \
+             patch('builtins.print'):
+            with self.assertRaises(self.fixture_module.PortableFixtureFailure):
+                self.f.stop()
+        self.assertFalse(self.f._usage['complete'])
+        self.assertIsNone(self.f._stop_receipt)
+
+
 # Reuse the accepted clock/owner/fake adapter fixture, which defines no test
 # methods. No production clock flag, extra CLI child or real provider is added.
 from django.test import Client

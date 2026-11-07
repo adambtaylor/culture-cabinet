@@ -658,8 +658,17 @@ def _closed_enhance_write_guard(sender, connection, **kwargs):
     # Django connections so merely compiling those triggers cannot break legacy
     # writes. Only the existing connection-local service window can replace 0.
     if connection.vendor == 'sqlite':
-        connection.connection.create_function('cabinet_disclosure_write', 0, lambda: 0)
-        connection.connection.create_function('cabinet_content_digest', -1, _content_digest)
+        register_closed_sql_guards(connection.connection)
+
+
+def register_closed_sql_guards(raw):
+    """Initialize Django AND participating raw handles without granting a write.
+
+    SQLite resolves trigger functions even when a legacy row misses its WHEN.
+    Only the existing scoped transaction may temporarily replace this zero.
+    """
+    raw.create_function('cabinet_disclosure_write', 0, lambda: 0)
+    raw.create_function('cabinet_content_digest', -1, _content_digest)
 
 
 def _content_digest(*parts):

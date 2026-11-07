@@ -58,9 +58,11 @@ class PortableReactionTests(RecoveryCase):
                 FeedbackTarget.objects.filter(source_namespace='enhance-current').update(title='Forged title')
 
     def test_pending_recovery_denies_even_personally_authored_undo(self):
-        with self.controlled_recovery_state('clear'):
+        with self.controlled_recovery_state('clear') as current:
             result = self.reactions.mutate(self.ref, self.profile_ref, self.opaque, str(uuid.uuid4()), 0, 'set',
                 {'signal': 'interest', 'value': {'value': 'maybe', 'basis': 'anticipated'}})
-            with self.controlled_recovery_state('pending'):
-                self.fault('CAPABILITY_UNAVAILABLE', self.reactions.mutate, self.ref, self.profile_ref,
-                    self.opaque, str(uuid.uuid4()), 1, 'reverse', {'signal': 'interest', 'value': None}, result['event_ref'])
+            self.prepare_restriction(current)
+            before = self.recovery_rows()
+            self.fault('CAPABILITY_UNAVAILABLE', self.reactions.mutate, self.ref, self.profile_ref,
+                self.opaque, str(uuid.uuid4()), 1, 'reverse', {'signal': 'interest', 'value': None}, result['event_ref'])
+            self.assertEqual(self.recovery_rows(), before)
