@@ -105,6 +105,35 @@ class OrdinaryEnhanceCompositionTests(RecoveryCase):
                 preview = service.preview(self.ref, run_ref=status['run_ref'])['disclosure']
                 if preview['kind'] == 'catalogue':
                     self.assertNotIn('Exact synthetic note', preview['body'])
+                    memory = service._memory[status['run_ref']]
+                    issued = memory['source_preview']
+                    required = ('plan_digest', 'operation_digest', 'method', 'origin', 'path', 'query')
+                    for key in required:
+                        self.assertEqual(preview[key], issued[key])
+                    self.assertNotIn('headers', issued)
+                    self.assertNotIn('headers', preview)
+                    self.assertEqual(preview['body'], issued['body'])
+                    self.assertEqual(preview['body_digest'], __import__('hashlib').sha256(issued['body'].encode()).hexdigest())
+                    self.assertEqual(preview['destination'], issued['destination'])
+                    self.assertEqual(preview['expires_at'], issued['expires_at'])
+                    # Exercise only the projection seam with real public Moshtix
+                    # headers; restore the issued media receipt before confirm.
+                    from shelf.discovery_transport import MoshtixOperation
+                    headers = MoshtixOperation(self.clock.wall.replace(microsecond=0), 9,
+                        'CultureCabinet/fixture (example.invalid)').material['headers']
+                    with patch.dict(issued, headers=headers, arbitrary_source_key='must-not-copy'):
+                        declared = service.preview(self.ref, run_ref=status['run_ref'])['disclosure']
+                        self.assertIs(declared['headers'], headers)
+                        self.assertNotIn('arbitrary_source_key', declared)
+                        for key in required + ('body', 'body_digest', 'destination', 'expires_at', 'source_number', 'source_count'):
+                            self.assertEqual(declared[key], preview[key])
+                    for key in required:
+                        original = issued.pop(key)
+                        try:
+                            with self.assertRaises(KeyError):
+                                service.preview(self.ref, run_ref=status['run_ref'])
+                        finally:
+                            issued[key] = original
                 exact_previews.append(preview['body'].encode())
                 status = service.confirm(self.ref, run_ref=status['run_ref'], preview_ref=preview['preview_ref'],
                     body_digest=preview['body_digest'], confirmed=True)
