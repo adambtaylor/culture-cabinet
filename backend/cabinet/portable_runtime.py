@@ -270,10 +270,13 @@ def run(root, *, port=0):
         settings.PORTABLE_AUTHORITY = authority
         settings.PORTABLE_CONNECTIONS = ConnectionValidation(authority, MemoryCredentials(authority))
         from shelf.portable_enhance_service import EnhanceService
+        from shelf.source_authority import SourcePolicyProvider
         # Compose concrete ports without activating sources or inventing policy.
         # Missing explicit source rights/credentials/confirmations keep sends shut.
-        EnhanceService.compose(authority, settings.PORTABLE_CONNECTIONS,
-            policy_provider=getattr(settings, 'PORTABLE_SOURCE_POLICY', None))
+        source_policy = getattr(settings, 'PORTABLE_SOURCE_POLICY', None)
+        EnhanceService.compose(authority, settings.PORTABLE_CONNECTIONS, policy_provider=source_policy)
+        if not isinstance(source_policy, SourcePolicyProvider):
+            print('PORTABLE_SOURCE_POLICY_UNAVAILABLE', flush=True)
         server = make_server(boundary, get_wsgi_application())
         if not stopping:
             print('Origin: ' + boundary.origin, flush=True)
