@@ -171,7 +171,7 @@ class SourceAuthority(SourceAuthorityIssuer):
             from .discovery_transport import MOSHTIX_QUERY
             return {'source': source, 'query': MOSHTIX_QUERY, 'page_size': 9, 'window_weeks': 8}
         from .provider_catalogue import BOOK_SEARCH, BOOK_DETAILS
-        return {'source': source, 'identity': source_identity(source),
+        return {'source': source, 'identity': list(source_identity(source)),
                 'documents': [BOOK_SEARCH, BOOK_DETAILS] if source == 'hardcover' else [],
                 'operations': list(registered_source(source).operations)}
 
