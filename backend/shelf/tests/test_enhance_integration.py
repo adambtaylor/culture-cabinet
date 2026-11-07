@@ -78,7 +78,10 @@ class OrdinaryEnhanceCompositionTests(RecoveryCase):
             self.service.adapter = HostedResponsesAdapter()
             del self.authority._disclosure_fixture_token
             self.put(); self.confirm_probe()
-            profile = self.bind(); state = ProfileCabinetState.objects.get()
+            from .test_profile_snapshot import _legacy_owner_state
+            state = _legacy_owner_state(self.authority, self.ref)
+            profile = str(state.profile_ref)
+            self.assertEqual(state.data_schema_version, 1)
             card = dict(key='source:book:judged', title='Synthetic judged title', medium='book',
                 source='Synthetic', url='https://example.invalid/book', provenance='live-automated',
                 lane='', roots=[], fetched_at=self.clock.wall.isoformat())
@@ -88,6 +91,8 @@ class OrdinaryEnhanceCompositionTests(RecoveryCase):
                     dict(common, operation='rate', basis='enjoyment', value=5, experienced=True, choice=''),
                     dict(common, operation='respond', choice='intrigued', note='Exact synthetic note')])
             ga.bind_existing_profile(self.authority, self.ref, profile_id=state.profile_id, confirmed=True)
+            state.refresh_from_db()
+            self.assertEqual(state.data_schema_version, 2)
             self.consent(profile, classes=['canonical_seed', 'experienced_enjoyment', 'anticipated_reactions', 'raw_notes'])
             for adapter in ('tmdb_movie', 'hardcover'):
                 row = self.vault.configure(self.ref, dict(adapter=adapter, model='', reasoning=''))
