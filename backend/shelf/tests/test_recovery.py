@@ -1,5 +1,5 @@
 """Concrete same-host witness tests; no production store/promotion or host loss."""
-from contextlib import contextmanager
+from contextlib import closing, contextmanager
 from dataclasses import replace
 import fcntl
 import hashlib
@@ -18,7 +18,7 @@ from django.db.backends.sqlite3._functions import register
 from django.http import Http404
 from shelf.feedback import (mutate, feedback_context, EraseCommand, erase_feedback,
     key_token, FeedbackError, Conflict, Busy)
-from shelf.models import FeedbackEvent, FeedbackProjection, RecoveryRestriction, MutationReceipt
+from shelf.models import FeedbackEvent, FeedbackProjection, RecoveryRestriction, MutationReceipt, register_closed_sql_guards
 from shelf.portability import human_export, import_legacy_fixture
 from shelf.recovery import (CurrentRecoveryCoordinator, RecoveryBlocked, using_recovery,
     restrict_authority, trusted_operator, ExclusiveScratchFile, ReadOnlyBackup,
@@ -156,7 +156,7 @@ class RecoveryTests(FeedbackCase):
         link=self.case/'link'; link.symlink_to(self.case/'backups',target_is_directory=True)
         self.assertEqual(isolated_restore(backup=backup,sandbox=link,recovery=self.recovery).state,'BLOCKED')
         altered=self.case/'backups/altered.sqlite3'; shutil.copyfile(backup.path,altered); altered.chmod(0o600)
-        raw=sqlite3.connect(altered); raw.execute('UPDATE shelf_feedbackprojection SET revision=99'); raw.commit()
+        raw=sqlite3.connect(altered); register_closed_sql_guards(raw); raw.execute('UPDATE shelf_feedbackprojection SET revision=99'); raw.commit()
         with self.assertRaises(RecoveryBlocked): semantic_check(raw)
         raw.close()
         self.assertEqual(self.restore(ReadOnlyBackup(altered,backup.manifest),'altered-restore').block_reasons,('BACKUP_HASH_OR_LENGTH',))
@@ -170,7 +170,7 @@ class RecoveryTests(FeedbackCase):
         backdir=folder/'backups'; backdir.mkdir(mode=0o700)
         path=dbdir/'live.sqlite3'
         raw=sqlite3.connect(path,isolation_level=None,check_same_thread=False)
-        register(raw); connection.connection.backup(raw); path.chmod(0o600)
+        register(raw); register_closed_sql_guards(raw); connection.connection.backup(raw); path.chmod(0o600)
         with patch.object(connection,'connection',raw):
             coordinator=CurrentRecoveryCoordinator.provision_empty(store_id=self.recovery.store_id,
                 journal_directory=folder/'journal',trusted_empty_db=raw)
@@ -285,7 +285,7 @@ class RecoveryTests(FeedbackCase):
                 start=threading.Barrier(3); outcomes=[]; result_lock=threading.Lock()
                 def worker(command):
                     raw=sqlite3.connect(path,isolation_level=None,check_same_thread=False)
-                    register(raw)
+                    register(raw); register_closed_sql_guards(raw)
                     local=__import__('django.db',fromlist=['connections']).connections['default']
                     try:
                         with patch.object(local,'connection',raw), using_recovery(coordinator):
@@ -392,12 +392,12 @@ class RecoveryTests(FeedbackCase):
 
     def test_F14_schema_reference_and_corrupt_database_rejected(self):
         mutate(actor=self.actor,profile_id=self.profile.pk,command=self.command())
-        raw=sqlite3.connect(':memory:'); connection.connection.backup(raw)
+        raw=sqlite3.connect(':memory:'); register_closed_sql_guards(raw); connection.connection.backup(raw)
         try:
             raw.execute('ALTER TABLE shelf_feedbackprojection ADD COLUMN unexpected_authority TEXT')
             with self.assertRaises(RecoveryBlocked): semantic_check(raw)
         finally: raw.close()
-        raw=sqlite3.connect(':memory:'); connection.connection.backup(raw)
+        raw=sqlite3.connect(':memory:'); register_closed_sql_guards(raw); connection.connection.backup(raw)
         try:
             raw.execute("UPDATE shelf_feedbackevent SET scope='session'"); raw.commit()
             with self.assertRaises(RecoveryBlocked): semantic_check(raw)
@@ -553,3 +553,143 @@ class TrustedPortableRestartTests(PortableRecoveryCase):
         finally: raw.close()
         with self.assertRaises(RecoveryBlocked):
             with trusted_restart_fixture(self.boundary, confirmed=True): self.fail('mismatched mirror served')
+
+
+    def test_restart_binding_corruption_permissions_and_inventory_refuse(self):
+        from shelf.recovery import trusted_restart_fixture
+        self.disk_fixture()
+        with trusted_restart_fixture(self.boundary, confirmed=True, fresh=True) as first:
+            journal = first.directory
+            self.assertEqual(journal.parent, self.boundary.root.parent)
+            self.assertNotEqual(journal.parent, self.boundary.root)
+        binding = journal / 'binding.json'
+        original = binding.read_bytes()
+        for data in (b'{}', original.replace(b'"schema":1', b'"schema":2'), b'broken'):
+            with self.subTest(data=data[:20]):
+                binding.write_bytes(data)
+                with self.assertRaises(RecoveryBlocked):
+                    with trusted_restart_fixture(self.boundary, confirmed=True):
+                        self.fail('corrupt binding served')
+                binding.write_bytes(original)
+        binding.chmod(0o644)
+        with self.assertRaises(RecoveryBlocked):
+            with trusted_restart_fixture(self.boundary, confirmed=True):
+                self.fail('public binding served')
+        binding.chmod(0o600)
+        extra = journal / 'unexpected'
+        extra.touch(mode=0o600)
+        with self.assertRaises(RecoveryBlocked):
+            with trusted_restart_fixture(self.boundary, confirmed=True):
+                self.fail('unknown journal inventory served')
+        extra.unlink()
+        with trusted_restart_fixture(self.boundary, confirmed=True) as reopened:
+            self.assertFalse(reopened.closed)
+        self.assertTrue(reopened.closed)
+
+    def test_live_restart_binding_and_parent_substitution_lose_witness(self):
+        from shelf.recovery import trusted_restart_fixture
+        self.disk_fixture()
+        with trusted_restart_fixture(self.boundary, confirmed=True, fresh=True) as current:
+            binding = current.directory / 'binding.json'
+            replacement = current.directory / 'replacement'
+            replacement.write_bytes(binding.read_bytes()); replacement.chmod(0o600)
+            os.replace(replacement, binding)
+            with self.assertRaises(RecoveryBlocked):
+                current.verify_current()
+        self.assertTrue(current.closed)
+        # A reopen may establish a new named trust scope on consistent evidence;
+        # within that scope the original parent descriptor remains mandatory.
+        with trusted_restart_fixture(self.boundary, confirmed=True) as current:
+            parent = self.boundary.root.parent
+            moved = parent.with_name(parent.name + '-moved')
+            parent.rename(moved)
+            parent.mkdir(mode=0o700)
+            try:
+                with self.assertRaises(RecoveryBlocked):
+                    current.verify_current()
+            finally:
+                parent.rmdir()
+                moved.rename(parent)
+        self.assertTrue(current.closed)
+
+    def test_fresh_restart_refuses_occupied_journal_and_retains_partial_initialization(self):
+        from shelf.recovery import trusted_restart_fixture
+        path = self.disk_fixture()
+        journal = self.boundary.root.parent / ('.portable-recovery-' + self.boundary.installation_id.hex)
+        journal.mkdir(mode=0o700)
+        marker = journal / 'foreign'
+        marker.write_bytes(b'fictional-occupied')
+        with self.assertRaises(RecoveryBlocked):
+            with trusted_restart_fixture(self.boundary, confirmed=True, fresh=True):
+                self.fail('occupied journal adopted')
+        self.assertEqual(marker.read_bytes(), b'fictional-occupied')
+        with closing(sqlite3.connect(path)) as raw:
+            self.assertEqual(raw.execute('PRAGMA application_id').fetchone()[0], 0)
+        self.assertEqual(set(journal.iterdir()), {marker})
+
+
+    def test_restart_refuses_missing_linked_and_swapped_binding_or_database(self):
+        from shelf.recovery import trusted_restart_fixture
+        path = self.disk_fixture()
+        with trusted_restart_fixture(self.boundary, confirmed=True, fresh=True) as current:
+            journal = current.directory
+        binding = journal / 'binding.json'
+        held = self.boundary.root / 'held-binding'
+        # Each mutation is confined to this disposable consistency fixture; the
+        # original file is retained, never synthesized from lost history.
+        for kind in ('missing', 'symlink', 'hardlink', 'database'):
+            with self.subTest(kind=kind):
+                if kind == 'database':
+                    original = path.with_name('held-database')
+                    path.rename(original)
+                    path.write_bytes(original.read_bytes()); path.chmod(0o600)
+                else:
+                    binding.rename(held)
+                    if kind == 'symlink':
+                        binding.symlink_to(held)
+                    elif kind == 'hardlink':
+                        os.link(held, binding)
+                try:
+                    from shelf import recovery
+                    with patch.object(recovery.os, 'open', wraps=os.open) as opened, \
+                         patch.object(recovery, 'identity', wraps=recovery.identity) as checked:
+                        with self.assertRaises(RecoveryBlocked):
+                            with trusted_restart_fixture(self.boundary, confirmed=True):
+                                self.fail('unbound replacement served')
+                    binding_opens = [call for call in opened.call_args_list
+                                     if str(call.args[0]) == 'binding.json']
+                    if kind in ('symlink', 'hardlink'):
+                        self.assertEqual({p.name for p in journal.iterdir()},
+                                         {'lock', 'journal', 'binding.json'})
+                        self.assertTrue(binding_opens)  # No inventory shortcut.
+                        self.assertTrue(binding_opens[0].args[1] & os.O_NOFOLLOW)
+                    if kind == 'hardlink':
+                        self.assertTrue(any(call.args[0] == binding for call in checked.call_args_list))
+                    if kind == 'missing':
+                        self.assertEqual({p.name for p in journal.iterdir()}, {'lock', 'journal'})
+                        self.assertFalse(binding_opens)  # Exact missing-file inventory refusal.
+                finally:
+                    if kind == 'database':
+                        path.unlink(); original.rename(path)
+                    else:
+                        if binding.exists() or binding.is_symlink():
+                            binding.unlink()
+                        held.rename(binding)
+
+    def test_interrupted_restart_initialization_is_retained_and_never_reprovisioned(self):
+        from shelf.recovery import trusted_restart_fixture
+        path = self.disk_fixture()
+        journal = self.boundary.root.parent / ('.portable-recovery-' + self.boundary.installation_id.hex)
+        with patch('shelf.recovery._trusted_journal_binding', side_effect=RecoveryBlocked):
+            with self.assertRaises(RecoveryBlocked):
+                with trusted_restart_fixture(self.boundary, confirmed=True, fresh=True):
+                    self.fail('interrupted initialization served')
+        before = {p.name: p.read_bytes() for p in journal.iterdir()}
+        self.assertEqual(set(before), {'lock', 'journal'})
+        for fresh in (True, False):
+            with self.assertRaises(RecoveryBlocked):
+                with trusted_restart_fixture(self.boundary, confirmed=True, fresh=fresh):
+                    self.fail('partial initialization adopted')
+            self.assertEqual({p.name: p.read_bytes() for p in journal.iterdir()}, before)
+        with closing(sqlite3.connect(path)) as raw:
+            self.assertEqual(raw.execute('PRAGMA application_id').fetchone()[0], 0)

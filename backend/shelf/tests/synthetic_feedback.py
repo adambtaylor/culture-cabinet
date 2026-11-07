@@ -85,7 +85,10 @@ from django.db.backends.sqlite3._functions import register
 @contextmanager
 def fresh_destination(case,template,number):
     raw=sqlite3.connect(':memory:',isolation_level=None,detect_types=sqlite3.PARSE_DECLTYPES|sqlite3.PARSE_COLNAMES)
-    register(raw); template.backup(raw)
+    register(raw)
+    from shelf.models import register_closed_sql_guards
+    register_closed_sql_guards(raw)
+    template.backup(raw)
     raw.execute('PRAGMA foreign_keys=OFF')
     raw.execute('UPDATE shelf_profile SET id=? WHERE id=?',(number,case.profile.pk))
     raw.execute('UPDATE shelf_grant SET profile_id=?',(number,))

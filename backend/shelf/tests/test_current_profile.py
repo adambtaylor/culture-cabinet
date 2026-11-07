@@ -10,22 +10,6 @@ from .test_grant_authority import RecoveryCase
 
 
 class CurrentProfileTests(RecoveryCase):
-    def test_unavailable_media_and_generation_remain_in_source_revision(self):
-        from shelf.source_authority import SourceAuthority, configure_source
-        with self.controlled_recovery_state('clear'):
-            ref = configure_source(self.authority, self.ref, confirmed=True, adapter='tmdb_movie')
-            issuer = SourceAuthority(self.authority, self.ref, profile_ref=self.profile_ref, connection_ref=ref)
-            provider = CurrentProfile(self.authority, sources=(issuer,))
-            before = provider.current(self.authority, self.ref, profile_ref=self.profile_ref,
-                                      connection_ref=str(self.config.pk))
-            self.assertEqual(before.source_views, ())
-            self.authority._source_vault.replace(self.ref, uuid.UUID(ref), 1, b'SYNTHETIC-MEDIA')
-            after = provider.current(self.authority, self.ref, profile_ref=self.profile_ref,
-                                     connection_ref=str(self.config.pk))
-            self.assertNotEqual(before.source_revision, after.source_revision)
-            self.assertEqual(after.source_views, ())
-            self.fault('PREVIEW_STALE', provider.filter_manifest, before, {'cards': []})
-
     def setUp(self):
         super().setUp()
         self.profile_ref = self.bind()
@@ -34,10 +18,13 @@ class CurrentProfileTests(RecoveryCase):
             profile_id=self.state.profile_id, confirmed=True), self.profile_ref)
         self.state.refresh_from_db()
         self.consent(self.profile_ref, classes=sorted(ga.CLASSES))
+        self.target = FeedbackTarget.objects.create(id=uuid.UUID('00000000-0000-4000-8000-00000000c001'),
+            kind='item', title='Synthetic current-profile target', category='book',
+            source_namespace='current-profile-fixture', source_key='typed-values')
         self.provider = CurrentProfile(self.authority)
 
     def post(self, signal, value, *, revision=0, context=None, operation='set', reverses=None):
-        target = FeedbackTarget.objects.filter(kind='item').first()
+        target = FeedbackTarget.objects.get(pk=self.target.pk)
         actor = get_user_model().objects.get(pk=self.state.actor_id)
         command = MutationCommand(str(uuid.uuid4()), str(target.pk), 'item', signal, 'item',
             operation, revision, context, value, reverses)
@@ -102,3 +89,19 @@ class CurrentProfileTests(RecoveryCase):
             prepared = disclosure.prepare(snapshot, view.grants, view.context, [], {}, {}, now=self.clock.wall)
             self.assertTrue(prepared.ok)
             self.assertIn(text, disclosure.read_json(prepared.profile_bytes)['profile']['signals'][0]['value']['value']['text'])
+
+    def test_unavailable_media_and_generation_remain_in_source_revision(self):
+        from shelf.source_authority import SourceAuthority, configure_source
+        with self.controlled_recovery_state('clear'):
+            ref = configure_source(self.authority, self.ref, confirmed=True, adapter='tmdb_movie')
+            issuer = SourceAuthority(self.authority, self.ref, profile_ref=self.profile_ref, connection_ref=ref)
+            provider = CurrentProfile(self.authority, sources=(issuer,))
+            before = provider.current(self.authority, self.ref, profile_ref=self.profile_ref,
+                                      connection_ref=str(self.config.pk))
+            self.assertEqual(before.source_views, ())
+            self.authority._source_vault.replace(self.ref, uuid.UUID(ref), 1, b'SYNTHETIC-MEDIA')
+            after = provider.current(self.authority, self.ref, profile_ref=self.profile_ref,
+                                     connection_ref=str(self.config.pk))
+            self.assertNotEqual(before.source_revision, after.source_revision)
+            self.assertEqual(after.source_views, ())
+            self.fault('PREVIEW_STALE', provider.filter_manifest, before, {'cards': []})

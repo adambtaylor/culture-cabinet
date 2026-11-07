@@ -1,5 +1,6 @@
 """No environment-selected settings, database, import path, or public bind."""
 import os
+import re
 import secrets
 import stat
 from pathlib import Path
@@ -72,7 +73,18 @@ def validate_command(args):
             allowed |= {"--plan", "--check"}
     else:
         raise BoundaryError
-    if any(option not in allowed for option in options):
+    # Public namespace validation grants no task-specific selection authority.
+    # The supervisor separately binds its exact admitted manifest.
+    labels = []
+    for option in options:
+        if option in allowed:
+            continue
+        if command != 'test' or re.fullmatch(
+                r'shelf\.tests\.test_[A-Za-z0-9_]+\.[A-Za-z_][A-Za-z0-9_]*\.test_[A-Za-z0-9_]+',
+                option, flags=re.ASCII) is None:
+            raise BoundaryError
+        labels.append(option)
+    if len(labels) != len(set(labels)):
         raise BoundaryError
     return command
 
