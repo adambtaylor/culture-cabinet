@@ -224,7 +224,16 @@ def make_server(boundary, application):
         raise
 
 
-def run(root, *, port=0):
+def _compose_enhance(authority, connections, *, approved_policies):
+    from shelf.native_source_policy import build_native_source_policy
+    from shelf.portable_enhance_service import EnhanceService
+    policy = build_native_source_policy(authority,
+        approved_policies={} if approved_policies is None else approved_policies)
+    EnhanceService.compose(authority, connections, policy_provider=policy)
+    return policy
+
+
+def run(root, *, port=0, approved_policies=None):
     os.umask(0o077)
     boundary = server = None
     lifetime = ExitStack()
@@ -269,13 +278,11 @@ def run(root, *, port=0):
         lifetime.enter_context(native_first_start(boundary))
         settings.PORTABLE_AUTHORITY = authority
         settings.PORTABLE_CONNECTIONS = ConnectionValidation(authority, MemoryCredentials(authority))
-        from shelf.portable_enhance_service import EnhanceService
-        from shelf.source_authority import SourcePolicyProvider
-        # Compose concrete ports without activating sources or inventing policy.
-        # Missing explicit source rights/credentials/confirmations keep sends shut.
-        source_policy = getattr(settings, 'PORTABLE_SOURCE_POLICY', None)
-        EnhanceService.compose(authority, settings.PORTABLE_CONNECTIONS, policy_provider=source_policy)
-        if not isinstance(source_policy, SourcePolicyProvider):
+        # Only trusted host construction supplies reviewed entries; CLI defaults
+        # deny. Credentials and HTTP input cannot manufacture source permissions.
+        settings.PORTABLE_SOURCE_POLICY = _compose_enhance(authority,
+            settings.PORTABLE_CONNECTIONS, approved_policies=approved_policies)
+        if not approved_policies:
             print('PORTABLE_SOURCE_POLICY_UNAVAILABLE', flush=True)
         server = make_server(boundary, get_wsgi_application())
         if not stopping:
