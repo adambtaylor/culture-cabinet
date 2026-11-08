@@ -62,7 +62,11 @@ class SourceCollection:
                     and len(names) <= 2 and len(set(names)) == len(names))
             for name in names:
                 require(category in registered_source(name).categories)
-            selected[category] = names
+            # Configuration order is not source priority. Prefer an explicitly
+            # configured API before page sources, preserving order within each
+            # kind. This neither enables a source nor waives its effect checks.
+            selected[category] = tuple(sorted(names,
+                key=lambda name: registered_source(name).kind != 'api'))
         supplied = dict(backends or {})
         for name, backend in supplied.items():
             registered_source(name)

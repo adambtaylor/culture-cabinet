@@ -28,20 +28,21 @@ class SourceSpec:
     ttl_seconds: int = 900
     response_bytes: int = 131072
     search: bool = False
+    kind: str = 'page'
 
 
 SOURCES = (
     SourceSpec('musicbrainz_recording', 'https://musicbrainz.org', ('recording',),
                ('recordings_by_artist_name',), 'musicbrainz', False,
-               ttl_seconds=3600, response_bytes=131072, search=True),
+               ttl_seconds=3600, response_bytes=131072, search=True, kind='api'),
     SourceSpec('tmdb_movie', 'https://api.themoviedb.org', ('movie',),
-               ('search_movie',), 'tmdb', True, ttl_seconds=3600, response_bytes=262144, search=True),
+               ('search_movie',), 'tmdb', True, ttl_seconds=3600, response_bytes=262144, search=True, kind='api'),
     SourceSpec('tmdb_tv', 'https://api.themoviedb.org', ('tv',),
-               ('search_tv',), 'tmdb', True, ttl_seconds=3600, response_bytes=262144, search=True),
+               ('search_tv',), 'tmdb', True, ttl_seconds=3600, response_bytes=262144, search=True, kind='api'),
     SourceSpec('hardcover', 'https://api.hardcover.app', ('book',),
                ('book_search', 'book_details'), 'hardcover', True,
-               ttl_seconds=3600, response_bytes=262144, search=True),
-    SourceSpec('moshtix', 'https://api.moshtix.com', ('event',), ('events',), 'moshtix'),
+               ttl_seconds=3600, response_bytes=262144, search=True, kind='api'),
+    SourceSpec('moshtix', 'https://api.moshtix.com', ('event',), ('events',), 'moshtix', kind='api'),
     SourceSpec('rrr', 'https://www.rrr.org.au', ('event', 'community'), ('rrr',), 'rrr'),
     SourceSpec('beat', 'https://beat.com.au', ('event',), ('beat',), 'beat', response_bytes=262144),
     SourceSpec('pbs', 'https://www.pbsfm.org.au', ('event', 'community'), ('pbs',), 'pbs',
@@ -54,7 +55,7 @@ SOURCES = (
     SourceSpec('apw', 'https://www.australianprintworkshop.com', ('gallery',), ('apw',), 'apw',
                interval_seconds=10, response_bytes=262144),
     SourceSpec('apple_podcast', 'https://itunes.apple.com', ('podcast_episode',),
-               ('podcast_search',), 'apple', interval_seconds=3, ttl_seconds=900, search=True),
+               ('podcast_search',), 'apple', interval_seconds=3, ttl_seconds=900, search=True, kind='api'),
 )
 
 
