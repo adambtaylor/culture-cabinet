@@ -219,6 +219,8 @@ class OwnerTVFrontendTests(unittest.TestCase):
             binding = {'exact': exact, 'selection': selection, 'max_bytes': 456, 'nzb_sha256': 'd' * 64}
             if schema is not None:
                 binding['schema'] = schema
+                binding['delivery_binding'] = {'destination': {'host': 'fixture-mac', 'root': '/Volumes/TV'}, 'relative_parent': 'Fixture series', 'create_parent': False}
+                binding['complete_root'] = '/srv/sab/complete'
             html, page = self.render('portable_obtain_submission.html', obtain_submission=binding, acquisition_job={'title': 'Retained release label', 'scope': 'episode_s02e01', 'episode_code': 'S02E01'}, obtain_submit_form=Form({'token': 'opaque-submit'}, {'token'}), obtain_submit_url='/cabinet/saved/jobs/42/submit/')
             if schema == 'unexpected':
                 self.assertEqual(page.forms, [])
@@ -226,6 +228,37 @@ class OwnerTVFrontendTests(unittest.TestCase):
                 self.assertEqual(len(page.forms), 1)
                 self.assertIn('Independent release edition', html)
                 self.assertIn('TV storage', html)
+
+    def test_native_submission_shows_escaped_delivery_separately_from_sab_before_confirmation(self):
+        for schema in ['obtain-publication-submission/v1', 'obtain-owner-selection-submission/v1']:
+            for create_parent in [False, True]:
+                delivery = {'schema': 'obtain-tv-delivery-binding/v1', 'destination': {'host': 'Mac <host>', 'root': '/Volumes/TV & Film'}, 'relative_parent': 'Series <folder>', 'create_parent': create_parent, 'digest': 'DELIVERY-DIGEST-MUST-NOT-BE-DISPLAYED'}
+                binding = {'schema': schema, 'delivery_binding': delivery, 'complete_root': '/srv/sab/complete & <download>'}
+                html, page = self.render('portable_obtain_submission.html', obtain_submission=binding, obtain_submit_form=Form({'token': 'opaque-submit'}, {'token'}), obtain_submit_url='/cabinet/saved/jobs/42/submit/')
+                self.assertEqual(len(page.forms), 1)
+                self.assertEqual(self.names(page.forms[0]), {'csrfmiddlewaretoken', 'profile_ref', 'selection_token', 'token'})
+                for literal in ['Mac &lt;host&gt;', '/Volumes/TV &amp; Film', 'Series &lt;folder&gt;', '/srv/sab/complete &amp; &lt;download&gt;']:
+                    self.assertIn(literal, html)
+                    self.assertLess(html.index(literal), html.index('<form'))
+                self.assertIn('Delivery destination', html)
+                self.assertIn('Downloader completed-download location', html)
+                self.assertIn('final filename will come from the verified download', html)
+                self.assertNotIn(delivery['digest'], html)
+                self.assertEqual('confirmation includes creating the named folder' in html, create_parent)
+                self.assertEqual('Use the existing folder shown above.' in html, not create_parent)
+                self.assertEqual(page.scripts, [])
+
+    def test_native_missing_delivery_needs_new_review_and_empty_parent_means_approved_root(self):
+        for schema in ['obtain-publication-submission/v1', 'obtain-owner-selection-submission/v1']:
+            kwargs = {'obtain_submit_form': Form({'token': 'opaque-submit'}, {'token'}), 'obtain_submit_url': '/cabinet/saved/jobs/42/submit/'}
+            html, page = self.render('portable_obtain_submission.html', obtain_submission={'schema': schema}, **kwargs)
+            self.assertEqual(page.forms, [])
+            self.assertIn('delivery destination needs a fresh review', html)
+            binding = {'schema': schema, 'delivery_binding': {'destination': {'host': 'fixture-mac', 'root': '/Volumes/TV'}, 'relative_parent': '', 'create_parent': False}, 'complete_root': '/srv/sab/complete'}
+            html, page = self.render('portable_obtain_submission.html', obtain_submission=binding, **kwargs)
+            self.assertEqual(len(page.forms), 1)
+            self.assertIn('The library root itself', html)
+            self.assertNotIn('confirmation includes creating', html)
 
     def test_owner_entry_link_is_visible_without_model_or_publication(self):
         html, page = self.render('portable_cabinet.html', published=False, publication_revision=0)

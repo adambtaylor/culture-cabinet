@@ -4,6 +4,9 @@
 {% if error_message %}<p role="alert">{{ error_message }} Read the recorded request before taking further action. Nothing is resubmitted automatically.</p>{% endif %}
 {% if obtain_submission and selection_token and obtain_submit_form and obtain_submit_url %}
 {% if not obtain_submission.schema or obtain_submission.schema == 'obtain-publication-submission/v1' or obtain_submission.schema == 'obtain-owner-selection-submission/v1' %}
+{% if obtain_submission.schema and not obtain_submission.delivery_binding %}
+<p role="alert">The delivery destination needs a fresh review before this TV request can be submitted. Read your recorded request and prepare a new review when offered. Nothing is submitted automatically.</p>
+{% else %}
 <p>This separate confirmation can send one NZB to the configured downloader. Saving and selecting a listing did not authorize this send.</p>
 {% if obtain_submission.schema == 'obtain-publication-submission/v1' %}
 {% comment %}The publication variant has independent release metadata and digests only. Never require or reconstruct a catalogue Snapshot/full ConfirmedSelection to render this submission.{% endcomment %}
@@ -13,6 +16,15 @@
 <p>This request uses the TV series and episode you selected. Review the exact release and storage below.</p>
 {% endif %}
 <dl><dt>Title</dt><dd>{{ acquisition_job.title }}</dd><dt>Exact edition</dt><dd>{{ obtain_submission.selection.edition }}</dd><dt>Exact listing</dt><dd>{{ obtain_submission.exact.result_id }} · {{ obtain_submission.exact.guid }}</dd><dt>Scope</dt><dd>{% if acquisition_job.scope == 'film' %}Full film{% elif acquisition_job.scope == 'audiobook' %}Full audiobook, never ebook{% elif acquisition_job.episode_code %}{{ acquisition_job.episode_code }} only{% else %}{{ acquisition_job.scope }}{% endif %}</dd><dt>Reported encoded size</dt><dd>{{ obtain_submission.exact.size }} bytes</dd><dt>Approved local maximum</dt><dd>{{ obtain_submission.max_bytes }} bytes</dd><dt>Storage</dt><dd>{{ obtain_submission.selection.storage }}</dd><dt>NZB SHA-256</dt><dd>{{ obtain_submission.nzb_sha256 }}</dd></dl>
+{% if obtain_submission.delivery_binding %}
+{% comment %}Delivery is the server's confirmed host/root/relative-parent mapping, separate from SAB's completed-download directory. Render its components without inventing a path or final filename; current backend authority and signed equality govern effects. Old native reviews without this mapping must be reviewed again, while legacy receipts remain readable.{% endcomment %}
+<section aria-labelledby="delivery-destination-heading"><h2 id="delivery-destination-heading">Delivery destination</h2>
+<dl><dt>Host</dt><dd>{{ obtain_submission.delivery_binding.destination.host }}</dd><dt>Library root</dt><dd>{{ obtain_submission.delivery_binding.destination.root }}</dd><dt>Folder within this root</dt><dd>{% if obtain_submission.delivery_binding.relative_parent %}{{ obtain_submission.delivery_binding.relative_parent }}{% else %}The library root itself{% endif %}</dd></dl>
+{% if obtain_submission.delivery_binding.create_parent %}<p>This confirmation includes creating the named folder within the library root.</p>{% else %}<p>Use the existing folder shown above.</p>{% endif %}
+<p>The final filename will come from the verified download. Submission does not mean the file has arrived in your library.</p>
+</section>
+<section aria-labelledby="sab-completed-heading"><h2 id="sab-completed-heading">Downloader completed-download location</h2><p>SAB stores the completed download here before delivery to the destination above.</p><dl><dt>SAB complete folder</dt><dd>{{ obtain_submission.complete_root }}</dd></dl></section>
+{% endif %}
 <p>Review expires after five minutes or sooner if the listing, selection or authority changes. Queued means accepted only; completion, library indexing and playback are separate.</p>
 <form method="post" action="{{ obtain_submit_url }}">
   {% csrf_token %}
@@ -22,6 +34,7 @@
   <button type="submit">Confirm and submit this exact selection once</button>
 </form>
 <p>If the outcome is unknown, do not resubmit. Read the same persisted receipt and ask the operator to reconcile it. No automatic retry follows.</p>
+{% endif %}
 {% else %}<p role="alert">This submission review format is unavailable. Read the recorded request before continuing. Nothing has been sent.</p>{% endif %}
 {% else %}<p role="status">No fresh authorized submission review is available. Read your recorded request and explicitly prepare a new review only when offered. This page cannot start a send.</p>{% endif %}
 {% endblock %}
