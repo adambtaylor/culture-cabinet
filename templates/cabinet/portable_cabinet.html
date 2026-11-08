@@ -91,13 +91,23 @@
   <p><a href="{{ cabinet_url }}">Return to your cabinet</a></p>
 </section>
 {% elif source_setup %}
-<section class="paper-panel cabinet-source-setup" aria-labelledby="musicbrainz-heading">
-  <h1 id="musicbrainz-heading">{{ source_label|default:"MusicBrainz recordings" }}</h1>
+<section class="paper-panel cabinet-source-setup" aria-labelledby="source-setup-heading">
+  <h1 id="source-setup-heading">{{ source_label|default:"MusicBrainz recordings" }}</h1>
   <p>{{ profile_label }}</p>
+  {% if source_category == 'book' %}
+  <p>Find books by titles you choose to share with <a href="https://hardcover.app" rel="noreferrer noopener">Hardcover</a>. This personal tool uses your existing authorized token; it does not import your reading library.</p>
+  <p>You will review the title search first, then a separate details request for matching book titles and links. Search results alone are not new picks. You will review inference separately before sending anything to your model.</p>
+  {% elif source_category == 'movie' or source_category == 'tv' %}
+  <p>Find {% if source_category == 'movie' %}films{% else %}TV series{% endif %} by titles you choose to share. Use your existing TMDB Read Access Token. Movie and TV searches have separate connections and permissions.</p>
+  <p>Saving a token does not test the connection or send a search. You will review the exact title search before collection, then review inference separately before sending anything to your model.</p>
+  <a class="tmdb-credit" href="https://www.themoviedb.org" rel="noreferrer noopener" aria-label="TMDB, The Movie Database"><span class="tmdb-logo" aria-hidden="true">{% include 'assets/tmdb-approved.svg' %}</span><span>TMDB (The Movie Database)</span></a>
+  <p>This product uses the TMDB API but is not endorsed or certified by TMDB.</p>
+  {% else %}
   <p>{% if source_category == 'artist' %}Find artist identities{% else %}Find recording identities{% endif %} by an artist name you have chosen to share. MusicBrainz needs no API key. Configuration, source permission and each actual API request are separate choices.</p>
   <p>Only the selected artist title is used for this search, not raw notes. A name match does not verify an exact artist identity. {% if source_category == 'artist' %}Artist names and artist identifiers{% else %}Core recording titles, artist credits and identifiers{% endif %} come from <a href="https://musicbrainz.org" rel="noreferrer noopener">MusicBrainz</a> under <a href="https://musicbrainz.org/doc/About/Data_License" rel="noreferrer noopener">CC0</a>; this grants no audio rights.</p>
   {% if source_category == 'artist' %}<p>This source finds artists, not recordings. The recording source has its own configuration and permission.</p>{% else %}<p>This source supports recordings, not artist results. The artist source has its own configuration and permission.</p>{% endif %}
-  <p>Films, books and other categories still need their own available permitted sources. Missing configuration or permission is not an empty search. Category outcomes remain visible when Enhance runs.</p>
+  {% endif %}
+  <p>Each category needs its own available permitted source. Missing configuration or permission is not an empty search. Category outcomes remain visible when Enhance runs.</p>
   {% comment %}Configuration never grants catalogue access. These current-owner projections expose only the appropriate native action; GET changes no authority. A saved expired grant must be revoked before regranting.{% endcomment %}
   {% if not source_configured %}
   <h2>1. Configure this source</h2>
@@ -108,10 +118,27 @@
   </form>
   {% else %}
   <p role="status">{{ source_label|default:"MusicBrainz recordings" }} is configured. Configuration alone does not grant source permission.</p>
-  <h2>2. Review source permission</h2>
+  {% if source_credential_required %}
+  <h2>2. Supply your existing token privately</h2>
+  {% if source_credential_present %}<p role="status">A token is available for this session. You do not need to replace it to review source permission.</p>{% else %}<p role="status">An existing authorized token is required before this source can be used. Configuration alone has not connected it.</p>{% endif %}
+  {% comment %}The source-owned caller validates this fixed action and current connection/revision. Render only an empty password field: no supplied secret, hint or before-image may enter HTML, including after refusal. A replacement is always an explicit separate action.{% endcomment %}
+  <details{% if not source_credential_present %} open{% endif %}>
+    <summary>{% if source_credential_present %}Replace the session-only token{% else %}Privately enter your existing token{% endif %}</summary>
+    <form method="post" action="{{ source_credential_action }}" data-source-credential autocomplete="off">{% csrf_token %}
+      <input type="hidden" name="profile_ref" value="{{ profile_ref }}"><input type="hidden" name="connection_ref" value="{{ source_connection_ref }}"><input type="hidden" name="revision" value="{{ source_revision }}">
+      <label for="source-token">{% if source_category == 'book' %}Existing Hardcover token{% else %}Existing TMDB Read Access Token{% endif %}</label><input id="source-token" type="password" name="secret" maxlength="8192" required autocomplete="off" aria-describedby="source-token-help">
+      <p id="source-token-help">Kept for this session only. Saving it does not test provider access or grant source or model permission.</p>
+      <button type="submit">{% if source_credential_present %}Replace session-only token{% else %}Use token for this session{% endif %}</button>
+    </form>
+  </details>
+  {% endif %}
+  <h2>{% if source_credential_required %}3{% else %}2{% endif %}. Review source permission</h2>
   <p>Source permission is separate from inference permission. It does not send a request or approve model use. You will review the exact API request before collection, then the separate inference body before any model send.</p>
+  {% if source_readiness == 'ready' %}<p role="status">This source is ready for a reviewed lookup. Provider access has not been confirmed, and inference still needs its own permission and request review.</p>{% endif %}
   {% if source_consent_active %}<p role="status">Current source permission is active until {{ source_consent_expires }}.</p>{% elif source_consent_record_active %}<p role="status">The saved source permission has expired or no longer matches. Revoke it before explicitly granting new permission.</p>{% else %}<p role="status">No current source permission is active.</p>{% endif %}
   {% if source_consent_groups %}<p>Previously selected groups:</p><ul>{% for group in source_consent_groups %}<li>{{ group }}</li>{% endfor %}</ul>{% endif %}
+  {% comment %}Missing credentials prevent a new grant, but never hide the existing guarded revocation action. Source readiness is not provider success or model permission.{% endcomment %}
+  {% if source_consent_record_active or not source_credential_required or source_credential_present %}
   <form method="post" action="{{ source_consent_action_url|default:'/cabinet/source/musicbrainz/consent' }}" data-source-consent>{% csrf_token %}
     <input type="hidden" name="profile_ref" value="{{ profile_ref }}"><input type="hidden" name="source_connection_ref" value="{{ source_connection_ref }}"><input type="hidden" name="expected_revision" value="{{ source_consent_revision }}">
     {% if source_consent_record_active %}
@@ -121,15 +148,18 @@
     <button type="submit">Revoke source permission</button>
     {% else %}
     <input type="hidden" name="action" value="{{ source_consent_action }}">
-    <fieldset><legend>Choose the artist signal groups for source lookup</legend>{% for choice in source_choices %}<label class="cabinet-check"><input type="checkbox" name="allow_{{ choice.code }}" value="yes" autocomplete="off"> {{ choice.label }}</label>{% endfor %}</fieldset>
-    <p>Only permitted artist signals can supply the search name. No notes or inference permission are included here. Permission lasts up to five minutes or the current owner session’s end, whichever comes first.</p>
+    <fieldset><legend>Choose the {% if source_category == 'book' %}book{% elif source_category == 'movie' %}film{% elif source_category == 'tv' %}TV series{% else %}artist{% endif %} signal groups for source lookup</legend>{% for choice in source_choices %}<label class="cabinet-check"><input type="checkbox" name="allow_{{ choice.code }}" value="yes" autocomplete="off"> {{ choice.label }}</label>{% endfor %}</fieldset>
+    <p>Only permitted {% if source_category == 'book' %}book{% elif source_category == 'movie' %}film{% elif source_category == 'tv' %}TV series{% else %}artist{% endif %} signals can supply the search {% if source_category == 'artist' or source_category == 'recording' or not source_category %}name{% else %}title{% endif %}. No notes or inference permission are included here. Permission lasts up to five minutes or the current owner session’s end, whichever comes first.</p>
     <label class="cabinet-check"><input type="checkbox" name="confirmed" value="yes" required autocomplete="off"> Allow only the selected groups for {{ source_label|default:"MusicBrainz recordings" }} catalogue lookup during this permission window.</label>
     <button type="submit">Grant source permission</button>
     {% endif %}
   </form>
+  {% else %}<p>Supply your existing token above before choosing new source permission. No search or model request has been sent.</p>{% endif %}
   {% endif %}
+  {% if source_page_url %}<p><a href="{{ source_page_url }}">Review current source state</a>. If an action is refused, review the current values or <a href="/setup">confirm your owner session</a>, then explicitly try that action again. Nothing is retried automatically.</p>{% endif %}
   <p><a href="/cabinet/source/musicbrainz?profile_ref={{ profile_ref|urlencode }}">Recording source and permission</a> · <a href="/cabinet/source/musicbrainz/artist?profile_ref={{ profile_ref|urlencode }}">Artist source and permission</a></p>
-  <p><a href="/cabinet/taste/artist?profile_ref={{ profile_ref|urlencode }}">Add an artist you know</a></p>
+  <p><a href="/cabinet/source/hardcover?profile_ref={{ profile_ref|urlencode }}">Hardcover books</a> · <a href="/cabinet/source/tmdb/movie?profile_ref={{ profile_ref|urlencode }}">TMDB films</a> · <a href="/cabinet/source/tmdb/tv?profile_ref={{ profile_ref|urlencode }}">TMDB TV series</a></p>
+  {% if source_category == 'artist' or source_category == 'recording' or not source_category %}<p><a href="/cabinet/taste/artist?profile_ref={{ profile_ref|urlencode }}">Add an artist you know</a></p>{% else %}<p><a href="/cabinet/taste?profile_ref={{ profile_ref|urlencode }}&amp;category={{ source_category|urlencode }}">Preferences and notes for this category</a></p>{% endif %}
   <p><a href="{{ cabinet_url }}">Return to your cabinet</a></p>
 </section>
 {% elif artist_input %}
@@ -256,7 +286,7 @@
   {% if round_url and not round_blocks_start %}<p class="cabinet-round-status" role="status"><a href="{{ round_url }}">Review this round’s recorded status</a>{% if round_pending %}. Pending, failed or uncertain work does not replace the publication shown below.{% endif %}</p>{% endif %}
   <details class="cabinet-options"><summary>Cabinet options and permissions</summary>
     <p><a href="/setup/cabinet">Choose a cabinet or connection</a></p>
-    {% if profile_ref %}<p><a href="/cabinet/source/musicbrainz?profile_ref={{ profile_ref|urlencode }}">Configure MusicBrainz recordings and review source permission</a></p><p><a href="/cabinet/source/musicbrainz/artist?profile_ref={{ profile_ref|urlencode }}">Configure MusicBrainz artists and review source permission</a></p><p><a href="/cabinet/taste/artist?profile_ref={{ profile_ref|urlencode }}">Add an artist you know</a></p>{% endif %}
+    {% if profile_ref %}<p><a href="/cabinet/source/musicbrainz?profile_ref={{ profile_ref|urlencode }}">Configure MusicBrainz recordings and review source permission</a></p><p><a href="/cabinet/source/musicbrainz/artist?profile_ref={{ profile_ref|urlencode }}">Configure MusicBrainz artists and review source permission</a></p><p><a href="/cabinet/source/hardcover?profile_ref={{ profile_ref|urlencode }}">Configure Hardcover books and review source permission</a></p><p><a href="/cabinet/source/tmdb/movie?profile_ref={{ profile_ref|urlencode }}">Configure TMDB films and review source permission</a></p><p><a href="/cabinet/source/tmdb/tv?profile_ref={{ profile_ref|urlencode }}">Configure TMDB TV series and review source permission</a></p><p><a href="/cabinet/taste/artist?profile_ref={{ profile_ref|urlencode }}">Add an artist you know</a></p>{% endif %}
     {% if inference_consent_url %}<p><a href="{{ inference_consent_url }}">Review inference permission</a>. Source collection permission remains separate.</p>{% endif %}
   </details>
   {% if selection_token %}
