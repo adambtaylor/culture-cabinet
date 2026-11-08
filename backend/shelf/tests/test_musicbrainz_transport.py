@@ -10,7 +10,7 @@ import subprocess
 
 from shelf import discovery_transport as transport
 from shelf.discovery_sources import SourceError
-from shelf.musicbrainz_source import MusicBrainzOperation
+from shelf.musicbrainz_source import MusicBrainzOperation, ARTIST_SOURCE
 from .test_musicbrainz_source import IDENTITY
 from .test_source_evidence import NOW
 
@@ -23,7 +23,7 @@ class MusicBrainzTransportTests(TestCase):
         self.reserve = patch.object(transport.MediaHostLimiter, 'reserve', return_value=self.slot)
         self.reserve_mock = self.reserve.start(); self.addCleanup(self.reserve.stop)
 
-    def send(self, *, raw=None, current=None, timeout=False, cleanup_failure=False):
+    def send(self, *, raw=None, current=None, timeout=False, cleanup_failure=False, operation=None):
         raw = raw if raw is not None else b'HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n\r\n{"recordings":[]}\n200'
         child = Mock(returncode=0); child.poll.return_value = None; child.stdout.fileno.return_value = 92
         if cleanup_failure:
@@ -36,7 +36,7 @@ class MusicBrainzTransportTests(TestCase):
              patch.object(transport.os, 'set_blocking'), \
              patch.object(transport.os, 'read', side_effect=[raw, b'']):
             try:
-                result = transport.musicbrainz_authorized(MusicBrainzOperation('Synthetic artist', IDENTITY),
+                result = transport.musicbrainz_authorized(operation or MusicBrainzOperation('Synthetic artist', IDENTITY),
                     revalidate=current or Mock(return_value=True), limiter=transport.MediaHostLimiter('musicbrainz'))
                 return result, spawn.call_args
             finally:
@@ -59,6 +59,19 @@ class MusicBrainzTransportTests(TestCase):
         self.assertNotIn('--data-binary', args)
         for flag, value in (('--proto', '=https'), ('--retry', '0'), ('--max-redirs', '0')):
             self.assertEqual(args[args.index(flag) + 1], value)
+
+    def test_artist_uses_same_bounded_wire_with_distinct_fixed_path_and_query(self):
+        result, call = self.send(operation=MusicBrainzOperation('Synthetic artist', IDENTITY, ARTIST_SOURCE),
+            raw=b'HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n\r\n{"artists":[]}\n200')
+        self.assertEqual(result[:2], (200, b'{"artists":[]}'))
+        args = call.args[0]
+        self.assertEqual(args[args.index('--url') + 1],
+            'https://musicbrainz.org/ws/2/artist/?query=artist%3A%22Synthetic+artist%22&fmt=json&limit=9&offset=0')
+        self.assertEqual(args[args.index('--max-time') + 1], '5')
+        self.assertEqual(args[args.index('--max-redirs') + 1], '0')
+        self.assertEqual(args[args.index('--retry') + 1], '0')
+        self.assertEqual(call.kwargs['stdin'], subprocess.DEVNULL)
+        self.assertNotIn('Authorization', repr(call))
 
     def test_wrong_operation_limiter_bounds_or_stale_precheck_never_spawn(self):
         op = MusicBrainzOperation('Synthetic artist', IDENTITY)
@@ -99,6 +112,11 @@ class MusicBrainzTransportTests(TestCase):
 
 class MusicBrainzLimiterTests(TestCase):
     def test_distinct_instances_share_private_six_second_reservation(self):
+        from .test_musicbrainz_source import FixtureBackend, Issuer
+        from .test_source_collection import Clock
+        recording = FixtureBackend(Issuer(), transport.MediaHostLimiter('musicbrainz'), clock=Clock())
+        artist = FixtureBackend(Issuer(ARTIST_SOURCE), transport.MediaHostLimiter('musicbrainz'),
+            clock=Clock(), source=ARTIST_SOURCE)
         real_open = os.open
         expected = f'/tmp/culture-cabinet-media-{os.geteuid()}-musicbrainz.rate'
         with TemporaryDirectory() as directory:
@@ -108,17 +126,21 @@ class MusicBrainzLimiterTests(TestCase):
                 return real_open(target, flags, mode)
             with patch.object(transport.os, 'open', side_effect=redirected), \
                  patch.object(transport.time, 'monotonic', return_value=100) as clock:
-                first = transport.MediaHostLimiter('musicbrainz').reserve()
+                first = recording.limiter.reserve()
                 try:
                     with self.assertRaises(transport.MoshtixRateLimited):
-                        transport.MediaHostLimiter('musicbrainz').reserve()
+                        artist.limiter.reserve()
                 finally:
                     first.finish(200, (), now=NOW)
                 self.assertIsNone(first.fd)
                 self.assertEqual(json.loads(Path(target).read_text())['not_before'], 106)
                 with self.assertRaises(transport.MoshtixRateLimited):
-                    transport.MediaHostLimiter('musicbrainz').reserve()
+                    artist.limiter.reserve()
                 clock.return_value = 106
-                second = transport.MediaHostLimiter('musicbrainz').reserve()
-                second.finish(200, (), now=NOW)
+                second = artist.limiter.reserve()
+                second.finish(429, (('retry-after', '90'),), now=NOW)
                 self.assertIsNone(second.fd)
+                # Artist throttling holds recording calls too; no new per-kind
+                # file or quota can double the provider's host-owner rate.
+                with self.assertRaises(transport.MoshtixRateLimited):
+                    recording.limiter.reserve()
