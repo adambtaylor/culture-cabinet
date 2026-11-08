@@ -73,13 +73,15 @@ class EpisodeResolutionTests(TestCase):
         self.assertTrue(all(c.closed for c in self.connections))
 
     def test_existing_series_binding_avoids_title_export_but_rechecks_library_scope(self):
-        self.target = replace(self.target, series_id=self.series['Id'], show_name=None)
+        self.target = replace(self.target, series_id=self.series['Id'], show_name=None, show_id=None)
         result = self.run_resolve()
         self.assertEqual(result.status, 'resolved')
         query = parse_qs(urlsplit(self.connections[0].calls[1][1]).query)
         self.assertEqual(query['ids'], [self.series['Id']])
         self.assertEqual(query['parentId'], [self.binding.library_id])
         self.assertNotIn('nameStartsWith', query)
+        wrong = {**self.series, 'ProviderIds': {'Tmdb': '123'}}
+        self.assertEqual(self.run_resolve([{'Items': [wrong]}]).status, 'unavailable')
 
     def test_missing_and_ambiguous_series_or_episode_never_resolve(self):
         cases = [([{'Items': []}], 'not_indexed'),

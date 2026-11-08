@@ -379,7 +379,7 @@ class EpisodeResolutionTarget:
     binding_digest: str
     content_identity_digest: str
     destination_binding_digest: str
-    show_id: int
+    show_id: int | None
     scope: str
     show_name: str | None
     series_id: str | None
@@ -390,8 +390,14 @@ class EpisodeResolutionTarget:
         selected = parse_scope(self.scope)
         _require(selected is not None)
         season, episode = selected
-        _require(tv_content_identity_digest(tmdb_show_id=self.show_id, season=season,
-                 episode=episode) == self.content_identity_digest)
+        if self.show_id is not None:
+            _require(tv_content_identity_digest(tmdb_show_id=self.show_id, season=season,
+                     episode=episode) == self.content_identity_digest)
+        else:
+            # A previously verified, currently revalidated series binding lets
+            # an acknowledged command finish without retaining expired catalogue
+            # IDs/titles. Hash only the one actually observed library identity.
+            _require(self.series_id is not None)
         for value in (self.binding_digest, self.content_identity_digest, self.destination_binding_digest):
             _require(type(value) is str and re.fullmatch('[0-9a-f]{64}', value) is not None)
         _text(self.request_id, 64)
@@ -524,7 +530,7 @@ def resolve_episode(binding, target, *, credential_scope=None, revalidate=None, 
         _path(series['Path'], binding.tv_root)
         provider_id = series['ProviderIds']['Tmdb']
         _require(type(provider_id) is str and str(int(provider_id)) == provider_id
-                 and int(provider_id) == target.show_id)
+                 and (target.show_id is None or int(provider_id) == target.show_id))
         from shelf.obtain_tv_flow import tv_content_identity_digest
         season, episode_number = parse_scope(target.scope)
         identity_digest = tv_content_identity_digest(tmdb_show_id=int(provider_id),
