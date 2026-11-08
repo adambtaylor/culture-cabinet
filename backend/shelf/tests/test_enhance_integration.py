@@ -22,6 +22,9 @@ from .test_grant_authority import RecoveryCase
 
 
 class OrdinaryEnhanceCompositionTests(RecoveryCase):
+    # The complete sequence needs a longer synthetic socket lease, not new authority.
+    bound_socket_lifetime = 25
+
     def test_existing_history_exact_source_previews_detail_and_one_personal_publication(self):
         from contextlib import contextmanager
         from dataclasses import replace
