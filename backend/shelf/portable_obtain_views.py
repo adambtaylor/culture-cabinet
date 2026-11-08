@@ -571,7 +571,7 @@ def _flat_status(access, job, context):
             'verifying_library': ('working', 'Checking Jellyfin readback', 'check'),
             'awaiting_library_index': ('working', 'Waiting for Jellyfin to index the episode', 'check'),
             'verification_unavailable': ('working', 'Library verification unavailable', 'check'),
-            'verification_mismatch': ('error', 'Library evidence does not match this request', 'check'),
+            'verification_mismatch': ('error', 'Library evidence does not match this request; review needed', 'none'),
             'verified': ('working', 'Library verification needed', 'check'),
         }
         if type(progress) is dict and progress.get('schema') == 'obtain-tv-progress/v1' and progress.get('stage') in stages:
@@ -687,7 +687,7 @@ def advance(request, job_id):
         if transfer.state != 'queued' or not transfer.provider_job or transfer.local_cancelled_at is not None:
             return HttpResponseRedirect(target)
         if obtain_runtime.supervision_enabled():
-            obtain_runtime.start_selected_worker(access, job_id=job_id)
+            obtain_runtime.start_selected_worker(access, job_id=job_id, explicit=True)
         elif not obtain_runtime.worker_running(access.authority, job_id):
             context = native_job_context(access, job_id=job_id, operation='observe')
             services = obtain_runtime.selected_services(context)

@@ -578,7 +578,7 @@ def worker_running(authority, job_id):
     return worker is not None and not worker.done.is_set() and not worker.stop_event.is_set()
 
 
-def start_selected_worker(access, *, job_id):
+def start_selected_worker(access, *, job_id, explicit=False):
     from . import grant_authority as ga
     from .obtain_native_context import native_job_context
     if not supervision_enabled():
@@ -597,8 +597,12 @@ def start_selected_worker(access, *, job_id):
         if ('delivery_binding' not in binding or not binding.get('complete_root')
                 or 'completion_intent' not in binding):
             return False
-        if transfer.native_progress.get('stage') in {
-                'verified', 'copy_unknown', 'copy_conflict', 'copy_pending', 'verification_mismatch'}:
+        stage = transfer.native_progress.get('stage')
+        # Automatic scheduling stops here. A later CSRF/revision-checked owner
+        # Continue can reverify or inspect the SAME intent after clean shutdown;
+        # conflicts and mismatches still require a separate review decision.
+        if stage in {'copy_conflict', 'verification_mismatch'} or (not explicit and stage in {
+                'verified', 'copy_unknown', 'copy_pending'}):
             return False
         services = selected_services(context)
         return supervisor.register(access, context, services)

@@ -435,7 +435,7 @@ class OwnerTVEntryTests(RecoveryCase):
             ServiceGeneration('destination_file', 'd' * 64, 'synthetic-config1', 'synthetic-key1')),
             'Fiction Series 2024', False)
         self.delivery_provider = FixtureTVProvider(self.delivery, self.actor.pk, self.state.profile_id,
-            str(self.state.installation_id), self.expires,
+            str(self.state.installation_id), getattr(self, 'library_until', self.expires),
             SimpleNamespace(now=self.authority.now, monotonic=lambda: self.clock.tick))
         options = self.settings(PORTABLE_OBTAIN_TV_SERVICES=self.delivery_provider)
         options.enable(); self.addCleanup(options.disable)
@@ -813,6 +813,15 @@ class OwnerTVEntryTests(RecoveryCase):
         self.assertTrue(all(handle.fd == -1 and (handle._lock is None or handle._lock.fd == -1) for handle in handles))
 
     def test_native_continuation_verifies_real_private_destination_and_library_then_reload(self):
+        self._native_continuation_case()
+
+    def test_enabled_continue_reverifies_lost_expired_proof_and_inspects_uncertain_copy_without_resend(self):
+        # Independent library validity outlives the five-minute native proof,
+        # fixed before the first service binding is captured, never renewed.
+        self.library_until = self.expires + timedelta(seconds=300)
+        self._native_continuation_case(enabled_followups=True)
+
+    def _native_continuation_case(self, *, enabled_followups=False):
         import json, hashlib, html, socket
         from contextlib import contextmanager
         from shelf import obtain_runtime, completion_registry as registry, completion_files
@@ -844,18 +853,27 @@ class OwnerTVEntryTests(RecoveryCase):
                         data = completion_files.postprocess_evidence(selected, outer.download_files, 4096)
                         return completion_files.completion_receipt(data, (outer.downloaded_at - timedelta(seconds=2)).isoformat())
                     observer = replace(value.observer, read_registration=entry, read_history=history, read_hook=hook)
+                    def inspect(plan):
+                        outer.inspections = getattr(outer, 'inspections', 0) + 1
+                        uncertain = getattr(outer, 'inspection_outcome', None)
+                        if uncertain is not None:
+                            return uncertain
+                        return imp.receive_selected(plan, None, operation='inspect',
+                            allowed_roots=(str(root),), clock=outer.authority.now)
+                    def receive(plan, source):
+                        outer.byte_copies = getattr(outer, 'byte_copies', 0) + int(source is not None)
+                        return imp.receive_selected(plan, source, operation='receive',
+                            allowed_roots=(str(root),), clock=outer.authority.now)
                     destination = replace(value.destination,
-                        inspect=lambda plan: imp.receive_selected(plan, None, operation='inspect',
-                            allowed_roots=(str(root),), clock=outer.authority.now),
-                        receive=lambda plan, source: imp.receive_selected(plan, source, operation='receive',
-                            allowed_roots=(str(root),), clock=outer.authority.now))
+                        inspect=inspect, receive=receive)
                     @contextmanager
                     def credential(binding):
                         yield jf.ScopedCredential(jf._digest(binding.material()), 'SYNTHETIC-LIBRARY-NOT-A-KEY')
                     return replace(value, observer=observer, destination=destination,
                                    library_credential_scope=credential)
             provider = FileProvider(self.delivery, self.actor.pk, self.state.profile_id, str(self.state.installation_id),
-                self.expires, SimpleNamespace(now=self.authority.now, monotonic=lambda: self.clock.tick))
+                getattr(self, 'library_until', self.expires),
+                SimpleNamespace(now=self.authority.now, monotonic=lambda: self.clock.tick))
             normal_provider = obtain_runtime.CurrentTVServiceProvider(self.authority,
                 delivery_for=provider.delivery_binding, services_for=provider.current)
             with self.settings(PORTABLE_OBTAIN_TV_SERVICES=normal_provider):
@@ -1021,3 +1039,75 @@ class OwnerTVEntryTests(RecoveryCase):
                 status = self.http.get(f'/cabinet/obtain/jobs/{job.pk}/status/', **self.headers)
                 self.assertEqual(status.json()['state'], 'working')
                 self.assertIsNone(status.json()['verification_until'])
+                if enabled_followups:
+                    with self.controlled_recovery_state('clear'), self.settings(PORTABLE_OBTAIN_SUPERVISE=True), \
+                            obtain_runtime.selected_supervisor(self.authority) as supervisor:
+                        url = f'/cabinet/obtain/jobs/{job.pk}/advance/'
+                        def idle_without_revival(*, authorized=True):
+                            transfer.refresh_from_db()
+                            revision = transfer.revision
+                            with patch.object(normal_provider, 'current', side_effect=AssertionError('GET/idle revived stopped work')):
+                                self.assertEqual(self.http.get(f'/cabinet/obtain/jobs/{job.pk}/status/', **self.headers).status_code, 200)
+                                supervisor.tick_once()
+                                if authorized:
+                                    with self.scope() as access:
+                                        self.assertFalse(obtain_runtime.start_selected_worker(access, job_id=job.pk))
+                            transfer.refresh_from_db()
+                            self.assertEqual(transfer.revision, revision)
+                        def continue_once(*, resolved=True):
+                            transfer.refresh_from_db()
+                            revision, inspections = transfer.revision, self.inspections
+                            with patch('shelf.completion_dispatch.advance_selected',
+                                       side_effect=AssertionError('POST ran work before response unwound')):
+                                self.assertEqual(self.post(url, {'expected_revision': str(revision)}, csrf=False).status_code, 403)
+                                self.assertEqual(self.post(url, {'expected_revision': str(revision - 1)}).status_code, 409)
+                                response = self.post(url, {'expected_revision': str(revision)})
+                            self.assertEqual(response.status_code, 302, response.content)
+                            transfer.refresh_from_db()
+                            self.assertEqual(transfer.revision, revision)
+                            self.assertEqual(self.inspections, inspections)
+                            worker = self.authority._obtain_workers[job.pk]
+                            deadlines = worker.deadline, worker.monotonic_end
+                            self.assertEqual(self.post(url, {'expected_revision': str(revision)}).status_code, 302)
+                            self.assertIs(self.authority._obtain_workers[job.pk], worker)
+                            self.assertEqual((worker.deadline, worker.monotonic_end), deadlines)
+                            replies = [Connection(Response(json.dumps(value).encode())) for value in
+                                ({'Items': [series]}, {'Items': [episode]}, {'Items': [episode]})] if resolved else []
+                            with patch.object(jf, '_Connection', side_effect=replies), \
+                                    patch.object(imp, '_selected_source', side_effect=AssertionError('Duplicate byte copy')), \
+                                    patch('shelf.portable_obtain_origin.resolve_obtain_origin_again', side_effect=AssertionError('Expired source refresh')):
+                                supervisor.tick_once()
+                            self.assertTrue(worker.done.is_set())
+                            self.assertFalse(worker.monitor.is_alive())
+                            transfer.refresh_from_db()
+                            self.assertGreater(transfer.revision, revision)
+                            self.assertGreater(self.inspections, inspections)
+                            self.assertEqual(transfer.native_progress['copy_intent'], copy_intent)
+                            self.assertEqual(transfer.native_progress['series_evidence'], original_series)
+                            self.assertEqual(self.byte_copies, 1)
+                            self.assertEqual(len(backend.calls), 1)
+                            self.assertEqual(output.read_bytes(), video.read_bytes())
+                            return transfer.native_progress['stage']
+                        # Lost issuer proof leaves persisted stage=verified.
+                        idle_without_revival()
+                        self.assertEqual(continue_once(), 'verified')
+                        idle_without_revival()
+                        # Expire the actual five-minute proof and native recent
+                        # authentication, retaining the SAME original library.
+                        self.clock.advance(301)
+                        idle_without_revival(authorized=False)
+                        transfer.refresh_from_db()
+                        with patch.object(normal_provider, 'current', side_effect=AssertionError('Expired authority opened ports')):
+                            denied = self.post(url, {'expected_revision': str(transfer.revision)})
+                        self.assertIn(denied.status_code, (401, 403))
+                        self.authority.reauthenticate(self.ref, PASSWORD)
+                        self.assertEqual(continue_once(), 'verified')
+                        for state in ('unknown', 'pending'):
+                            # A transient real import-port outcome stops the
+                            # automatic record. Continue later INSPECTS the same
+                            # already copied intent; it never sends bytes again.
+                            self.inspection_outcome = imp.ImportOutcome(state, 'synthetic_reconciliation_needed')
+                            self.assertEqual(continue_once(resolved=False), 'copy_' + state)
+                            idle_without_revival()
+                            self.inspection_outcome = None
+                            self.assertEqual(continue_once(), 'verified')
