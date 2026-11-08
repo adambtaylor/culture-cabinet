@@ -70,10 +70,17 @@ def _write_window():
     raw = connection.connection
     connection._disclosure_write_open = True
     raw.create_function('cabinet_disclosure_write', 0, lambda: 1)
+    current = _CURRENT_WRITER.get()
+    # Obtain's new rows bind the actual writer profile as well as the existing
+    # open SQL window. Another owned profile cannot borrow this window merely
+    # because both rows live on the same SQLite connection.
+    raw.create_function('cabinet_obtain_write', 2, lambda actor, profile: int(
+        current is not None and current[3:5] == (actor, profile) and current[5].raw is raw))
     try:
         yield
     finally:
         raw.create_function('cabinet_disclosure_write', 0, lambda: 0)
+        raw.create_function('cabinet_obtain_write', 2, lambda actor, profile: 0)
         connection._disclosure_write_open = False
 
 
@@ -388,7 +395,7 @@ def _synthesis_guards():
     prior = import_module('shelf.migrations.0021_portable_disclosure_authority').TRIGGERS
     broker = import_module('shelf.migrations.0022_portable_enhance_state').TRIGGERS
     normalize = lambda sql: sql.strip().removesuffix(';').rstrip()
-    current = import_module('shelf.migrations.0024_portable_saved_lineage')
+    current = import_module('shelf.migrations.0025_obtain_native_origin')
     try:
         definitions = current.effective_inventory(connection.connection)
     except RuntimeError:

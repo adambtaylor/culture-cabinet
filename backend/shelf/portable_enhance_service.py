@@ -179,6 +179,7 @@ class EnhanceService:
         self.selector, self.reconciler = selector, reconciler
         self._isolated, self._pipeline, self._memory = None, None, {}
         self._normal, self._contexts, self._policy_provider, self._clock = False, {}, None, None
+        self._owner_sources = {}
         authority._enhance_service = self
         authority.boundary._closing.append(self.close)
 
@@ -194,6 +195,10 @@ class EnhanceService:
         return value
 
     def _revoke_context(self, ref):
+        for key, (_, issuer, _) in list(self._owner_sources.items()):
+            if key[0] == ref:
+                issuer.close()
+                del self._owner_sources[key]
         for key, (_, provider, _) in list(self._contexts.items()):
             if key[0] == ref:
                 provider.invalidate_content()
@@ -262,6 +267,39 @@ class EnhanceService:
             self._contexts[key] = (signature, provider, catalogue)
             return provider, catalogue
 
+    def owner_tv_source(self, session_ref, profile_ref):
+        """Use the ordinary source stack without inference/profile capture.
+
+        The separately admitted local export policy belongs only to this owner
+        query path. It must never widen the existing Enhance source policy.
+        """
+        from django.conf import settings
+        from .source_authority import SourceAuthority, SourcePolicyProvider
+        from .source_adapters import MediaBackend
+        from .source_collection import CollectionClock
+        from .discovery_transport import MediaHostLimiter
+        with ga.recovery_guard(self.authority, session_ref, profile_ref=profile_ref), self.authority._lock:
+            state, _ = ga._bound(self.authority, session_ref, profile_ref, sensitive=True)
+            provider = getattr(settings, 'PORTABLE_OWNER_TV_POLICY_PROVIDER', None)
+            require(isinstance(provider, SourcePolicyProvider), 'CAPABILITY_UNAVAILABLE')
+            rows = list(PortableConnection.objects.filter(installation_id=state.installation_id,
+                adapter='tmdb_tv', removed=False)[:2])
+            require(len(rows) == 1, 'CAPABILITY_UNAVAILABLE')
+            row = rows[0]; key = (session_ref, str(profile_ref))
+            signature = (str(row.pk), row.config_revision, row.credential_generation, id(provider))
+            prior = self._owner_sources.get(key)
+            if prior and prior[0] == signature:
+                return prior[1:]
+            require(prior is not None or len(self._owner_sources) < 32, 'CAPABILITY_UNAVAILABLE')
+            if prior:
+                prior[1].close()
+            issuer = SourceAuthority(self.authority, session_ref, profile_ref=profile_ref,
+                connection_ref=str(row.pk), policy_provider=provider)
+            backend = MediaBackend(issuer, getattr(self.authority, '_source_vault', None),
+                MediaHostLimiter('tmdb'), clock=self._clock or CollectionClock())
+            self._owner_sources[key] = (signature, issuer, backend)
+            return issuer, backend
+
     @staticmethod
     def _collection_lock(memory):
         # Producer collection holds its state lock before entering issuer
@@ -323,6 +361,9 @@ class EnhanceService:
         for _, provider, _ in self._contexts.values():
             provider.invalidate_content()
         self._contexts.clear()
+        for _, issuer, _ in self._owner_sources.values():
+            issuer.close()
+        self._owner_sources.clear()
 
     def _store(self, session_ref, profile_ref, connection_ref):
         provider = self._normal_context(session_ref, profile_ref)[0] if self._normal else self.state_provider

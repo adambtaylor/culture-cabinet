@@ -196,12 +196,15 @@ class SourceAuthority(SourceAuthorityIssuer):
         self.provider = policy_provider
         self._previews, self._approved, self._permits = {}, {}, {}
         self._derived = {}
+        from .portable_owner_tv import OwnerTVState
+        self.owner_tv = OwnerTVState(self)
         authority.boundary._closing.append(self.close)
         authority._revokers.append(lambda ref: self.close() if ref == self.session_ref else None)
 
     def close(self):
         self._previews.clear(); self._approved.clear(); self._permits.clear()
         self._derived.clear()
+        self.owner_tv.close()
 
     def _purge_derived(self, now):
         """Expired/invalidated proposals release their IDs and approval handles.
@@ -265,9 +268,12 @@ class SourceAuthority(SourceAuthorityIssuer):
         from .profile_snapshot import capture
         from .inference_body import serialize_catalogue
         from .category_registry import registry_view
-        encoded = serialize_catalogue(capture(view), view.grants, view.context,
+        owner = read_json(plan.body).get('schema') == 'catalogue-owner-query/v1'
+        intent = self.owner_tv.intents.get(plan.plan_ref) if owner else None
+        require(not owner or intent is not None, 'AUTHORITY_DENIED')
+        encoded = serialize_catalogue(None if owner else capture(view), view.grants, view.context,
             registry_view(plan.categories), now=utc(self.authority.now()),
-            plan_ref=plan.plan_ref, bindings=plan.bindings)
+            plan_ref=plan.plan_ref, bindings=plan.bindings, owner_intent=intent)
         require(encoded.body == plan.body and encoded.body_digest == plan.body_digest, 'PREVIEW_STALE')
 
     def _parents(self, view):
@@ -371,7 +377,13 @@ class SourceAuthority(SourceAuthorityIssuer):
             saved = self._approved[(plan.plan_ref, request.request_digest)]
             rights = saved.rights
             generation = saved.view.connection_binding['credential_generation'] if request.source != 'moshtix' else None
-            parents = self._parents(saved.view) if request.terms else ()
+            if read_json(plan.body).get('schema') == 'catalogue-owner-query/v1':
+                intent = self.owner_tv.intents.get(plan.plan_ref)
+                require(intent is not None, 'AUTHORITY_DENIED')
+                self.owner_tv.validate(intent, now=now)
+                parents = (intent.parent_ref,)
+            else:
+                parents = self._parents(saved.view) if request.terms else ()
             permit = SourcePermit(request.source, operation.material['origin'], 'catalogue_lookup', plan.plan_ref, plan.bindings,
                 request.request_digest, saved.view.context['config_revision'], rights.revision,
                 rights.policy.ref, rights.policy.revision, saved.expires_at, parents, generation)

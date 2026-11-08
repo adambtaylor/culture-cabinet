@@ -294,6 +294,10 @@ def run(root, *, port=0, approved_policies=None, approved_policies_factory=None)
         # Retain the real disk/journal witness through every request. Existing
         # roots cannot recreate first-start authority after witness loss.
         lifetime.enter_context(native_first_start(boundary))
+        from shelf.obtain_runtime import selected_supervisor
+        # Close selected children/monitors before the original recovery witness.
+        # Effects stay on this serving thread, outside every request's scopes.
+        supervisor = lifetime.enter_context(selected_supervisor(authority))
         settings.PORTABLE_AUTHORITY = authority
         settings.PORTABLE_CONNECTIONS = ConnectionValidation(authority, MemoryCredentials(authority))
         from shelf.portable_disclosure import DisclosureServices
@@ -318,6 +322,10 @@ def run(root, *, port=0, approved_policies=None, approved_policies_factory=None)
         # flag also prevents another request if its handler returns normally.
         while not stopping:
             server.handle_request()
+            if not stopping:
+                # A bounded synchronous pass may delay the next request. Return
+                # to serving between passes, without a polling/draining loop.
+                supervisor.tick_once()
         return 0
     except PortableStop:
         return 0

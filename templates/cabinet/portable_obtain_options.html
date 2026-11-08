@@ -1,0 +1,56 @@
+{% extends enhancement_base %}
+{% block content %}
+<header><p class="eyebrow">Obtain · {{ profile_label }}</p><h1>Choose an episode</h1>
+<p><a href="{{ cabinet_url }}">Return to your cabinet</a></p></header>
+{% if error_message %}<section class="obtain-notice" role="alert"><h2>These options need a fresh review</h2><p>{{ error_message }}</p><p>Open the current TV pick in your cabinet. Nothing has been submitted.</p></section>{% endif %}
+{% if obtain_options %}
+<section class="paper-panel obtain-options" aria-labelledby="obtain-options-title">
+  <h2 id="obtain-options-title">{{ obtain_options.title }}</h2>
+  {% if obtain_options.provider_label %}<p>Source: {{ obtain_options.provider_label }}</p>{% endif %}
+  <p>Review the available listings and your exact episode selection. Saving is optional.</p>
+  {% if obtain_options.search_enabled and obtain_options_form and selection_token and obtain_options.query and obtain_options.destination and obtain_options_form.search_review_ref.value %}
+  {% if not obtain_options_form.owner_selection_ref.value and obtain_options.review_url %}
+  {% comment %}Episode edits only refresh this same review through the producer's GET caller. Keep PA1/CSRF tokens out of the URL. Selector inputs here have no IDs so their copies in the separate search POST cannot duplicate labels.{% endcomment %}
+  <form method="get" action="{{ obtain_options.review_url }}" data-obtain-search-review>
+    <input type="hidden" name="{{ obtain_options_form.publication_revision.html_name }}" value="{{ obtain_options_form.publication_revision.value|default_if_none:'' }}">
+    <input type="hidden" name="{{ obtain_options_form.candidate_key.html_name }}" value="{{ obtain_options_form.candidate_key.value|default_if_none:'' }}">
+    {% if profile_ref %}<input type="hidden" name="profile_ref" value="{{ profile_ref }}">{% endif %}
+    <fieldset><legend>Review another episode</legend>
+      <p>Leave both fields blank for S01E01, or choose one season and episode. Review the updated query and destination below before searching.</p>
+      <p>{{ obtain_options_form.season.errors }}{{ obtain_options_form.season.label_tag }} {{ obtain_options_form.season }}</p>
+      <p>{{ obtain_options_form.episode.errors }}{{ obtain_options_form.episode.label_tag }} {{ obtain_options_form.episode }}</p>
+    </fieldset>
+    <button type="submit">Review this episode’s search</button>
+  </form>
+  {% endif %}
+  {% comment %}Display the issuer's exact query and recipient, never reconstruct either from title or form inputs. The opaque review binds these facts and their original expiry; hidden values alone are not a user review.{% endcomment %}
+  <dl><dt>Hydra destination</dt><dd>{{ obtain_options.destination }}</dd><dt>Exact search query</dt><dd>{{ obtain_options.query }}</dd></dl>
+  <form method="post" action="{{ obtain_options.search_url }}" data-obtain-search>{% csrf_token %}
+    <input type="hidden" name="profile_ref" value="{{ profile_ref }}"><input type="hidden" name="selection_token" value="{{ selection_token }}">
+    {{ obtain_options_form.non_field_errors }}
+    {% if obtain_options_form.owner_selection_ref.value %}
+    {% comment %}The owner-selected episode is immutable. This variant posts the issuer-owned selector, search-review fields and common PA1/CSRF fields; even empty publication or episode fields would mix the strict selector grammars.{% endcomment %}
+    {{ obtain_options_form.owner_selection_ref.as_hidden }}
+    <p>Selected episode: {{ obtain_options.scope|cut:'episode_'|upper }}. To choose a different episode, start a new TV lookup.</p>
+    {% else %}
+    {{ obtain_options_form.publication_revision.as_hidden }}{{ obtain_options_form.candidate_key.as_hidden }}
+    {% comment %}The effectful POST freezes the reviewed episode. Editable fields belong only to the separate GET review; posting edits here would silently change the confirmed query. Manual hidden widgets avoid duplicate IDs with those visible controls.{% endcomment %}
+    {% if obtain_options_form.season.value != None and obtain_options_form.season.value != '' and obtain_options_form.episode.value != None and obtain_options_form.episode.value != '' %}
+    <input type="hidden" name="{{ obtain_options_form.season.html_name }}" value="{{ obtain_options_form.season.value }}">
+    <input type="hidden" name="{{ obtain_options_form.episode.html_name }}" value="{{ obtain_options_form.episode.value }}">
+    {% endif %}
+    <p>Reviewed episode: {{ obtain_options.scope|cut:'episode_'|cut:'series_'|upper }}.</p>
+    {% endif %}
+    {{ obtain_options_form.search_review_ref.errors }}{{ obtain_options_form.search_review_ref.as_hidden }}
+    <p>{{ obtain_options_form.search_confirmed.errors }}{{ obtain_options_form.search_confirmed }} {{ obtain_options_form.search_confirmed.label_tag }}</p>
+    <button type="submit">Search listings for this episode</button>
+  </form>
+  <p>Search creates a listing preview. You will review the exact release before any download submission.</p>
+  {% else %}
+  <p role="status">{% if obtain_options.unavailable_reason %}{{ obtain_options.unavailable_reason }}{% else %}Current access is needed before searching. Open your selected cabinet and review this pick again.{% endif %}</p>
+  {% endif %}
+  {% if obtain_options.expires_at %}<p class="quiet-note">This review is valid until {{ obtain_options.expires_at }}. Changes to the episode, query, destination or current permission require a fresh review. Nothing is searched automatically.</p>{% endif %}
+  <p><a href="{{ obtain_options.cancel_url|default:cabinet_url }}">Cancel options and return to your cabinet</a></p>
+</section>
+{% else %}<p role="status">Current options are unavailable. Open a current TV pick in your cabinet to review it.</p>{% endif %}
+{% endblock %}

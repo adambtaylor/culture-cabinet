@@ -1,5 +1,7 @@
 """Explicit search and durable local selection. No retrieval or submission port."""
 from datetime import timedelta
+from dataclasses import dataclass
+import hashlib
 import uuid
 
 from django import forms
@@ -9,7 +11,7 @@ from django.http import Http404
 from django.utils import timezone
 
 from shelf import credential_store as store, saved
-from shelf.portable_saved_authority import effect_for
+from shelf.portable_saved_authority import effect_for, write_for, active_portable_access
 from shelf.acquisition_backend import Backend, PrivateSearch
 from shelf.acquisition_contract import Blocked, ContractError
 from shelf.models import AcquisitionJob, ObtainPreview, ObtainResult, ObtainSelection
@@ -66,6 +68,128 @@ def search_backend(*, actor, profile_id, _open_store=None):
     return Backend(hydra_grant=metadata, _open_store=opener)
 
 
+@dataclass(frozen=True, repr=False)
+class SearchRecipient:
+    metadata: store.EntryMetadata
+    credential_generation: str
+
+
+def _record_recipient(record, actor, profile_id):
+    metadata = record.metadata
+    store.validate_metadata(metadata, now=store.utc_now(), provider='hydra')
+    if (metadata.binding.actor_id, metadata.binding.profile_id) != (str(actor.pk), str(profile_id)):
+        raise store.Refused()
+    return SearchRecipient(metadata, record.generation)
+
+
+def read_search_recipient(*, actor, profile_id):
+    """Read the real credential-record generation without exporting its secret."""
+    saved.authority(actor, profile_id)
+    handle = record = None
+    try:
+        handle = store.open_store(provider='hydra')
+        if handle.context != store._provider_context('hydra'):
+            raise store.Refused()
+        store.lock_store(handle); record = store.read_record(handle)
+        return _record_recipient(record, actor, profile_id)
+    except (store.Refused, OSError):
+        raise SearchUnavailable('unconfigured') from None
+    finally:
+        if record is not None:
+            record.close()
+        if handle is not None:
+            handle.close()
+
+
+def _reviewed_backend(*, actor, profile_id, recipient, revalidate):
+    def validate(record, *, provider, actor_id, bound_profile_id):
+        try:
+            if provider != 'hydra' or (actor_id, bound_profile_id) != (actor.pk, profile_id):
+                raise store.Refused()
+            actual = _record_recipient(record, actor, profile_id)
+            if actual != recipient:
+                raise store.Refused()
+            # Backend alone owns the lock. Reuse its authenticated record here
+            # rather than reopening/locking the same store during source checks.
+            revalidate(actual)
+            return True
+        except Exception:
+            # The credential boundary owns cleanup for its fixed refusal type.
+            # Native/source errors must not skip closing the record and handle.
+            raise store.Refused() from None
+    return Backend(hydra_grant=recipient.metadata, _open_store=store.open_store,
+                   _credential_validator=validate)
+
+
+def origin_search_request(target):
+    from .acquisition_contract import PublicRequest
+    return PublicRequest('search', (('q', release_title(target) + ' ' + episode_code(target.scope)), ('cat', '5000')))
+
+
+def _search_reviews(authority):
+    if not hasattr(authority, '_obtain_search_reviews'):
+        authority._obtain_search_reviews = {}
+        authority.boundary._closing.append(lambda: authority._obtain_search_reviews.clear())
+        def revoke(ref):
+            authority._obtain_search_reviews = {key: value for key, value in authority._obtain_search_reviews.items()
+                                               if value['session_ref'] != ref}
+        authority._revokers.append(revoke)
+    now = authority.now()
+    authority._obtain_search_reviews = {key: value for key, value in authority._obtain_search_reviews.items()
+                                       if now < value['expires_at']}
+    return authority._obtain_search_reviews
+
+
+def issue_search_review(*, access, origin, scope):
+    from .portable_obtain_origin import resolve_obtain_origin_again
+    from .disclosure import canonical_bytes
+    access.require(actor_id=access.identity.actor_id, profile_id=access.identity.profile_id, action='export')
+    with access.effect_window(action='export'):
+        target = resolve_obtain_origin_again(access, origin, scope, access.authority.now())
+        target.require_title_export()
+        operation = origin_search_request(target)
+        recipient = read_search_recipient(actor=access.actor, profile_id=access.identity.profile_id)
+        reviews = _search_reviews(access.authority)
+        if len(reviews) >= 64:
+            raise saved.SavedError('Too many pending search reviews.', 409)
+        end = min(target.valid_until, recipient.metadata.expires_at, recipient.metadata.declared_provider_expires_at,
+                  access.authority.now() + timedelta(minutes=5))
+        if not access.authority.now() < end:
+            raise saved.SavedError('Search review expired.', 409)
+        ref = str(uuid.uuid4())
+        reviews[ref] = {'session_ref': access.session_ref, 'selection': dict(access._signed), 'origin': dict(origin),
+            'scope': scope, 'operation_digest': hashlib.sha256(canonical_bytes(operation.public_dict())).hexdigest(),
+            'recipient': recipient, 'expires_at': end, 'attempted': False}
+        return {'search_review_ref': ref, 'query': dict(operation.params)['q'],
+                'destination': operation.endpoint, 'expires_at': end.isoformat()}
+
+
+def _checked_search_review(access, origin, scope, review_ref, *, recipient=None):
+    from .portable_obtain_origin import resolve_obtain_origin_again
+    from .disclosure import canonical_bytes
+    reviews = _search_reviews(access.authority)
+    value = reviews.get(str(review_ref))
+    if (value is None or value['session_ref'] != access.session_ref or value['selection'] != access._signed
+            or value['origin'] != origin or value['scope'] != scope):
+        if value is not None and value['session_ref'] == access.session_ref:
+            reviews.pop(str(review_ref), None)
+        raise saved.SavedError('The reviewed search changed. Open fresh options.', 409)
+    try:
+        access.require(actor_id=access.identity.actor_id, profile_id=access.identity.profile_id, action='export')
+        target = resolve_obtain_origin_again(access, origin, scope, access.authority.now())
+        target.require_title_export()
+        operation = origin_search_request(target)
+        actual_recipient = recipient if recipient is not None else read_search_recipient(
+            actor=access.actor, profile_id=access.identity.profile_id)
+        if (hashlib.sha256(canonical_bytes(operation.public_dict())).hexdigest() != value['operation_digest']
+                or actual_recipient != value['recipient']):
+            raise saved.SavedError('The reviewed query or indexer connection changed. Review again.', 409)
+        return value, target, operation
+    except Exception:
+        reviews.pop(str(review_ref), None)
+        raise
+
+
 class SearchForm(forms.Form):
     season = forms.IntegerField(required=False, min_value=0, max_value=999)
     episode = forms.IntegerField(required=False, min_value=1, max_value=999)
@@ -101,6 +225,14 @@ def identity(item, scope=None):
 
 
 def current_item(actor, profile_id, preview):
+    if preview.publication_origin is not None:
+        from .portable_saved_authority import active_portable_access
+        from .portable_obtain_origin import resolve_obtain_origin_again
+        access = active_portable_access()
+        if access is None or (preview.actor_id, preview.profile_id) != (actor.pk, profile_id):
+            raise saved.SavedError('Current native source selection required.', 409)
+        access.require(actor_id=actor.pk, profile_id=profile_id, action='view')
+        return resolve_obtain_origin_again(access, preview.publication_origin, preview.scope, access.authority.now())
     if preview.provider == 'album_request':
         from shelf.album_acquisition import current_request
         return current_request(actor, profile_id, preview)
@@ -109,6 +241,81 @@ def current_item(actor, profile_id, preview):
     if expected != {k: getattr(preview, k) for k in expected}:
         raise saved.SavedError('Saved identity changed. Start a fresh preview.', 409)
     return item
+
+
+def release_title(target):
+    """One title/year value drives query construction and every release check."""
+    year = getattr(target, 'series_year', None)
+    return plain(target.title + (' ' + str(year) if year is not None else ''))
+
+
+def receipt_now(receipt):
+    if receipt.publication_origin is not None:
+        from .portable_saved_authority import active_portable_access
+        access = active_portable_access()
+        if access is None:
+            raise saved.SavedError('Current native source selection required.', 409)
+        return access.authority.now()
+    return timezone.now()
+
+
+def search_origin(*, access, origin, scope, search_review_ref, factory=None):
+    from .portable_obtain_origin import resolve_obtain_origin_again
+    actor, profile_id = access.actor, access.identity.profile_id
+    require_available()
+    def current(recipient=None):
+        return _checked_search_review(access, origin, scope, search_review_ref, recipient=recipient)
+    with access.effect_window(action='export'):
+        review, target, operation = current()
+        if review['attempted']:
+            raise saved.SavedError('This reviewed search has already been attempted. Open a fresh review.', 409)
+        title = release_title(target)
+        now = access.authority.now()
+        with write_for(actor, profile_id):
+            receipt = ObtainPreview.objects.create(actor=actor, profile_id=profile_id,
+                provider=None, medium=None, source_id=None, title=None, saved_identity=None,
+                scope=scope, publication_origin=origin, created_at=now,
+                expires_at=min(now + timedelta(minutes=15), target.valid_until, review['expires_at']))
+        private = None; rows = []; state = 'failed'
+        try:
+            review['attempted'] = True
+            def fence(recipient=None):
+                _, fresh, current_operation = current(recipient)
+                if release_title(fresh) != title or current_operation != operation:
+                    raise Blocked('Current source or indexer destination changed')
+            fence()
+            backend = (factory(actor=actor, profile_id=profile_id) if factory is not None else
+                _reviewed_backend(actor=actor, profile_id=profile_id, recipient=review['recipient'], revalidate=fence))
+            if backend._grants['hydra'] != review['recipient'].metadata:
+                raise Blocked('Reviewed indexer destination changed')
+            caps = backend.caps(actor_id=actor.pk, profile_id=profile_id)
+            fence()
+            from .acquisition_contract import search_request
+            if search_request(caps, dict(operation.params)['q'], 'episode') != operation:
+                raise Blocked('Reviewed search is not advertised')
+            private = backend.search(caps, dict(operation.params)['q'], 'episode',
+                                     actor_id=actor.pk, profile_id=profile_id)
+            fence()
+            if type(private) is not PrivateSearch:
+                raise ContractError('Invalid private search')
+            rows, omitted = parse(private._payload, title=title, scope=scope)
+            state = 'partial' if omitted else ('results' if rows else 'empty')
+        except SearchUnavailable as fault:
+            state = fault.state
+        except (Blocked, ContractError):
+            state = 'failed'
+        finally:
+            if type(private) is PrivateSearch:
+                private.close()
+        # The source target is still live here; only independently obtained
+        # Hydra release metadata enters SQL. Catalogue facts remain NULL.
+        current()
+        with write_for(actor, profile_id):
+            ObtainResult.objects.bulk_create([ObtainResult(preview=receipt, guid=row['guid'],
+                metadata=row, digest=digest(row)) for row in rows])
+            receipt.state = state
+            receipt.save(update_fields=['state'])
+        return receipt
 
 
 def search(*, actor, profile_id, item_id, factory=None, season=None, episode=None):
@@ -120,7 +327,7 @@ def search(*, actor, profile_id, item_id, factory=None, season=None, episode=Non
     except ContractError:
         raise saved.SavedError('Saved title cannot be searched safely.', 409) from None
     now = timezone.now()
-    with effect_for(actor, profile_id):
+    with write_for(actor, profile_id):
         preview = ObtainPreview.objects.create(actor=actor, profile_id=profile_id,
             **identity(item, scope), created_at=now, expires_at=now + timedelta(minutes=15))
     state, rows = 'failed', []
@@ -152,7 +359,7 @@ def search(*, actor, profile_id, item_id, factory=None, season=None, episode=Non
         if type(private) is PrivateSearch:
             private.close()
     # No private payload or upstream exception is persisted, even on failure.
-    with effect_for(actor, profile_id), transaction.atomic():
+    with write_for(actor, profile_id):
         current_item(actor, profile_id, preview)
         if preview.expires_at <= timezone.now():
             rows, state = [], 'expired'
@@ -204,17 +411,21 @@ class SelectionForm(saved.ConfirmationForm):
 
 def review(*, actor, profile_id, preview_id, result_id):
     preview, result = owned_result(actor, profile_id, preview_id, result_id)
-    current_item(actor, profile_id, preview)
-    if preview.expires_at <= timezone.now() or preview.state not in ('results', 'partial'):
+    target = current_item(actor, profile_id, preview)
+    if preview.expires_at <= receipt_now(preview) or preview.state not in ('results', 'partial'):
         raise saved.SavedError('Preview expired or unavailable. Search again.', 409)
     if (not result.metadata['selectable'] or digest(result.metadata) != result.digest
-            or listing_reason(result.metadata, preview.title, preview.scope)):
+            or listing_reason(result.metadata, release_title(target), preview.scope)):
         raise saved.SavedError('Listing cannot be selected.', 409)
     return preview, result
 
 
 def confirm(*, actor, profile_id, preview_id, result_id, data):
-    with effect_for(actor, profile_id), transaction.atomic():
+    receipt = owned_preview(actor, profile_id, preview_id)
+    if receipt.publication_origin is not None:
+        return _confirm_origin(actor=actor, profile_id=profile_id, preview_id=preview_id,
+                               result_id=result_id, data=data)
+    with write_for(actor, profile_id):
         preview, result = review(actor=actor, profile_id=profile_id,
                                  preview_id=preview_id, result_id=result_id)
         item = current_item(actor, profile_id, preview)
@@ -251,10 +462,53 @@ def confirm(*, actor, profile_id, preview_id, result_id, data):
         return job, created
 
 
+def _confirm_origin(*, actor, profile_id, preview_id, result_id, data):
+    from .portable_saved_authority import active_portable_access
+    access = active_portable_access()
+    if access is None:
+        raise saved.SavedError('Current native selection required.', 409)
+    with access.effect_window(action='mutate'):
+        receipt, result = review(actor=actor, profile_id=profile_id, preview_id=preview_id, result_id=result_id)
+        target = current_item(actor, profile_id, receipt)
+        form = SelectionForm(data)
+        try:
+            token = signing.loads(data.get('review_token', ''), salt=SALT, max_age=900)
+            expected = signing.loads(review_token(receipt, result), salt=SALT)
+        except signing.BadSignature:
+            raise saved.SavedError('Review expired or invalid.', 409) from None
+        if token != expected or not form.is_valid():
+            raise saved.SavedError('Review conflict or invalid confirmation.', 409)
+        clean = form.cleaned_data
+        if clean['scope'] != receipt.scope or clean['edition'] != result.metadata['title']:
+            raise saved.SavedError('Exact release and episode required.', 409)
+        active = saved.active_identity_key(actor.pk, profile_id, target.provider, target.medium,
+                                            str(target.source_id), receipt.scope)
+        values = {key: None for key in ('provider', 'medium', 'source_id', 'title')}
+        values.update(publication_origin=receipt.publication_origin, scope=receipt.scope)
+        values.update({key: clean[key] for key in ('edition', 'storage', 'authorized_content', 'storage_check')})
+        with write_for(actor, profile_id):
+            try:
+                with transaction.atomic():
+                    job, created = AcquisitionJob.objects.get_or_create(actor=actor, profile_id=profile_id,
+                        request_id=receipt.pk, defaults={**values, 'saved_item': None, 'active_key': active,
+                            'status': 'blocked_configuration', 'reason': DISABLED})
+                    if created:
+                        ObtainSelection.objects.create(job=job, result=result)
+            except IntegrityError:
+                job = AcquisitionJob.objects.filter(actor=actor, profile_id=profile_id, active_key=active).first()
+                created = False
+            if (job is None or job.request_id != receipt.pk or job.status != 'blocked_configuration'
+                    or not ObtainSelection.objects.filter(job=job, result=result).exists()
+                    or any(getattr(job, key) != value for key, value in values.items())):
+                raise saved.SavedError('An existing choice conflicts; read its retained status.', 409)
+        current_item(actor, profile_id, receipt)
+        return job, created
+
+
 def context(preview):
     base = f'/profiles/{preview.profile_id}/saved/previews/{preview.pk}/'
-    return {'id': str(preview.pk), 'title': preview.title,
-        'state': 'expired' if preview.expires_at <= timezone.now() else preview.state,
+    return {'id': str(preview.pk), 'title': preview.title or 'Selected TV episode',
+        'state': 'expired' if preview.expires_at <= receipt_now(preview) else preview.state,
         'scope': preview.scope, 'episode_code': episode_code(preview.scope), 'expires_at': preview.expires_at.isoformat(),
         'submission_enabled': False, 'message': DISABLED,
         'results': [{**r.metadata, 'id': str(r.pk), 'digest': r.digest,

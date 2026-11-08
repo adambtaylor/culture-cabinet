@@ -174,10 +174,11 @@ class AcquisitionJob(models.Model):
     saved_item = models.ForeignKey(SavedItem, null=True, on_delete=models.SET_NULL)
     request_id = models.UUIDField()
     active_key = models.CharField(max_length=64, null=True, unique=True)
-    provider = models.CharField(max_length=16)
-    medium = models.CharField(max_length=5)
-    source_id = models.PositiveIntegerField()
-    title = models.CharField(max_length=300)
+    publication_origin = models.JSONField(null=True, default=None)
+    provider = models.CharField(max_length=16, null=True)
+    medium = models.CharField(max_length=5, null=True)
+    source_id = models.PositiveIntegerField(null=True)
+    title = models.CharField(max_length=300, null=True)
     scope = models.CharField(max_length=16)
     edition = models.CharField(max_length=200)
     storage = models.CharField(max_length=24)
@@ -195,7 +196,9 @@ class AcquisitionJob(models.Model):
             # The shared Python parser enforces canonical episode numbers. Keep
             # this family check usable by raw SQLite backup/restore connections.
             models.CheckConstraint(condition=(
-                models.Q(provider='tmdb', medium='movie', scope='film')
+                models.Q(publication_origin__isnull=False, scope='series_s01e01')
+                | models.Q(publication_origin__isnull=False, scope__startswith='episode_s')
+                | models.Q(provider='tmdb', medium='movie', scope='film')
                 | (models.Q(provider='tmdb', medium='tv')
                    & (models.Q(scope='series_s01e01') | models.Q(scope__startswith='episode_s')))
                 | models.Q(provider='hardcover', medium='book', scope='audiobook')
@@ -203,6 +206,12 @@ class AcquisitionJob(models.Model):
                            saved_item__isnull=True)), name='acquisition_exact_scope'),
             models.CheckConstraint(condition=models.Q(authorized_content=True, storage_check=True, storage='local_library'), name='acquisition_confirmed_checks'),
             models.CheckConstraint(condition=(models.Q(status='blocked_configuration', active_key__isnull=False, cancelled_at__isnull=True) | models.Q(status='cancelled', active_key__isnull=True, cancelled_at__isnull=False)), name='acquisition_local_state'),
+            models.CheckConstraint(condition=(
+                models.Q(publication_origin__isnull=True, provider__isnull=False,
+                    medium__isnull=False, source_id__isnull=False, title__isnull=False)
+                | models.Q(publication_origin__isnull=False, saved_item__isnull=True,
+                    provider__isnull=True, medium__isnull=True, source_id__isnull=True,
+                    title__isnull=True)), name='acquisition_origin_variant'),
         ]
 
 
@@ -233,17 +242,27 @@ class ObtainPreview(models.Model):
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     actor = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.PROTECT)
     profile = models.ForeignKey(Profile, on_delete=models.PROTECT)
-    saved_identity = models.PositiveBigIntegerField()
-    provider = models.CharField(max_length=16)
-    medium = models.CharField(max_length=5)
-    source_id = models.PositiveIntegerField()
-    title = models.CharField(max_length=300)
+    publication_origin = models.JSONField(null=True, default=None)
+    saved_identity = models.PositiveBigIntegerField(null=True)
+    provider = models.CharField(max_length=16, null=True)
+    medium = models.CharField(max_length=5, null=True)
+    source_id = models.PositiveIntegerField(null=True)
+    title = models.CharField(max_length=300, null=True)
     scope = models.CharField(max_length=16)
     nonce = models.UUIDField(default=uuid.uuid4, editable=False)
     version = models.PositiveIntegerField(default=1)
     state = models.CharField(max_length=24, default='searching')
     created_at = models.DateTimeField(default=timezone.now)
     expires_at = models.DateTimeField()
+
+    class Meta:
+        constraints = [models.CheckConstraint(condition=(
+            models.Q(publication_origin__isnull=True, saved_identity__isnull=False,
+                provider__isnull=False, medium__isnull=False, source_id__isnull=False,
+                title__isnull=False)
+            | models.Q(publication_origin__isnull=False, saved_identity__isnull=True,
+                provider__isnull=True, medium__isnull=True, source_id__isnull=True,
+                title__isnull=True)), name='obtain_preview_origin_variant')]
 
 
 class ObtainResult(models.Model):
@@ -291,6 +310,8 @@ class ObtainTransfer(models.Model):
     reason = models.CharField(max_length=64, default='verification_required')
     provider_job = models.CharField(max_length=120, blank=True, default='')
     local_cancelled_at = models.DateTimeField(null=True)
+    native_progress = models.JSONField(default=dict)
+    library_verification = models.JSONField(null=True, default=None)
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:
@@ -671,6 +692,29 @@ def register_closed_sql_guards(raw):
     raw.create_function('cabinet_disclosure_write', 0, lambda: 0)
     raw.create_function('cabinet_content_digest', -1, _content_digest)
     raw.create_function('cabinet_saved_lineage_valid', 1, _saved_lineage_valid)
+    raw.create_function('cabinet_obtain_origin_valid', 1, _obtain_origin_valid)
+    raw.create_function('cabinet_obtain_scope_valid', 1, _obtain_scope_valid)
+    raw.create_function('cabinet_obtain_write', 2, lambda actor, profile: 0)
+
+
+def _obtain_origin_valid(raw):
+    from .disclosure import read_json
+    from .portable_obtain_origin import validate_obtain_origin
+    try:
+        if type(raw) is not str or len(raw.encode('utf-8')) > 1536:
+            return 0
+        validate_obtain_origin(read_json(raw.encode('utf-8')))
+        return 1
+    except (ValueError, TypeError, AttributeError, UnicodeError, RecursionError):
+        return 0
+
+
+def _obtain_scope_valid(raw):
+    from .episode_scope import parse_scope, ScopeError
+    try:
+        return int(type(raw) is str and parse_scope(raw) is not None)
+    except ScopeError:
+        return 0
 
 
 def validate_publication_lineage(value):

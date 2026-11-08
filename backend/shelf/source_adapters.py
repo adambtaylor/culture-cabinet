@@ -135,8 +135,24 @@ class SourcePermit:
                 and len(set(self.parent_ids)) == len(self.parent_ids))
         for parent in self.parent_ids:
             text(parent)
-        # A title query is profile-derived. Its membership/order ancestry must
-        # come from the backend issuer, never from untrusted response metadata.
+        # The issuer separately authenticates live owner intents. This check
+        # binds their one explicit query root; it cannot confer source rights.
+        body = read_json(plan.body)
+        if body.get('schema') == 'catalogue-owner-query/v1':
+            require(set(body) == {'schema', 'intent_ref', 'intent_digest', 'categories', 'queries'}
+                    and body['intent_ref'] == plan.plan_ref and body['categories'] == ['tv']
+                    and request.source == 'tmdb_tv' and request.operation == 'search_tv'
+                    and body['queries'] == [{'category': 'tv', 'terms': list(request.terms)}]
+                    and len(request.terms) == 1
+                    and type(body['intent_digest']) is str and len(body['intent_digest']) == 64
+                    and all(c in '0123456789abcdef' for c in body['intent_digest'])
+                    and self.parent_ids == ('owner-query:' + plan.plan_ref + ':' + body['intent_digest'],),
+                    'AUTHORITY_DENIED')
+        else:
+            require(body.get('schema') == 'catalogue-query/v1'
+                    and not any(parent.startswith('owner-query:') for parent in self.parent_ids),
+                    'AUTHORITY_DENIED')
+        # Profile queries retain their original membership/order ancestry.
         require(not request.terms or bool(self.parent_ids), 'AUTHORITY_DENIED')
         require(not spec.credential_required or type(self.credential_generation) is int
                 and self.credential_generation >= 0, 'CREDENTIAL_REQUIRED')

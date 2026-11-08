@@ -778,7 +778,8 @@ def render_portable_saved(request, *, template, context, status=200):
     from django.middleware.csrf import get_token
     from django.template import Engine
     allowed = {'cabinet/portable_saved_items.html', 'cabinet/portable_obtain_preview.html',
-               'cabinet/portable_obtain_submission.html', 'cabinet/portable_obtain_job.html'}
+               'cabinet/portable_obtain_submission.html', 'cabinet/portable_obtain_job.html',
+               'cabinet/portable_obtain_tv.html', 'cabinet/portable_obtain_options.html'}
     if template not in allowed:
         raise ValueError('Unsupported portable saved template')
     values = {**context, 'csrf_token': get_token(request),
