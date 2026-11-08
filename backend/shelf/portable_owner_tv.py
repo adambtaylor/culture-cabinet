@@ -116,6 +116,8 @@ class ObtainOriginSelectorForm(forms.Form):
 
 
 class ObtainOptionsForm(ObtainOriginSelectorForm):
+    search_review_ref = forms.UUIDField(widget=forms.HiddenInput)
+    search_confirmed = forms.BooleanField(label='I approve this exact query and Hydra destination.')
     season = forms.IntegerField(required=False, min_value=0, max_value=999)
     episode = forms.IntegerField(required=False, min_value=1, max_value=999)
 

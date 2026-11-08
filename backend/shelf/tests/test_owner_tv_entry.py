@@ -3,6 +3,7 @@ from dataclasses import replace
 from datetime import timedelta
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
+import re
 from uuid import uuid4
 
 from django.contrib.auth import get_user_model
@@ -77,6 +78,23 @@ class OwnerTVEntryTests(RecoveryCase):
                                   sleep=self.clock.advance))
         self.sent = []
         self.inference_before = self.fake.calls
+        from shelf import credential_store as store
+        metadata = store.EntryMetadata(store.Binding('synthetic-hydra-account', str(self.actor.pk),
+            str(self.state.profile_id), 'hydra', store._provider_context('hydra').purpose),
+            self.clock.wall - timedelta(seconds=1), self.expires, self.expires, store.HYDRA_SCOPES)
+        self.hydra = preview.SearchRecipient(metadata, uuid4().hex)
+        self.real_recipient_reader = preview.read_search_recipient
+        self.enterContext(patch('shelf.obtain_preview.read_search_recipient', return_value=self.hydra))
+
+    def hydra_backend(self, private):
+        from shelf.acquisition_contract import Capabilities
+        backend = Mock(); backend._grants = {'hydra': self.hydra.metadata}
+        backend.caps.return_value = Capabilities(frozenset({'search'}), ((5000, 'TV'),), True)
+        backend.search.return_value = private
+        return backend
+
+    def search_ref(self, access, origin, scope):
+        return preview.issue_search_review(access=access, origin=origin, scope=scope)['search_review_ref']
 
     def source_send(self, operation, *, revalidate, **kwargs):
         self.assertTrue(revalidate())
@@ -135,12 +153,14 @@ class OwnerTVEntryTests(RecoveryCase):
         self.assertContains(options, 'name="owner_selection_ref"')
         self.assertNotContains(options, 'name="publication_revision"')
         ref = response['Location'].split('owner_selection_ref=')[1]
-        backend = Mock(); destination = object(); backend._grants = {'hydra': destination}
         private = PrivateSearch(payload(item(title='Fiction Series 2024 S02E01 1080p', category='5000')))
-        backend.search.return_value = private
-        with patch('shelf.obtain_preview.search_backend', return_value=backend), \
-                patch('shelf.obtain_runtime.existing_grant', return_value=destination):
-            response = self.post('/cabinet/obtain/search/', {'owner_selection_ref': ref})
+        backend = self.hydra_backend(private)
+        search_ref = re.search(r'name="search_review_ref" value="([^"]+)"', options.content.decode())[1]
+        self.assertContains(options, 'Fiction Series 2024 S02E01')
+        self.assertContains(options, 'http://127.0.0.1:5076/api')
+        with patch('shelf.obtain_preview._reviewed_backend', return_value=backend):
+            response = self.post('/cabinet/obtain/search/', {'owner_selection_ref': ref,
+                'search_review_ref': search_ref, 'search_confirmed': 'on'})
         self.assertEqual(response.status_code, 302, response.content)
         self.assertEqual(backend.search.call_args.args[1:3], ('Fiction Series 2024 S02E01', 'episode'))
         receipt = preview.ObtainPreview.objects.get()
@@ -198,12 +218,13 @@ class OwnerTVEntryTests(RecoveryCase):
             sent.assert_not_called()
         self.policy.value = OwnerPolicy(self.clock.wall).value
         ref, (origin, target) = self.selected()
-        backend = Mock(); original_destination = object()
-        backend._grants = {'hydra': original_destination}
-        with self.scope() as access, patch('shelf.obtain_runtime.existing_grant',
-                side_effect=[original_destination, object()]):
-            receipt = preview.search_origin(access=access, origin=origin, scope=target.scope, factory=lambda **kw: backend)
-        self.assertEqual(receipt.state, 'failed')
+        backend = self.hydra_backend(None)
+        with self.scope() as access:
+            search_ref = self.search_ref(access, origin, target.scope)
+            with patch('shelf.obtain_preview.read_search_recipient', side_effect=[self.hydra, self.hydra,
+                    replace(self.hydra, credential_generation=uuid4().hex)]), self.assertRaises(preview.saved.SavedError):
+                preview.search_origin(access=access, origin=origin, scope=target.scope,
+                                      search_review_ref=search_ref, factory=lambda **kw: backend)
         backend.caps.assert_called_once()
         backend.search.assert_not_called()
         self.policy.value = replace(self.policy.value, policy=replace(self.policy.value.policy,
@@ -213,7 +234,7 @@ class OwnerTVEntryTests(RecoveryCase):
         backend = Mock()
         with self.scope() as access:
             with self.assertRaises(Blocked):
-                preview.search_origin(access=access, origin=origin, scope=target.scope, factory=lambda **kw: backend)
+                self.search_ref(access, origin, target.scope)
         backend.caps.assert_not_called()
         self.policy.value = OwnerPolicy(self.clock.wall).value
         ref, (origin, target) = self.selected()
@@ -224,7 +245,7 @@ class OwnerTVEntryTests(RecoveryCase):
         backend = Mock()
         with self.scope() as access:
             with self.assertRaises(ga.AuthorityFault):
-                preview.search_origin(access=access, origin=origin, scope=target.scope, factory=lambda **kw: backend)
+                self.search_ref(access, origin, target.scope)
         backend.caps.assert_not_called()
 
     def test_selection_expiry_and_native_generation_change_purge_source_facts(self):
@@ -258,10 +279,10 @@ class OwnerTVEntryTests(RecoveryCase):
         import sqlite3
         from shelf import recovery
         ref, (origin, target) = self.selected()
-        backend = Mock(); destination = object(); backend._grants = {'hydra': destination}
-        backend.search.return_value = PrivateSearch(payload(item(title='Fiction Series 2024 S02E01 1080p', category='5000')))
-        with self.scope() as access, patch('shelf.obtain_runtime.existing_grant', return_value=destination):
-            receipt = preview.search_origin(access=access, origin=origin, scope=target.scope, factory=lambda **kw: backend)
+        backend = self.hydra_backend(PrivateSearch(payload(item(title='Fiction Series 2024 S02E01 1080p', category='5000'))))
+        with self.scope() as access:
+            receipt = preview.search_origin(access=access, origin=origin, scope=target.scope,
+                search_review_ref=self.search_ref(access, origin, target.scope), factory=lambda **kw: backend)
             result = receipt.results.get()
             data = {'review_token': preview.review_token(receipt, result), 'scope': receipt.scope,
                 'edition': result.metadata['title'], 'storage': 'local_library',
@@ -356,3 +377,77 @@ class OwnerTVEntryTests(RecoveryCase):
             with self.assertRaises(EnhanceFault):
                 state.preview(title='X' * 101, series_year=2024, season=2, episode=1)
             self.assertEqual(sent.call_count, 1)
+
+    def test_reviewed_options_reject_recipient_or_key_rotation_before_backend_or_caps(self):
+        ref, _ = self.selected()
+        for changed in (replace(self.hydra, credential_generation=uuid4().hex),
+                        replace(self.hydra, metadata=replace(self.hydra.metadata,
+                            binding=replace(self.hydra.metadata.binding, account_id='changed-synthetic-account')))):
+            response = self.http.get('/cabinet/obtain/options/?owner_selection_ref=' + ref, **self.headers)
+            self.assertEqual(response.status_code, 200)
+            token = re.search(r'name="search_review_ref" value="([^"]+)"', response.content.decode())[1]
+            with patch('shelf.obtain_preview.read_search_recipient', return_value=changed), \
+                    patch('shelf.obtain_preview._reviewed_backend', side_effect=AssertionError('Changed review opened backend')) as factory:
+                rejected = self.post('/cabinet/obtain/search/', {'owner_selection_ref': ref,
+                    'search_review_ref': token, 'search_confirmed': 'on'})
+            self.assertEqual(rejected.status_code, 409)
+            factory.assert_not_called()
+        self.assertFalse(preview.ObtainPreview.objects.exists())
+
+    def test_reviewed_query_origin_episode_and_expiry_changes_refuse_without_caps(self):
+        from shelf.acquisition_contract import PublicRequest
+        ref, _ = self.selected()
+        for change in ('query', 'origin', 'episode', 'unconfirmed', 'expiry'):
+            response = self.http.get('/cabinet/obtain/options/?owner_selection_ref=' + ref, **self.headers)
+            token = re.search(r'name="search_review_ref" value="([^"]+)"', response.content.decode())[1]
+            data = {'owner_selection_ref': ref, 'search_review_ref': token, 'search_confirmed': 'on'}
+            if change == 'origin':
+                data['owner_selection_ref'] = str(uuid4())
+            if change == 'episode':
+                data.update(season='3', episode='1')
+            if change == 'unconfirmed':
+                data.pop('search_confirmed')
+            if change == 'expiry':
+                # Expire this review alone while the source/session remains live.
+                self.authority._obtain_search_reviews[token]['expires_at'] = self.clock.wall
+            original = preview.origin_search_request
+            with patch('shelf.obtain_preview._reviewed_backend', side_effect=AssertionError('Changed review opened backend')) as factory, \
+                    patch('shelf.obtain_preview.origin_search_request', side_effect=(
+                        lambda target: PublicRequest('search', (('q', 'Other Series 2024 S02E01'), ('cat', '5000'))))
+                        if change == 'query' else original):
+                rejected = self.post('/cabinet/obtain/search/', data)
+            self.assertIn(rejected.status_code, (409, 422))
+            factory.assert_not_called()
+        self.assertFalse(preview.ObtainPreview.objects.exists())
+
+    def test_credential_open_rejects_actual_replaced_record_generation(self):
+        from shelf import credential_store as store
+        from .fixtures_credentials import FakeTree
+        from .test_acquisition_backend import grant
+        # The real store walk requires a private owned parent, too.
+        with patch('tempfile.tempdir', self.directory.name):
+            tree = FakeTree(store, provider='hydra')
+        self.addCleanup(tree.temporary.cleanup)
+        metadata = grant('hydra')
+        metadata = replace(metadata, binding=replace(metadata.binding,
+            actor_id=str(self.actor.pk), profile_id=str(self.state.profile_id)))
+        receipt = store.commit_entry(tree.store, metadata, bytearray(b'SYNTHETIC-HYDRA-ONE'))
+        self.assertEqual(receipt.outcome, 'stored')
+        tree.store.close()
+        def opener(*, provider):
+            return store._fixture_store(tree.path, provider=provider)
+        with self.scope(), patch.object(store, 'open_store', side_effect=opener):
+            reviewed = self.real_recipient_reader(actor=self.actor, profile_id=self.state.profile_id)
+            handle = opener(provider='hydra'); store.lock_store(handle)
+            record = store.read_record(handle); expected = record.identity; record.close()
+            receipt = store.commit_entry(handle, metadata, bytearray(b'SYNTHETIC-HYDRA-TWO'), expected=expected)
+            handle.close()
+            self.assertEqual(receipt.outcome, 'stored')
+            current = self.real_recipient_reader(actor=self.actor, profile_id=self.state.profile_id)
+            self.assertNotEqual(current.credential_generation, reviewed.credential_generation)
+            backend = preview._reviewed_backend(actor=self.actor, profile_id=self.state.profile_id,
+                                                 recipient=reviewed, revalidate=lambda: None)
+            with patch.object(type(backend._client), 'caps', side_effect=AssertionError('Changed key reached transport')) as transport:
+                with self.assertRaises(Blocked):
+                    backend.caps(actor_id=self.actor.pk, profile_id=self.state.profile_id)
+                transport.assert_not_called()
