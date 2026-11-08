@@ -21,10 +21,10 @@ from shelf.models import (FeedbackEvent, FeedbackProjection, FeedbackSubject,
                          FeedbackTarget, Grant, MutationReceipt)
 
 SIGNALS = ('enjoyment', 'interest', 'familiarity', 'saved', 'skipped', 'opened',
-           'completion', 'constraint', 'visibility', 'legacy_rating', 'legacy_state', 'seed_statement')
+           'completion', 'constraint', 'visibility', 'legacy_rating', 'legacy_state', 'seed_statement', 'note')
 LABELS = dict(zip(SIGNALS, ('Experienced enjoyment', 'Future interest', 'Familiarity',
     'Saved', 'Skipped', 'Explicitly opened', 'Completion', 'Practical constraint',
-    'Visibility', 'Legacy rating (basis unknown)', 'Legacy state', 'Attributed statement')))
+    'Visibility', 'Legacy rating (basis unknown)', 'Legacy state', 'Attributed statement', 'Preference note')))
 NATIVE_LABELS = {'buttons': ['1', '2', '3', '4', '5'], 'aria_pattern': 'X out of 5',
                  'low': 'LOW', 'high': 'HIGH', 'hint': 'LOW → HIGH'}
 ORIGINS = ('direct', 'legacy_snapshot', 'imported_statement', 'seed_statement')
@@ -124,7 +124,7 @@ def validate_body(signal, body, *, imported=False):
     elif signal == 'interest':
         exact(body, ('value', 'basis'))
         if body['value'] not in ('no', 'maybe', 'yes') or body['basis'] != 'anticipated': raise FeedbackError()
-    elif signal == 'constraint':
+    elif signal in ('constraint', 'note'):
         exact(body, ('text',)); text(body['text'], 500)
     elif signal == 'seed_statement':
         exact(body, ('text', 'attribution', 'basis')); text(body['text'], 500); text(body['attribution'], 160)

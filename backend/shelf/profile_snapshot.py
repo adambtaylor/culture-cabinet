@@ -121,6 +121,7 @@ def _feedback(view):
         classes = {'enjoyment': ['experienced_enjoyment'], 'interest': ['anticipated_reactions'],
             'saved': ['explicit_favourites'], 'legacy_rating': ['legacy_choices'],
             'legacy_state': ['legacy_choices'], 'constraint': ['raw_notes', 'free_text_entry'],
+            'note': ['raw_notes', 'free_text_entry'],
             'seed_statement': ['free_text_entry', 'unresolved_personal_text']}.get(signal, ['reaction'])
         card = {'key': 'feedback:' + str(current.target_id), 'title': current.target.title,
                 'medium': current.target.category, 'roots': []}

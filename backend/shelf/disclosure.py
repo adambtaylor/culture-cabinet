@@ -351,7 +351,7 @@ def _classifications(node):
         signal = node['value']['signal']
         groups = {'enjoyment': {'experienced_enjoyment'}, 'interest': {'anticipated_reactions'},
             'saved': {'explicit_favourites'}, 'legacy_rating': {'legacy_choices'}, 'legacy_state': {'legacy_choices'},
-            'constraint': {'raw_notes', 'free_text_entry'},
+            'constraint': {'raw_notes', 'free_text_entry'}, 'note': {'raw_notes', 'free_text_entry'},
             'seed_statement': {'free_text_entry', 'unresolved_personal_text'}}.get(signal, {'reaction'})
         return set(node['data_classes']) | groups
     classes = set(node['data_classes']) | {required[node['basis']]}
@@ -407,7 +407,8 @@ def _profile(nodes, allowed, parents):
             omitted.update(_classifications(node))
         elif 'basis' not in node:
             traits.append(node)
-        elif node['basis'] == 'feedback_note':
+        elif node['basis'] == 'feedback_note' or (node['basis'] == 'typed_feedback'
+                and node['value']['signal'] == 'note'):
             notes.append(node)
         else:
             signals.append(node)
@@ -419,6 +420,10 @@ def _profile(nodes, allowed, parents):
         grouped = {}
         for node in rows:
             value = ('explicit_positive' if node.get('basis') == 'favourite' else node['value'])
+            # Ordinary typed notes retain their exact text and context, but
+            # never join the signal-title set used to construct source queries.
+            if prefix == 'note' and node['basis'] == 'typed_feedback':
+                value = {'text': value['value']['text'], 'category': node['medium'], 'title': node['title']}
             content = value if prefix == 'note' else {
                 'title': node['title'], 'medium': node['medium'], 'source': 'authenticated_human',
                 'basis': node['basis'], 'value': value}

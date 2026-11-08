@@ -6,6 +6,7 @@ from shelf import onboarding_experience_views as experience
 from shelf import enhancement_views as enhance
 from shelf import portable_obtain_views as obtain
 from shelf import portable_source_views as sources
+from shelf import portable_feedback_views as feedback
 
 urlpatterns = [
     path('setup/cabinet', views.cabinet_entry),
@@ -16,6 +17,8 @@ urlpatterns = [
     path('cabinet/source/musicbrainz/configure', sources.musicbrainz_configure),
     path('cabinet/source/musicbrainz/consent', sources.musicbrainz_consent),
     path('cabinet/taste/artist', sources.artist),
+    path('cabinet/taste', feedback.intake),
+    path('cabinet/feedback', feedback.card_mutate),
     path('cabinet/consent', enhance.portable_inference_consent),
     path('cabinet/consent/change', enhance.portable_inference_consent_change),
     path('enhance/presentation.css', enhance.portable_enhancement_style),
