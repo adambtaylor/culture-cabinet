@@ -11,7 +11,7 @@ from django.views.decorators.debug import sensitive_variables
 
 from . import grant_authority as ga
 from .enhance_contract import require, utc
-from .source_authority import (ADAPTER, MEDIA, MUSICBRAINZ, SourcePolicyProvider, SourceRights,
+from .source_authority import (ADAPTER, MEDIA, MUSICBRAINZ_SOURCES, SourcePolicyProvider, SourceRights,
                                _connection)
 from .source_evidence import FieldPolicy
 
@@ -22,7 +22,7 @@ class _NativeSourcePolicy(SourcePolicyProvider):
         require(type(approved_policies) is dict)
         entries = {}
         for adapter, rights in approved_policies.items():
-            require(type(adapter) is str and adapter in (ADAPTER, MUSICBRAINZ, *MEDIA))
+            require(type(adapter) is str and adapter in (ADAPTER, *MUSICBRAINZ_SOURCES, *MEDIA))
             require(type(rights) is SourceRights and type(rights.policy) is FieldPolicy)
             require(rights.source == ('moshtix' if adapter == ADAPTER else adapter),
                     'AUTHORITY_DENIED')

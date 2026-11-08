@@ -657,6 +657,7 @@ def catalogue_input(snapshot, grants, context, categories, *, now):
                       if signal.get('medium') == 'artist' and signal['title']})
     value = {'schema': 'catalogue-query/v1', 'categories': list(categories), 'profile': profile,
              'queries': [{'category': category, 'terms': list(artists if
-                context.get('adapter_id') == 'musicbrainz_recording' and category == 'recording' else terms)}
+                context.get('adapter_id') in ('musicbrainz_recording', 'musicbrainz_artist')
+                and category in ('recording', 'artist') else terms)}
                 for category in categories]}
     return canonical_bytes(value), prepared.omitted_classes

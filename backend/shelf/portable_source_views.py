@@ -14,7 +14,8 @@ from .models import PortableConnection, PortableDisclosureGrant
 from .portable_authority import AuthorityFault
 from .portable_setup_views import _form
 from .portable_taste_inputs import PortableTasteInputs
-from .source_authority import MUSICBRAINZ, configure_source, source_identity, _connection
+from .source_authority import (MUSICBRAINZ, MUSICBRAINZ_ARTIST, MUSICBRAINZ_SOURCES,
+                               configure_source, source_identity, _connection)
 
 SOURCE_CHOICES = (('canonical_seed', 'Existing artist seed titles'),
     ('explicit_favourites', 'Explicit artist favourites'),
@@ -34,8 +35,10 @@ def _profile(request):
     return str(ga._uuid(request.GET['profile_ref']))
 
 
-def _redirect(profile_ref, *, artist=False):
+def _redirect(profile_ref, *, artist=False, source_adapter=MUSICBRAINZ):
     route = '/cabinet/taste/artist' if artist else '/cabinet/source/musicbrainz'
+    if not artist and source_adapter == MUSICBRAINZ_ARTIST:
+        route += '/artist'
     return HttpResponse(status=303, headers={'Location': route + '?' + urlencode({'profile_ref': profile_ref}),
                                             'Cache-Control': 'no-store'})
 
@@ -43,13 +46,14 @@ def _redirect(profile_ref, *, artist=False):
 @require_GET
 @_portable_errors
 @sensitive_variables()
-def musicbrainz(request):
+def musicbrainz(request, *, adapter=MUSICBRAINZ):
+    ga._require(adapter in MUSICBRAINZ_SOURCES, 'CONTRACT_INVALID', 422)
     profile_ref = _profile(request)
     authority, ref = request.portable_authority, request.session.get('portable_session')
     with ga.recovery_guard(authority, ref, profile_ref=profile_ref), authority._lock:
         state, _ = ga._bound(authority, ref, profile_ref)
         rows = list(PortableConnection.objects.filter(installation=state.installation,
-                    adapter=MUSICBRAINZ, removed=False))
+                    adapter=adapter, removed=False))
         ga._require(len(rows) <= 1, 'REVISION_CONFLICT', 409)
         row = rows[0] if rows else None
         grant = PortableDisclosureGrant.objects.filter(cabinet=state, connection=row,
@@ -58,7 +62,8 @@ def musicbrainz(request):
         now = authority.now()
         active = bool(grant and grant.state == 'active' and grant.issued_at <= now < grant.expires_at
                       and grant.config_digest == binding['config_digest'] and grant.config_revision == row.config_revision)
-        _, origin, path = source_identity(MUSICBRAINZ)
+        _, origin, path = source_identity(adapter)
+        page = '/cabinet/source/musicbrainz' + ('/artist' if adapter == MUSICBRAINZ_ARTIST else '')
         context = {'source_setup': True, 'profile_ref': profile_ref, 'profile_label': str(state.profile.label)[:80],
             'source_configured': row is not None, 'source_connection_ref': str(row.pk) if row else '',
             'source_revision': row.config_revision if row else 0,
@@ -68,7 +73,11 @@ def musicbrainz(request):
             'source_consent_groups': [dict(SOURCE_CHOICES).get(code, code) for code in grant.allowed_data_classes] if grant else [],
             'source_consent_expires': grant.expires_at.isoformat() if grant else '',
             'source_choices': [{'code': code, 'label': label} for code, label in SOURCE_CHOICES],
-            'source_origin': origin, 'source_path': path, 'cabinet_url': _cabinet_url(profile_ref)}
+            'source_origin': origin, 'source_path': path, 'cabinet_url': _cabinet_url(profile_ref),
+            'source_adapter': adapter, 'source_category': 'artist' if adapter == MUSICBRAINZ_ARTIST else 'recording',
+            'source_label': 'MusicBrainz artists' if adapter == MUSICBRAINZ_ARTIST else 'MusicBrainz recordings',
+            'source_page_url': page + '?' + urlencode({'profile_ref': profile_ref}),
+            'source_configure_action': page + '/configure', 'source_consent_action_url': page + '/consent'}
     return _native_cabinet_html(request, context)
 
 
@@ -76,23 +85,25 @@ def musicbrainz(request):
 @csrf_protect
 @_portable_errors
 @sensitive_variables()
-def musicbrainz_configure(request):
+def musicbrainz_configure(request, *, adapter=MUSICBRAINZ):
+    ga._require(adapter in MUSICBRAINZ_SOURCES, 'CONTRACT_INVALID', 422)
     value = _form(request, {'profile_ref', 'expected_revision', 'confirmed'})
     ga._require(value['confirmed'] == 'yes', 'CONTRACT_INVALID', 422)
     profile_ref = str(ga._uuid(value['profile_ref']))
     authority, ref = request.portable_authority, request.session.get('portable_session')
     with ga.recovery_guard(authority, ref, profile_ref=profile_ref), authority._lock:
         ga._bound(authority, ref, profile_ref, sensitive=True)
-        configure_source(authority, ref, confirmed=True, adapter=MUSICBRAINZ,
+        configure_source(authority, ref, confirmed=True, adapter=adapter,
                          expected_revision=_revision(value['expected_revision']))
-    return _redirect(profile_ref)
+    return _redirect(profile_ref, source_adapter=adapter)
 
 
 @require_POST
 @csrf_protect
 @_portable_errors
 @sensitive_variables()
-def musicbrainz_consent(request):
+def musicbrainz_consent(request, *, adapter=MUSICBRAINZ):
+    ga._require(adapter in MUSICBRAINZ_SOURCES, 'CONTRACT_INVALID', 422)
     required = {'profile_ref', 'source_connection_ref', 'expected_revision', 'action', 'confirmed'}
     flags = {'allow_' + code: code for code, _ in SOURCE_CHOICES}
     supplied = set(request.POST) - {'csrfmiddlewaretoken'}
@@ -107,13 +118,27 @@ def musicbrainz_consent(request):
     with ga.recovery_guard(authority, ref, profile_ref=profile_ref), authority._lock:
         state, session = ga._bound(authority, ref, profile_ref, sensitive=True)
         row, _, _ = _connection(authority, ref, connection_ref)
-        ga._require(row.adapter == MUSICBRAINZ, 'AUTHORITY_DENIED', 403)
+        ga._require(row.adapter == adapter, 'AUTHORITY_DENIED', 403)
         # This fixed source purpose cannot reuse or create a processor grant.
         ga.change_grant(authority, ref, profile_ref=profile_ref, connection_ref=connection_ref,
             expected_revision=_revision(value['expected_revision']), purpose='catalogue_lookup',
             allowed_data_classes=classes, expires_at=min(authority.now() + timedelta(minutes=5),
                 ga._end(authority, session)), action=value['action'])
-    return _redirect(profile_ref)
+    return _redirect(profile_ref, source_adapter=adapter)
+
+
+# The URL chooses the fixed operation. No posted adapter, origin or policy can
+# select a source, and each connection keeps its own catalogue-purpose grant.
+def musicbrainz_artist(request):
+    return musicbrainz(request, adapter=MUSICBRAINZ_ARTIST)
+
+
+def musicbrainz_artist_configure(request):
+    return musicbrainz_configure(request, adapter=MUSICBRAINZ_ARTIST)
+
+
+def musicbrainz_artist_consent(request):
+    return musicbrainz_consent(request, adapter=MUSICBRAINZ_ARTIST)
 
 
 @require_http_methods(['GET', 'POST'])
