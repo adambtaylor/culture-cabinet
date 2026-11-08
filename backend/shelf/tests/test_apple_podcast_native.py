@@ -144,6 +144,18 @@ class AppleBackendTests(TestCase):
     def authorize(self):
         return self.backend.authorize(self.request, self.query, now=NOW)
 
+    def test_issuer_receives_its_exact_retained_preview_operation_not_an_equal_copy(self):
+        retained = apple.apple_podcast_operation(self.request)
+        original = self.issuer.authorize
+        def authorize(request, query, operation, *, now):
+            self.assertIs(operation, retained)
+            return original(request, query, operation, now=now)
+        with patch.object(self.issuer, 'operation_for', return_value=retained), \
+             patch.object(self.issuer, 'authorize', side_effect=authorize):
+            permit = self.authorize()
+            self.assertTrue(self.backend.revalidate(permit, self.request, self.query, now=NOW))
+        self.send.assert_not_called()
+
     def test_source_collection_keeps_original_observation_and_honest_all_domain_outcomes(self):
         self.registry, self.query = plan(KEYS)
         headers = (('date', NOW.strftime('%a, %d %b %Y %H:%M:%S GMT')), ('cache-control', 'no-store'))
