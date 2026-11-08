@@ -24,7 +24,7 @@ class NativeThreeRoundTests(NativeFeedbackCase):
     grant = NativeArtistSourceTests.grant
 
     def action(self, path, fields):
-        response = self.http.post(path, urlencode(fields),
+        response = self.http.post(path, urlencode({'csrfmiddlewaretoken': self.csrf(), **fields}),
             content_type='application/x-www-form-urlencoded', HTTP_ACCEPT='application/json',
             HTTP_X_CSRFTOKEN=self.csrf(), **self.headers)
         self.assertEqual(response.status_code, 200, response.content[:400])
