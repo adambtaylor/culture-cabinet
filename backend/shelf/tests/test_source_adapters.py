@@ -13,6 +13,21 @@ from shelf.tests.test_source_collection import plan
 
 
 class SourceAdapterTests(TestCase):
+    def test_registration_projection_preserves_thirteen_rows_without_readiness_claim(self):
+        from shelf.category_registry import KEYS, registered_source_coverage
+        from shelf.source_adapters import SOURCES
+        rows = registered_source_coverage()
+        self.assertEqual(tuple(row['category'] for row in rows), KEYS)
+        self.assertEqual(len(rows), 13)
+        self.assertEqual({row['category'] for row in rows if not row['sources']},
+            {'artist', 'art_fair', 'regional_day_trip', 'outing', 'dining'})
+        self.assertEqual({source.key for source in SOURCES if source.kind == 'api'},
+            {'hardcover', 'tmdb_movie', 'tmdb_tv', 'musicbrainz_recording', 'moshtix', 'apple_podcast'})
+        self.assertTrue(all(set(source) == {'source', 'operations', 'kind'}
+            for row in rows for source in row['sources']))
+        rows[0]['sources'][0]['source'] = 'caller-changed'
+        self.assertEqual(registered_source_coverage()[0]['sources'][0]['source'], 'hardcover')
+
     def test_media_backend_refuses_missing_or_caller_authored_dependencies(self):
         from unittest.mock import Mock, patch
         from shelf.source_adapters import MediaBackend
