@@ -4,7 +4,7 @@ The supervised Mac worker consumes a committed native intent through a legitimat
 channel. A control frame is not permission; the parent owns current authority and
 kills its child on authority loss. The worker never deletes source bytes.
 """
-from contextlib import ExitStack
+from contextlib import ExitStack, contextmanager
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 import fcntl
@@ -301,3 +301,120 @@ def receive_selected(plan, source, *, operation='inspect', allowed_roots=TV_ROOT
         return ImportOutcome('conflict', 'destination_exists')
     except (OSError, ValueError, KeyError, TypeError, OverflowError):
         return ImportOutcome('unknown', 'selected_copy_unverified')
+
+
+@dataclass(frozen=True)
+class DestinationImportPorts:
+    generation: object
+    revalidate: object
+    plan_for: object
+    inspect: object
+    receive: object
+    clock: object
+
+
+def destination_binding_digest(binding, relative_path, create_parent):
+    from shelf.sab_selected import canonical_digest
+    return canonical_digest({'destination': asdict(binding), 'relative_path': relative_path,
+                             'create_parent': create_parent}, domain='obtain-tv-destination/v1')
+
+
+@contextmanager
+def _selected_source(completion):
+    """Keep a stable no-follow source descriptor across the supervised copy."""
+    from shelf.acquisition_contract import sab_name
+    item = completion.files[0]
+    root_path = completion.job.complete_root + '/' + sab_name(completion.job.request_id)
+    parts = registry.path_parts(item.relative_path)
+    with ExitStack() as stack:
+        root = stack.enter_context(registry.directory(root_path, trusted=True))
+        root_identity = _identity(os.fstat(root))
+        parent = root
+        for component in parts[:-1]:
+            parent = os.open(component, registry.DIR_FLAGS, dir_fd=parent)
+            stack.callback(os.close, parent)
+        source = stack.enter_context(os.fdopen(os.open(parts[-1], registry.READ_FLAGS,
+            dir_fd=parent), 'rb', buffering=0))
+        before = os.fstat(source.fileno())
+        registry.require(stat.S_ISREG(before.st_mode) and before.st_nlink == 1
+                         and before.st_size == item.size)
+        yield source
+        registry.require(registry.signature(before) == registry.signature(os.fstat(source.fileno()))
+                         and registry.signature(before) == registry.signature(os.stat(
+                             parts[-1], dir_fd=parent, follow_symlinks=False)))
+        with registry.directory(root_path, trusted=True) as current:
+            registry.require(_identity(os.fstat(current)) == root_identity)
+
+
+def import_selected(context, completion, destination_binding, *, intent, ports=None):
+    """Native import boundary; inspect/reconcile before any source transmission.
+
+    Ports belong to the legitimate destination custodian and frozen code/channel
+    binding. This module never bootstraps SSH or treats returned JSON as authority.
+    """
+    from shelf.obtain_tv_flow import DestinationBinding, SelectedCompletion
+    from shelf.sab_selected import require_native
+    registry.require(type(completion) is SelectedCompletion)
+    job = completion.job
+    require_native(context, job, 'import')
+    try:
+        registry.require(type(destination_binding) is DestinationBinding
+                         and type(ports) is DestinationImportPorts
+                         and ports.generation == destination_binding.service_generation
+                         and ports.generation.service == 'destination_file'
+                         and ports.generation in job.service_generations
+                         and destination_binding.ref == job.destination_ref
+                         and completion.state == 'completed' and len(completion.files) == 1
+                         and completion.source_manifest_digest is not None
+                         and completion.history_digest is not None and completion.hook_digest is not None)
+        with context.effect_window():
+            def current():
+                require_native(context, job, 'import')
+                registry.require(ports.revalidate() == ports.generation)
+            current()
+            plan = ports.plan_for(completion, destination_binding, intent)
+            registry.require(type(plan) is CopyPlan)
+            item = completion.files[0]
+            registry.require((plan.request_id, plan.job_id, plan.nzo_id, plan.binding_digest,
+                plan.content_identity_digest, plan.source_manifest_digest, plan.intent,
+                plan.host_id, plan.root, plan.size, plan.sha256, plan.scope, plan.test_only) ==
+                (job.request_id, job.job_id, job.nzo_id, job.binding_digest,
+                 job.content_identity_digest, completion.source_manifest_digest, intent,
+                 destination_binding.host, destination_binding.root, item.size, item.sha256,
+                 job.episode_scope, job.test_only))
+            registry.require(plan.destination_binding_digest == destination_binding_digest(
+                destination_binding, plan.relative_path, plan.create_parent))
+            plan.validate((destination_binding.root,))
+            current()
+            outcome = ports.inspect(plan)
+            current()
+            registry.require(type(outcome) is ImportOutcome)
+            if outcome.status == 'pending' and outcome.reason == 'intent_not_started':
+                # A committed native intent and current channel are required
+                # before the first byte leaves the selected source descriptor.
+                with _selected_source(completion) as source:
+                    current()
+                    outcome = ports.receive(plan, source)
+                    current()
+            elif outcome.status == 'pending' and outcome.reason == 'awaiting_finalize':
+                outcome = ports.receive(plan, None)
+                current()
+            registry.require(type(outcome) is ImportOutcome
+                             and outcome.status in ('verified', 'pending', 'conflict', 'unknown'))
+            if outcome.status == 'verified':
+                receipt = outcome.receipt
+                registry.require(type(receipt) is DestinationFileReceipt)
+                expected = {key: value for key, value in asdict(plan).items()
+                            if key in DestinationFileReceipt.__dataclass_fields__}
+                registry.require({key: value for key, value in asdict(receipt).items()
+                                  if key != 'observed_at'} == expected)
+                observed = datetime.fromisoformat(receipt.observed_at)
+                registry.require(observed.utcoffset() is not None
+                                 and completion.observed_at <= observed <= ports.clock()
+                                 and observed < datetime.fromisoformat(plan.expires_at))
+            else:
+                registry.require(outcome.receipt is None)
+            current()
+            return outcome
+    except (OSError, ValueError, KeyError, TypeError, OverflowError):
+        return ImportOutcome('unknown', 'selected_import_unverified')

@@ -242,7 +242,10 @@ def _decode(payload, binding, selection):
     _require(len(items) == 1 and type(items[0]) is dict)
     item = items[0]
     _require(item['Id'] == selection.item_id and item['ServerId'] == binding.server_id
-             and item['Type'] == 'Episode')
+             and item['Type'] == 'Episode' and item.get('IsVirtualItem', False) is False
+             and item.get('IsFolder', False) is False
+             and item.get('LocationType', 'FileSystem') == 'FileSystem'
+             and item.get('MediaType', 'Video') == 'Video')
     season, episode = parse_scope(selection.scope)
     _require(type(item['ParentIndexNumber']) is int and item['ParentIndexNumber'] == season
              and type(item['IndexNumber']) is int and item['IndexNumber'] == episode)
@@ -269,7 +272,48 @@ def _decode(payload, binding, selection):
     return parent, series, tuple(observed)
 
 
-def read_selected(binding, selection, *, credential_scope=None, revalidate=None, clock=None):
+def _read_payload(binding, operation, token, *, current, clock, deadline):
+    """Shared bounded transport for the two closed selected-TV builders."""
+    _require(type(operation) is SelectedRead
+             and operation.binding_digest == _digest(binding.material()))
+    connection = None
+    try:
+        current()
+        connection = _Connection(deadline=deadline,
+            connect_timeout=min(binding.connect_seconds, deadline - clock.monotonic()), clock=clock)
+        connection.connect()
+        current()
+        connection.request('GET', operation.path, headers={
+            'Accept': 'application/json', 'X-Emby-Token': token})
+        response = connection.getresponse()
+        if response.status != 200:
+            raise Unavailable('upstream_unavailable')
+        headers = response.getheaders()
+        for name in ('content-length', 'content-encoding', 'content-type', 'transfer-encoding'):
+            _require(sum(key.lower() == name for key, _ in headers) <= 1)
+        encoding = response.getheader('Content-Encoding', 'identity')
+        length = response.getheader('Content-Length')
+        transfer = response.getheader('Transfer-Encoding')
+        _require(encoding == 'identity' and transfer in (None, 'chunked')
+                 and not (length is not None and transfer is not None)
+                 and response.getheader('Content-Type', '').split(';')[0].strip().lower() == 'application/json')
+        if length is not None:
+            _require(re.fullmatch('[0-9]{1,10}', length) is not None and int(length) <= binding.response_bytes)
+        payload = response.read(binding.response_bytes + 1)
+        _require(type(payload) is bytes and len(payload) <= binding.response_bytes
+                 and (length is None or len(payload) == int(length)))
+        current()
+        return payload
+    finally:
+        if connection is not None:
+            try:
+                connection.close()
+            except Exception:
+                pass  # Cleanup must not replace a sanitized refusal.
+
+
+def read_selected(binding, selection, *, credential_scope=None, revalidate=None, clock=None,
+                  _deadline=None):
     """One bounded read, current before secret release/send and after response.
 
     The backend revalidator returns the actual current binding/selection pair;
@@ -284,6 +328,8 @@ def read_selected(binding, selection, *, credential_scope=None, revalidate=None,
         op_digest = _digest(operation.material)
         deadline = clock.monotonic() + min(binding.request_seconds,
             (_stamp(binding.expires_at) - _stamp(clock.now())).total_seconds())
+        if _deadline is not None:
+            deadline = min(deadline, _deadline)  # Resolver may only shorten this request.
 
         def current():
             _require(clock.monotonic() < deadline and _stamp(clock.now()) < binding.expires_at
@@ -302,43 +348,12 @@ def read_selected(binding, selection, *, credential_scope=None, revalidate=None,
             token = credential.token
             _require(type(token) is str and 0 < len(token) <= 4096
                      and all(33 <= ord(c) <= 126 for c in token))
-            connection = None
-            try:
-                current()
-                connection = _Connection(deadline=deadline,
-                    connect_timeout=min(binding.connect_seconds, deadline - clock.monotonic()), clock=clock)
-                connection.connect()
-                current()
-                connection.request('GET', operation.path, headers={
-                    'Accept': 'application/json', 'X-Emby-Token': token})
-                response = connection.getresponse()
-                if response.status != 200:
-                    raise Unavailable('upstream_unavailable')
-                headers = response.getheaders()
-                for name in ('content-length', 'content-encoding', 'content-type', 'transfer-encoding'):
-                    _require(sum(key.lower() == name for key, _ in headers) <= 1)
-                encoding = response.getheader('Content-Encoding', 'identity')
-                length = response.getheader('Content-Length')
-                transfer = response.getheader('Transfer-Encoding')
-                _require(encoding == 'identity' and transfer in (None, 'chunked')
-                         and not (length is not None and transfer is not None)
-                         and response.getheader('Content-Type', '').split(';')[0].strip().lower() == 'application/json')
-                if length is not None:
-                    _require(re.fullmatch('[0-9]{1,10}', length) is not None and int(length) <= binding.response_bytes)
-                payload = response.read(binding.response_bytes + 1)
-                _require(type(payload) is bytes and len(payload) <= binding.response_bytes
-                         and (length is None or len(payload) == int(length)))
-                current()
-                response_digest = hashlib.sha256(payload).hexdigest()
-                decoded = _decode(payload, binding, selection)
-                current()
-                observed_at = _stamp(clock.now())
-            finally:
-                if connection is not None:
-                    try:
-                        connection.close()
-                    except Exception:
-                        pass  # Cleanup must not replace a sanitized refusal.
+            payload = _read_payload(binding, operation, token, current=current,
+                                    clock=clock, deadline=deadline)
+            response_digest = hashlib.sha256(payload).hexdigest()
+            decoded = _decode(payload, binding, selection)
+            current()
+            observed_at = _stamp(clock.now())
         current()
         values = dict(status='matched' if decoded else 'not_observed', reason='',
             binding_digest=operation.binding_digest, selection_digest=operation.selection_digest,
@@ -356,3 +371,202 @@ def read_selected(binding, selection, *, credential_scope=None, revalidate=None,
         return SelectedLibraryObservation('unavailable', reason,
             operation.binding_digest if operation else '', operation.selection_digest if operation else '',
             _digest(operation.material) if operation else '', response_digest, None)
+
+
+@dataclass(frozen=True)
+class EpisodeResolutionTarget:
+    request_id: str
+    binding_digest: str
+    content_identity_digest: str
+    destination_binding_digest: str
+    show_id: int
+    scope: str
+    show_name: str | None
+    series_id: str | None
+    facts_valid_until: datetime
+
+    def material(self):
+        from shelf.obtain_tv_flow import tv_content_identity_digest
+        selected = parse_scope(self.scope)
+        _require(selected is not None)
+        season, episode = selected
+        _require(tv_content_identity_digest(tmdb_show_id=self.show_id, season=season,
+                 episode=episode) == self.content_identity_digest)
+        for value in (self.binding_digest, self.content_identity_digest, self.destination_binding_digest):
+            _require(type(value) is str and re.fullmatch('[0-9a-f]{64}', value) is not None)
+        _text(self.request_id, 64)
+        if self.series_id is not None:
+            _guid(self.series_id)
+        else:
+            from shelf.obtain_parser import plain
+            _require(plain(self.show_name) == self.show_name)
+        _stamp(self.facts_valid_until)
+        return {**self.__dict__, 'facts_valid_until': self.facts_valid_until.isoformat()}
+
+
+@dataclass(frozen=True)
+class ResolvedEpisodeBinding:
+    status: str
+    reason: str
+    request_id: str
+    job_binding_digest: str
+    content_identity_digest: str
+    destination_binding_digest: str
+    target_digest: str
+    service_binding_digest: str
+    server_id: str
+    user_id: str
+    library_id: str
+    root: str
+    configuration_generation: str
+    credential_generation: str
+    series_id: str | None
+    selection: SelectedEpisode | None
+    observation: SelectedLibraryObservation | None
+    operation_digests: tuple[str, ...]
+    response_digests: tuple[str, ...]
+    observed_at: datetime | None
+    valid_until: datetime | None
+    binding: ServiceBinding | None = None
+
+
+class _ResolutionStop(Exception):
+    def __init__(self, status, reason):
+        self.status, self.reason = status, reason
+
+
+def _resolution_operation(binding, target, *, series_id=None):
+    _require(type(binding) is ServiceBinding and type(target) is EpisodeResolutionTarget)
+    bound, selected = binding.material(), target.material()
+    common = [('userId', binding.user_id), ('recursive', 'true'), ('startIndex', '0'),
+              ('limit', '2'), ('fields', 'Path,ProviderIds,ParentId'),
+              ('enableUserData', 'false'), ('enableImages', 'false'),
+              ('enableTotalRecordCount', 'false')]
+    if series_id is None:
+        query = [('parentId', binding.library_id), ('includeItemTypes', 'Series')]
+        if target.series_id is not None:
+            query.append(('ids', target.series_id))
+        else:
+            query.append(('nameStartsWith', target.show_name))
+    else:
+        _guid(series_id)
+        season, episode = parse_scope(target.scope)
+        query = [('parentId', series_id), ('includeItemTypes', 'Episode'),
+                 ('indexNumber', str(episode)), ('parentIndexNumber', str(season))]
+    return SelectedRead(_digest(bound), _digest(selected), '/Items?' + urlencode(query + common))
+
+
+def resolve_episode(binding, target, *, credential_scope=None, revalidate=None, clock=None):
+    """Resolve only one current target under its configured library/series.
+
+    A full two-item response is ambiguous: no uniqueness claim is made from a
+    truncated prefix result. Original one-ID read supplies the final metadata;
+    this companion supplies the separately scoped series/library/show proof.
+    """
+    clock = clock or SystemClock()
+    operations, responses = [], []
+    bound_digest = target_digest = ''
+    selected = observation = None
+    series_id = None
+    identity_digest = ''
+    try:
+        _require(type(binding) is ServiceBinding and type(target) is EpisodeResolutionTarget)
+        bound_digest, target_digest = _digest(binding.material()), _digest(target.material())
+        deadline = clock.monotonic() + min(binding.request_seconds,
+            (binding.expires_at - _stamp(clock.now())).total_seconds(),
+            (target.facts_valid_until - clock.now()).total_seconds())
+        _require(credential_scope is not None and revalidate is not None)
+
+        def current():
+            _require(clock.monotonic() < deadline and clock.now() < binding.expires_at
+                     and clock.now() < target.facts_valid_until
+                     and _digest(binding.material()) == bound_digest
+                     and _digest(target.material()) == target_digest
+                     and revalidate(binding, target) == (binding, target))
+            _require(clock.monotonic() < deadline and clock.now() < binding.expires_at
+                     and clock.now() < target.facts_valid_until
+                     and _digest(binding.material()) == bound_digest
+                     and _digest(target.material()) == target_digest)
+
+        def query(parent_series=None):
+            operation = _resolution_operation(binding, target, series_id=parent_series)
+            current()
+            with credential_scope(binding) as credential:
+                current()
+                _require(type(credential) is ScopedCredential and credential.binding_digest == bound_digest
+                         and type(credential.token) is str and 0 < len(credential.token) <= 4096
+                         and all(33 <= ord(c) <= 126 for c in credential.token))
+                payload = _read_payload(binding, operation, credential.token, current=current,
+                                        clock=clock, deadline=deadline)
+                current()
+            current()
+            operations.append(_digest(operation.material))
+            responses.append(hashlib.sha256(payload).hexdigest())
+            result = json.loads(payload.decode('utf-8'), object_pairs_hook=_pairs,
+                parse_constant=lambda _: (_ for _ in ()).throw(Unavailable('invalid_response')))
+            _require(type(result) is dict and type(result.get('Items')) is list
+                     and len(result['Items']) <= 2)
+            items = result['Items']
+            if not items:
+                raise _ResolutionStop('not_indexed', 'awaiting_library_index')
+            if len(items) != 1:
+                raise _ResolutionStop('ambiguous', 'ambiguous_library_item')
+            _require(type(items[0]) is dict)
+            return items[0]
+
+        series = query()
+        series_id = _guid(series['Id'])
+        _require(series['ServerId'] == binding.server_id and series['Type'] == 'Series')
+        if target.series_id is not None:
+            _require(series_id == target.series_id)
+        else:
+            _require(series['Name'] == target.show_name)
+        _path(series['Path'], binding.tv_root)
+        provider_id = series['ProviderIds']['Tmdb']
+        _require(type(provider_id) is str and str(int(provider_id)) == provider_id
+                 and int(provider_id) == target.show_id)
+        from shelf.obtain_tv_flow import tv_content_identity_digest
+        season, episode_number = parse_scope(target.scope)
+        identity_digest = tv_content_identity_digest(tmdb_show_id=int(provider_id),
+            season=season, episode=episode_number)
+        _require(identity_digest == target.content_identity_digest)
+        episode = query(series_id)
+        item_id = _guid(episode['Id'])
+        _require(episode['ServerId'] == binding.server_id and episode['Type'] == 'Episode'
+                 and episode['SeriesId'] == series_id
+                 and type(episode['IndexNumber']) is int and episode['IndexNumber'] == episode_number
+                 and type(episode['ParentIndexNumber']) is int and episode['ParentIndexNumber'] == season)
+        end = episode.get('IndexNumberEnd')
+        _require(end is None or (type(end) is int and end == episode_number))
+        selected = SelectedEpisode(item_id, target.scope)
+        def current_selected(current_binding, current_selection):
+            current()
+            _require(current_binding == binding and current_selection == selected)
+            return current_binding, current_selection
+        observation = read_selected(binding, selected, credential_scope=credential_scope,
+            revalidate=current_selected, clock=clock, _deadline=deadline)
+        current()
+        if observation.status == 'not_observed':
+            raise _ResolutionStop('not_indexed', 'awaiting_library_index')
+        _require(observation.status == 'matched' and observation.series_id == series_id)
+        operations.append(observation.operation_digest)
+        responses.append(observation.response_digest)
+        current()
+        return ResolvedEpisodeBinding('resolved', '', target.request_id, target.binding_digest,
+            identity_digest, target.destination_binding_digest, target_digest, bound_digest,
+            binding.server_id, binding.user_id, binding.library_id, binding.tv_root,
+            binding.configuration_generation, binding.credential_generation, series_id,
+            selected, observation, tuple(operations), tuple(responses), clock.now(),
+            min(binding.expires_at, target.facts_valid_until), binding)
+    except Exception as error:
+        status = error.status if type(error) is _ResolutionStop else 'unavailable'
+        reason = error.reason if type(error) is _ResolutionStop else 'episode_resolution_unavailable'
+        # No names, provider IDs, paths from unaccepted results or raw errors.
+        return ResolvedEpisodeBinding(status, reason,
+            target.request_id if type(target) is EpisodeResolutionTarget else '',
+            target.binding_digest if type(target) is EpisodeResolutionTarget else '',
+            '', '', target_digest, bound_digest,
+            binding.server_id if type(binding) is ServiceBinding else '',
+            binding.user_id if type(binding) is ServiceBinding else '',
+            binding.library_id if type(binding) is ServiceBinding else '',
+            '', '', '', None, None, None, tuple(operations), tuple(responses), None, None)
