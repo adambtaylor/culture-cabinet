@@ -1,5 +1,7 @@
 """Explicit search and durable local selection. No retrieval or submission port."""
 from datetime import timedelta
+from dataclasses import dataclass
+import hashlib
 import uuid
 
 from django import forms
@@ -9,7 +11,7 @@ from django.http import Http404
 from django.utils import timezone
 
 from shelf import credential_store as store, saved
-from shelf.portable_saved_authority import effect_for, write_for
+from shelf.portable_saved_authority import effect_for, write_for, active_portable_access
 from shelf.acquisition_backend import Backend, PrivateSearch
 from shelf.acquisition_contract import Blocked, ContractError
 from shelf.models import AcquisitionJob, ObtainPreview, ObtainResult, ObtainSelection
@@ -64,6 +66,133 @@ def search_backend(*, actor, profile_id, _open_store=None):
         if handle is not None:
             handle.close()
     return Backend(hydra_grant=metadata, _open_store=opener)
+
+
+@dataclass(frozen=True, repr=False)
+class SearchRecipient:
+    metadata: store.EntryMetadata
+    credential_generation: str
+
+
+def _record_recipient(record, actor, profile_id):
+    metadata = record.metadata
+    store.validate_metadata(metadata, now=store.utc_now(), provider='hydra')
+    if (metadata.binding.actor_id, metadata.binding.profile_id) != (str(actor.pk), str(profile_id)):
+        raise store.Refused()
+    return SearchRecipient(metadata, record.generation)
+
+
+def read_search_recipient(*, actor, profile_id):
+    """Read the real credential-record generation without exporting its secret."""
+    saved.authority(actor, profile_id)
+    handle = record = None
+    try:
+        handle = store.open_store(provider='hydra')
+        if handle.context != store._provider_context('hydra'):
+            raise store.Refused()
+        store.lock_store(handle); record = store.read_record(handle)
+        return _record_recipient(record, actor, profile_id)
+    except (store.Refused, OSError):
+        raise SearchUnavailable('unconfigured') from None
+    finally:
+        if record is not None:
+            record.close()
+        if handle is not None:
+            handle.close()
+
+
+def _reviewed_backend(*, actor, profile_id, recipient, revalidate):
+    def opener(*, provider):
+        if provider != 'hydra':
+            raise store.Refused()
+        revalidate()
+        handle = record = None
+        try:
+            handle = store.open_store(provider=provider)
+            if handle.context != store._provider_context(provider):
+                raise store.Refused()
+            store.lock_store(handle); record = store.read_record(handle)
+            if _record_recipient(record, actor, profile_id) != recipient:
+                raise store.Refused()
+            # Keep this SAME store lock until Backend closes the handle. A key
+            # replacement cannot slip between our generation check and its
+            # credential read; Backend retains its normal validation and I/O.
+            record.close(); record = None
+            result, handle = handle, None
+            return result
+        finally:
+            if record is not None:
+                record.close()
+            if handle is not None:
+                handle.close()
+    return Backend(hydra_grant=recipient.metadata, _open_store=opener)
+
+
+def origin_search_request(target):
+    from .acquisition_contract import PublicRequest
+    return PublicRequest('search', (('q', release_title(target) + ' ' + episode_code(target.scope)), ('cat', '5000')))
+
+
+def _search_reviews(authority):
+    if not hasattr(authority, '_obtain_search_reviews'):
+        authority._obtain_search_reviews = {}
+        authority.boundary._closing.append(lambda: authority._obtain_search_reviews.clear())
+        def revoke(ref):
+            authority._obtain_search_reviews = {key: value for key, value in authority._obtain_search_reviews.items()
+                                               if value['session_ref'] != ref}
+        authority._revokers.append(revoke)
+    now = authority.now()
+    authority._obtain_search_reviews = {key: value for key, value in authority._obtain_search_reviews.items()
+                                       if now < value['expires_at']}
+    return authority._obtain_search_reviews
+
+
+def issue_search_review(*, access, origin, scope):
+    from .portable_obtain_origin import resolve_obtain_origin_again
+    from .disclosure import canonical_bytes
+    access.require(actor_id=access.identity.actor_id, profile_id=access.identity.profile_id, action='export')
+    with access.effect_window(action='export'):
+        target = resolve_obtain_origin_again(access, origin, scope, access.authority.now())
+        target.require_title_export()
+        operation = origin_search_request(target)
+        recipient = read_search_recipient(actor=access.actor, profile_id=access.identity.profile_id)
+        reviews = _search_reviews(access.authority)
+        if len(reviews) >= 64:
+            raise saved.SavedError('Too many pending search reviews.', 409)
+        end = min(target.valid_until, recipient.metadata.expires_at, recipient.metadata.declared_provider_expires_at,
+                  access.authority.now() + timedelta(minutes=5))
+        if not access.authority.now() < end:
+            raise saved.SavedError('Search review expired.', 409)
+        ref = str(uuid.uuid4())
+        reviews[ref] = {'session_ref': access.session_ref, 'selection': dict(access._signed), 'origin': dict(origin),
+            'scope': scope, 'operation_digest': hashlib.sha256(canonical_bytes(operation.public_dict())).hexdigest(),
+            'recipient': recipient, 'expires_at': end, 'attempted': False}
+        return {'search_review_ref': ref, 'query': dict(operation.params)['q'],
+                'destination': operation.endpoint, 'expires_at': end.isoformat()}
+
+
+def _checked_search_review(access, origin, scope, review_ref):
+    from .portable_obtain_origin import resolve_obtain_origin_again
+    from .disclosure import canonical_bytes
+    reviews = _search_reviews(access.authority)
+    value = reviews.get(str(review_ref))
+    if (value is None or value['session_ref'] != access.session_ref or value['selection'] != access._signed
+            or value['origin'] != origin or value['scope'] != scope):
+        if value is not None and value['session_ref'] == access.session_ref:
+            reviews.pop(str(review_ref), None)
+        raise saved.SavedError('The reviewed search changed. Open fresh options.', 409)
+    try:
+        access.require(actor_id=access.identity.actor_id, profile_id=access.identity.profile_id, action='export')
+        target = resolve_obtain_origin_again(access, origin, scope, access.authority.now())
+        target.require_title_export()
+        operation = origin_search_request(target)
+        if (hashlib.sha256(canonical_bytes(operation.public_dict())).hexdigest() != value['operation_digest']
+                or read_search_recipient(actor=access.actor, profile_id=access.identity.profile_id) != value['recipient']):
+            raise saved.SavedError('The reviewed query or indexer connection changed. Review again.', 409)
+        return value, target, operation
+    except Exception:
+        reviews.pop(str(review_ref), None)
+        raise
 
 
 class SearchForm(forms.Form):
@@ -135,36 +264,41 @@ def receipt_now(receipt):
     return timezone.now()
 
 
-def search_origin(*, access, origin, scope, factory=None):
+def search_origin(*, access, origin, scope, search_review_ref, factory=None):
     from .portable_obtain_origin import resolve_obtain_origin_again
-    from .obtain_runtime import existing_grant
     actor, profile_id = access.actor, access.identity.profile_id
     require_available()
     def current():
-        access.require(actor_id=actor.pk, profile_id=profile_id, action='export')
-        target = resolve_obtain_origin_again(access, origin, scope, access.authority.now())
-        target.require_title_export()
-        return target
+        return _checked_search_review(access, origin, scope, search_review_ref)
     with access.effect_window(action='export'):
-        target = current(); title = release_title(target)
+        review, target, operation = current()
+        if review['attempted']:
+            raise saved.SavedError('This reviewed search has already been attempted. Open a fresh review.', 409)
+        title = release_title(target)
         now = access.authority.now()
         with write_for(actor, profile_id):
             receipt = ObtainPreview.objects.create(actor=actor, profile_id=profile_id,
                 provider=None, medium=None, source_id=None, title=None, saved_identity=None,
                 scope=scope, publication_origin=origin, created_at=now,
-                expires_at=min(now + timedelta(minutes=15), target.valid_until))
+                expires_at=min(now + timedelta(minutes=15), target.valid_until, review['expires_at']))
         private = None; rows = []; state = 'failed'
         try:
-            backend = (factory or search_backend)(actor=actor, profile_id=profile_id)
-            destination = backend._grants['hydra']
+            review['attempted'] = True
             def fence():
-                fresh = current()
-                if release_title(fresh) != title or existing_grant('hydra', actor, profile_id) != destination:
+                _, fresh, current_operation = current()
+                if release_title(fresh) != title or current_operation != operation:
                     raise Blocked('Current source or indexer destination changed')
             fence()
+            backend = (factory(actor=actor, profile_id=profile_id) if factory is not None else
+                _reviewed_backend(actor=actor, profile_id=profile_id, recipient=review['recipient'], revalidate=fence))
+            if backend._grants['hydra'] != review['recipient'].metadata:
+                raise Blocked('Reviewed indexer destination changed')
             caps = backend.caps(actor_id=actor.pk, profile_id=profile_id)
             fence()
-            private = backend.search(caps, title + ' ' + episode_code(scope), 'episode',
+            from .acquisition_contract import search_request
+            if search_request(caps, dict(operation.params)['q'], 'episode') != operation:
+                raise Blocked('Reviewed search is not advertised')
+            private = backend.search(caps, dict(operation.params)['q'], 'episode',
                                      actor_id=actor.pk, profile_id=profile_id)
             fence()
             if type(private) is not PrivateSearch:

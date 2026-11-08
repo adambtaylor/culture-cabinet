@@ -278,17 +278,34 @@ def _origin_choice(access, data):
 @_guard
 def options(request):
     from .portable_owner_tv import ObtainOptionsForm, ObtainOriginSelectorForm
-    ga._require(set(request.GET) <= set(ObtainOriginSelectorForm.base_fields) | {'profile_ref'}
+    ga._require(set(request.GET) <= set(ObtainOriginSelectorForm.base_fields) | {'profile_ref', 'season', 'episode'}
         and all(len(request.GET.getlist(key)) == 1 for key in request.GET), 'CONTRACT_INVALID', 422)
     with _scope(request) as access:
         ga._require('profile_ref' not in request.GET or request.GET['profile_ref'] == access.profile_ref)
-        selector = {key: value for key, value in request.GET.items() if key != 'profile_ref'}
+        selector = {key: value for key, value in request.GET.items() if key in ObtainOriginSelectorForm.base_fields}
         origin, target = _origin_choice(access, selector)
+        episodes = preview.SearchForm({key: value for key, value in request.GET.items() if key in ('season', 'episode')})
+        ga._require(episodes.is_valid(), 'CONTRACT_INVALID', 422)
+        initial = dict(selector)
+        if origin['schema'] == 'obtain-owner-selection-origin/v1':
+            ga._require(not ({'season', 'episode'} & set(request.GET)), 'CONTRACT_INVALID', 422)
+        elif episodes.cleaned_data.get('season') is not None:
+            from .portable_obtain_origin import resolve_current_origin
+            from .episode_scope import make_scope
+            chosen = ObtainOriginSelectorForm(selector)
+            ga._require(chosen.is_valid(), 'CONTRACT_INVALID', 422)
+            origin, target = resolve_current_origin(access,
+                publication_revision=chosen.cleaned_data['publication_revision'], candidate_key=chosen.cleaned_data['candidate_key'],
+                scope=make_scope(episodes.cleaned_data['season'], episodes.cleaned_data['episode']), now=access.authority.now())
+            initial.update(episodes.cleaned_data)
+        reviewed = preview.issue_search_review(access=access, origin=origin, scope=target.scope)
         return _render(request, access, 'cabinet/portable_obtain_options.html',
             obtain_options={'title': target.title, 'scope': target.scope, 'provider_label': 'TMDB',
                 'search_enabled': True, 'search_url': '/cabinet/obtain/search/',
-                'expires_at': origin['valid_until'], 'cancel_url': '/cabinet/obtain/tv/'},
-            obtain_options_form=ObtainOptionsForm(initial=selector))
+                'query': reviewed['query'], 'destination': reviewed['destination'],
+                'review_url': '/cabinet/obtain/options/',
+                'expires_at': reviewed['expires_at'], 'cancel_url': '/cabinet/obtain/tv/'},
+            obtain_options_form=ObtainOptionsForm(initial={**initial, 'search_review_ref': reviewed['search_review_ref']}))
 
 
 @require_POST
@@ -309,7 +326,8 @@ def origin_search(request):
             origin, target = resolve_current_origin(access, publication_revision=form.cleaned_data['publication_revision'],
                 candidate_key=form.cleaned_data['candidate_key'],
                 scope=make_scope(form.cleaned_data['season'], form.cleaned_data['episode']), now=access.authority.now())
-        receipt = preview.search_origin(access=access, origin=origin, scope=target.scope)
+        receipt = preview.search_origin(access=access, origin=origin, scope=target.scope,
+                                       search_review_ref=form.cleaned_data['search_review_ref'])
         return HttpResponseRedirect(BASE + f'previews/{receipt.pk}/')
 
 
