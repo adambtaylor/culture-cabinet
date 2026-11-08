@@ -583,3 +583,63 @@ class SourceUseHistoryTests(BrokerHistoryCase):
         attack = copy.deepcopy(original)
         del attack['evidence']['source_use']
         self.fault('CAPABILITY_UNAVAILABLE', ga._broker_history_row, attack, self.state)
+
+
+class IdleCurrentnessTests(RecoveryCase):
+    def test_touch_retains_original_source_and_inference_context_bytes_and_expiry(self):
+        with self.controlled_recovery_state('clear'):
+            profile = self.bind()
+            self.consent(profile)
+            self.consent(profile, purpose='catalogue_lookup')
+            views = [ga.current_view(self.authority, self.ref, profile_ref=profile,
+                connection_ref=str(self.config.pk), purpose=purpose)
+                for purpose in ('catalogue_lookup', 'inference')]
+            self.clock.advance(6)
+            session = self.authority.authorize(self.ref)
+            touched = session.last_seen
+            for view in views:
+                self.assertNotEqual(self.view(profile).context['session_expires_at'],
+                                    view.context['session_expires_at'])
+                unchanged = ga.assert_current(view)
+                self.assertEqual(unchanged, view)
+                self.assertEqual((unchanged._context, unchanged._grants, unchanged.expires_at),
+                                 (view._context, view._grants, view.expires_at))
+            self.assertEqual(session.last_seen, touched)
+
+    def test_original_caps_malformed_shortened_and_other_context_changes_refuse(self):
+        from dataclasses import replace
+        from shelf.disclosure import canonical_bytes
+        with self.controlled_recovery_state('clear'):
+            profile = self.bind()
+            self.consent(profile)
+            view = self.view(profile)
+            def changed(**context):
+                return replace(view, _context=canonical_bytes({**view.context, **context}))
+            for altered in (replace(view, expires_at=self.clock.wall),
+                    changed(session_expires_at=ga._stamp(self.clock.wall)),
+                    changed(session_expires_at='malformed'),
+                    changed(session_expires_at=ga._stamp(self.clock.wall+timedelta(hours=1))),
+                    changed(adapter_version='changed-context'),
+                    replace(view, profile_revision_digest='f'*64)):
+                with self.subTest(context=altered is view):
+                    self.fault('PREVIEW_STALE', ga.assert_current, altered)
+            self.clock.advance(6)
+            self.authority.authorize(self.ref)
+            self.consent(profile, action='revoke', revision=1)
+            self.fault('AUTHORITY_DENIED', ga.assert_current, view)
+
+    def test_logout_still_refuses_original_authority(self):
+        with self.controlled_recovery_state('clear'):
+            profile = self.bind()
+            self.consent(profile)
+            view = self.view(profile)
+            self.authority.logout(self.ref)
+            self.fault('UNAUTHENTICATED', ga.assert_current, view)
+
+    def test_actual_idle_expiry_still_refuses_original_authority(self):
+        with self.controlled_recovery_state('clear'):
+            profile = self.bind()
+            self.consent(profile)
+            view = self.view(profile)
+            self.clock.advance(1800)
+            self.fault('UNAUTHENTICATED', ga.assert_current, view)

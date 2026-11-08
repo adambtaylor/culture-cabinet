@@ -1,7 +1,5 @@
 """Three native Enhance rounds; only external wire responses are synthetic."""
 import uuid
-import traceback
-import shelf.enhance_coordinator as coordinator_module
 from urllib.parse import urlencode
 from unittest.mock import patch
 
@@ -63,22 +61,7 @@ class NativeThreeRoundTests(NativeFeedbackCase):
                 {'recordings': [{**row, 'title': 'Synthetic discovered recording'}]})
             return 200, canonical_bytes(document), ()
 
-        original_safe_code = coordinator_module._safe_code
-        def diagnose(error):
-            traceback.print_tb(error.__traceback__)
-            tb = error.__traceback__
-            while tb:
-                if tb.tb_frame.f_code.co_name == 'assert_current':
-                    from dataclasses import fields
-                    old, fresh = (tb.tb_frame.f_locals[k] for k in ('view', 'fresh'))
-                    print('AUTHORITY_CHANGED_FIELDS', [f.name for f in fields(old)
-                          if getattr(old, f.name) != getattr(fresh, f.name)])
-                    print('AUTHORITY_CONTEXT_CHANGED_KEYS', [k for k in old.context
-                          if old.context[k] != fresh.context.get(k)])
-                tb = tb.tb_next
-            return original_safe_code(error)
-
-        with patch('shelf.enhance_coordinator._safe_code', side_effect=diagnose), patch.object(CheckedTransport, 'send', model_reply), patch(
+        with patch.object(CheckedTransport, 'send', model_reply), patch(
                 'shelf.discovery_transport.musicbrainz_authorized', side_effect=source_reply):
             # Validate the hosted adapter with its real permit, using only a fake
             # wire response. An isolated disclosure fixture cannot authorize it.
