@@ -134,7 +134,11 @@ class TVServiceProvider(ABC):
 
 @dataclass(frozen=True)
 class SelectedTVServices:
-    """Current custodian-owned ports; no credential or authority is serialized."""
+    """Current custodian-owned ports; no credential or authority is serialized.
+
+    target_for receives (native context, selected job, destination receipt,
+    ValidatedSeriesBinding | None). A bare historical series_ref is not evidence.
+    """
     delivery: DeliveryBinding
     observer: object
     destination: object
@@ -225,15 +229,16 @@ def require_confirmed_delivery_plan(delivery, plan):
     return plan
 
 
-def validate_native_progress(value, *, binding, job_id, verification=None, provider_job=None):
+def validate_native_progress(value, *, binding, job_id, verification=None, provider_job=None, scope=None):
+    from .jellyfin_native import Unavailable
     try:
         return _validate_native_progress(value, binding=binding, job_id=job_id,
-                                         verification=verification, provider_job=provider_job)
-    except (ValueError, TypeError, KeyError, AttributeError, OverflowError):
+                                         verification=verification, provider_job=provider_job, scope=scope)
+    except (ValueError, TypeError, KeyError, AttributeError, OverflowError, Unavailable):
         raise ContractError('Closed native operational receipt required') from None
 
 
-def _validate_native_progress(value, *, binding, job_id, verification=None, provider_job=None):
+def _validate_native_progress(value, *, binding, job_id, verification=None, provider_job=None, scope=None):
     """Closed operational history; decoding never creates a live green proof."""
     from uuid import UUID
     import re
@@ -257,7 +262,7 @@ def _validate_native_progress(value, *, binding, job_id, verification=None, prov
         require(verification is None)
         return
     allowed = {'schema', 'stage', 'reason', 'service_generations', 'intent', 'completion',
-               'copy_intent', 'destination', 'series_ref', 'observed_at'}
+               'copy_intent', 'destination', 'series_ref', 'series_evidence', 'observed_at'}
     stages = {'submitted', 'observing', 'awaiting_completion', 'download_failed', 'copying', 'copy_pending',
         'copy_unknown', 'copy_conflict', 'verifying_library', 'awaiting_library_index',
         'verification_unavailable', 'verification_mismatch', 'verified'}
@@ -324,6 +329,18 @@ def _validate_native_progress(value, *, binding, job_id, verification=None, prov
                     delivery.destination, destination['relative_path'], delivery.create_parent)
                 and stamp(value['completion']['observed_at']) <= stamp(destination['observed_at']))
         registry.nzo_id(destination['nzo_id'])
+    if 'series_evidence' in value:
+        from .jellyfin_native import read_series_evidence
+        evidence = read_series_evidence(value['series_evidence'])
+        require('destination' in value and scope is not None
+            and (evidence.request_id, evidence.job_binding_digest, evidence.content_identity_digest,
+                 evidence.destination_binding_digest, evidence.scope) ==
+                (binding['request_id'], operational_digest(binding), binding['content_identity_digest'],
+                 value['destination']['destination_binding_digest'], scope))
+        generation = generations[1]
+        require((evidence.service_binding_digest, evidence.binding.configuration_generation,
+                 evidence.binding.credential_generation) ==
+                (generation['binding_digest'], generation['configuration_generation'], generation['credential_generation']))
     if verification is not None:
         require(type(verification) is dict and set(verification) == set(LibraryVerification.__dataclass_fields__)
                 and 'destination' in value and value['stage'] == 'verified'

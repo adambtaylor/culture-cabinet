@@ -69,8 +69,10 @@ class FixtureTVProvider(TVServiceProvider):
         library = ServiceBinding(ORIGIN, '1' * 32, 'synthetic-version', '2' * 32, '3' * 32,
             UUID(self.installation_ref).hex, self.actor_id, self.profile_id, '4' * 32, '5' * 32,
             self.delivery.destination.root, 'selected_tv_read', self.until)
+        from shelf.obtain_runtime import selected_library_target
         return SelectedTVServices(self.delivery, observer, destination, library, lambda: library,
-            Mock(), self.clock, Mock(), Mock())
+            Mock(), self.clock, lambda current, job, receipt, evidence:
+                selected_library_target(current, job, receipt, evidence, library=library), Mock())
 
 
 class OwnerTVEntryTests(RecoveryCase):
@@ -819,19 +821,13 @@ class OwnerTVEntryTests(RecoveryCase):
                     @contextmanager
                     def credential(binding):
                         yield jf.ScopedCredential(jf._digest(binding.material()), 'SYNTHETIC-LIBRARY-NOT-A-KEY')
-                    def target(current, selected, destination_receipt, series_ref):
-                        from datetime import datetime
-                        end = value.library.expires_at if series_ref else datetime.fromisoformat(
-                            job.publication_origin['valid_until'].replace('Z', '+00:00'))
-                        return jf.EpisodeResolutionTarget(selected.request_id, selected.binding_digest,
-                            selected.content_identity_digest, destination_receipt.destination_binding_digest,
-                            None if series_ref else 81001, selected.episode_scope,
-                            None if series_ref else 'Fiction Series', series_ref, end)
                     return replace(value, observer=observer, destination=destination,
-                                   library_credential_scope=credential, target_for=target)
+                                   library_credential_scope=credential)
             provider = FileProvider(self.delivery, self.actor.pk, self.state.profile_id, str(self.state.installation_id),
                 self.expires, SimpleNamespace(now=self.authority.now, monotonic=lambda: self.clock.tick))
-            with self.settings(PORTABLE_OBTAIN_TV_SERVICES=provider):
+            normal_provider = obtain_runtime.CurrentTVServiceProvider(self.authority,
+                delivery_for=provider.delivery_binding, services_for=provider.current)
+            with self.settings(PORTABLE_OBTAIN_TV_SERVICES=normal_provider):
                 backend, retriever = FixtureBackend(), FixtureRetriever()
                 with self.scope():
                     exact, _ = acquire.exact_result(job, fresh=True)
@@ -860,16 +856,28 @@ class OwnerTVEntryTests(RecoveryCase):
                     'ParentId': '9' * 32, 'IndexNumber': 1, 'ParentIndexNumber': 2, 'Path': str(output),
                     'MediaSources': [{'Id': 'c' * 32, 'Path': str(output), 'Size': 4096, 'Protocol': 'File', 'IsRemote': False}]}
                 pending = [Connection(Response(json.dumps(value).encode())) for value in
-                           ({'Items': [series]}, {'Items': [episode]}, {'Items': [episode]})]
+                           ({'Items': [series]}, {'Items': []})]
                 with patch.object(jf, '_Connection', side_effect=pending):
                     response = self.post(f'/cabinet/obtain/jobs/{job.pk}/advance/', {'expected_revision': str(transfer.revision)})
                 self.assertEqual(response.status_code, 302, response.content)
                 transfer.refresh_from_db()
-                self.assertEqual(transfer.native_progress['stage'], 'verified', transfer.native_progress)
+                self.assertEqual(transfer.native_progress['stage'], 'awaiting_library_index', transfer.native_progress)
+                self.assertEqual(transfer.native_progress['reason'], 'awaiting_library_index')
+                original_series = read_json(canonical_bytes(transfer.native_progress['series_evidence']))
+                self.assertIsNone(transfer.library_verification)
+                self.assertIsNone(transfer.native_progress.get('series_ref'))
+                from shelf.obtain_native_context import native_job_context
+                from shelf.completion_dispatch import _native_cas
+                with self.scope() as access:
+                    current = native_job_context(access, job_id=job.pk, operation='observe')
+                    changed = read_json(canonical_bytes(transfer.native_progress))
+                    changed['series_evidence']['series_id'] = 'a' * 32
+                    with self.assertRaises(Blocked):
+                        _native_cas(current, changed)
                 copy_intent = transfer.native_progress['copy_intent']
                 self.assertEqual(output.read_bytes(), video.read_bytes())
                 # Reauthorize the actual synthetic owner after the source facts
-                # expire. The verified series binding and original copy intent
+                # expire. The validated series receipt and original copy intent
                 # can finish; the app neither resolves old source IDs nor copies
                 # bytes again, and observation clocks are never renewed.
                 from .test_portable_authority import PASSWORD
@@ -878,6 +886,33 @@ class OwnerTVEntryTests(RecoveryCase):
                 self.assertEqual(expired.status_code, 200)
                 self.assertNotEqual(expired.json()['state'], 'done')
                 self.authority.reauthenticate(self.ref, PASSWORD)
+                from shelf.obtain_runtime import selected_library_target
+                from shelf.completion_dispatch import selected_job
+                with self.scope() as access:
+                    current = native_job_context(access, job_id=job.pk, operation='verify_library')
+                    ports = provider.current(current)
+                    selected = selected_job(current, services=ports)
+                    from shelf.jellyfin_tv_import import DestinationFileReceipt
+                    destination_receipt = DestinationFileReceipt(**transfer.native_progress['destination'])
+                    with patch.object(jf, '_Connection', side_effect=AssertionError('Missing evidence opened library')) as transport:
+                        with self.assertRaises((EnhanceFault, Blocked, ga.AuthorityFault)):
+                            selected_library_target(current, selected, destination_receipt, None, library=ports.library)
+                    transport.assert_not_called()
+                # A historical selector is insufficient for green. A missing
+                # or changed current Series leaves the original receipt inert.
+                for changed in ({'Items': []}, {'Items': [{**series, 'ProviderIds': {'Tmdb': '81002'}}]}):
+                    unavailable = Connection(Response(json.dumps(changed).encode()))
+                    with patch.object(jf, '_Connection', return_value=unavailable), \
+                            patch.object(imp, '_selected_source', side_effect=AssertionError('Second copy')), \
+                            patch('shelf.portable_obtain_origin.resolve_obtain_origin_again', side_effect=AssertionError('Expired source lookup')):
+                        denied = self.post(f'/cabinet/obtain/jobs/{job.pk}/advance/',
+                            {'expected_revision': str(transfer.revision)})
+                    self.assertEqual(denied.status_code, 302, denied.content)
+                    self.assertTrue(unavailable.closed)
+                    transfer.refresh_from_db()
+                    self.assertEqual(transfer.native_progress['stage'], 'awaiting_library_index')
+                    self.assertEqual(transfer.native_progress['series_evidence'], original_series)
+                    self.assertIsNone(transfer.library_verification)
                 connections = [Connection(Response(json.dumps(value).encode())) for value in
                                ({'Items': [series]}, {'Items': [episode]}, {'Items': [episode]})]
                 with patch.object(jf, '_Connection', side_effect=connections):
@@ -887,29 +922,69 @@ class OwnerTVEntryTests(RecoveryCase):
                 self.assertEqual(response.status_code, 302, response.content)
                 transfer.refresh_from_db()
                 self.assertEqual(transfer.native_progress['stage'], 'verified', transfer.native_progress)
+                self.assertEqual(transfer.native_progress['series_evidence'], original_series)
                 self.assertEqual(transfer.native_progress['copy_intent'], copy_intent)
                 self.assertEqual(output.read_bytes(), video.read_bytes())
                 self.assertEqual(transfer.binding['delivery_binding']['relative_parent'], self.delivery.relative_parent)
-                with patch.object(provider, 'current', side_effect=AssertionError('GET opened services')):
+                with patch.object(normal_provider, 'current', side_effect=AssertionError('GET opened services')):
                     status = self.http.get(f'/cabinet/obtain/jobs/{job.pk}/status/', **self.headers)
                 self.assertEqual(status.status_code, 200)
                 self.assertEqual(status.json()['state'], 'done')
                 self.assertEqual(len(backend.calls), 1)
                 self.assertTrue(all(connection.closed for connection in connections))
+                from urllib.parse import urlsplit, parse_qs
+                first_read = next(call[1] for call in connections[0].calls if isinstance(call, tuple))
+                query = parse_qs(urlsplit(first_read).query)
+                self.assertEqual(query['ids'], ['7' * 32])
+                self.assertNotIn('nameStartsWith', query)
+                revision = transfer.revision
+                for attribute, changed in (('until', self.clock.wall - timedelta(seconds=1)),
+                        ('delivery', replace(provider.delivery, relative_parent='Other Series'))):
+                    original = getattr(provider, attribute)
+                    try:
+                        setattr(provider, attribute, changed)
+                        with patch.object(jf, '_Connection', side_effect=AssertionError('Changed authority opened library')) as transport:
+                            denied = self.post(f'/cabinet/obtain/jobs/{job.pk}/advance/',
+                                {'expected_revision': str(revision)})
+                        self.assertEqual(denied.status_code, 409, denied.content)
+                        transport.assert_not_called()
+                        transfer.refresh_from_db()
+                        self.assertEqual(transfer.revision, revision)
+                    finally:
+                        setattr(provider, attribute, original)
                 from shelf.obtain_tv_flow import validate_native_progress
-                from shelf.disclosure import read_json
                 for field, changed in (('stage', 'invented_state'), ('source_id', 81001),
+                                       ('series_evidence', '7' * 32),
                                        ('series_ref', '0' * 32)):
                     malformed = read_json(canonical_bytes(transfer.native_progress))
                     malformed[field] = changed
                     with self.subTest(progress_field=field), self.assertRaises(acquire.ContractError):
                         validate_native_progress(malformed, binding=transfer.binding, job_id=job.pk,
-                            verification=transfer.library_verification, provider_job=transfer.provider_job)
+                            verification=transfer.library_verification, provider_job=transfer.provider_job, scope=job.scope)
                 malformed = read_json(canonical_bytes(transfer.native_progress))
                 malformed['destination']['relative_path'] = 'Other Series/episode.mkv'
                 with self.assertRaises(acquire.ContractError):
                     validate_native_progress(malformed, binding=transfer.binding, job_id=job.pk,
-                        verification=transfer.library_verification, provider_job=transfer.provider_job)
+                        verification=transfer.library_verification, provider_job=transfer.provider_job, scope=job.scope)
+                # Restore may validate expired history, but cannot accept a
+                # receipt borrowed from another command or mint live authority.
+                import sqlite3
+                from shelf import recovery
+                raw = sqlite3.connect(':memory:')
+                try:
+                    connection.connection.backup(raw)
+                    recovery.semantic_check(raw)
+                    for (name,) in raw.execute("SELECT name FROM sqlite_master WHERE type='trigger'").fetchall():
+                        raw.execute('DROP TRIGGER "' + name.replace('"', '""') + '"')
+                    malformed = read_json(canonical_bytes(transfer.native_progress))
+                    malformed['series_evidence']['request_id'] = str(uuid4())
+                    raw.execute('UPDATE shelf_obtaintransfer SET native_progress=? WHERE job_id=?',
+                        (canonical_bytes(malformed).decode(), job.pk))
+                    from shelf.portable_obtain_origin import validate_obtain_history
+                    with self.assertRaises((ValueError, acquire.ContractError)):
+                        validate_obtain_history(raw)
+                finally:
+                    raw.close()
                 # Persisted verification JSON alone cannot survive issuer loss.
                 self.authority._obtain_verified.clear()
                 status = self.http.get(f'/cabinet/obtain/jobs/{job.pk}/status/', **self.headers)

@@ -50,7 +50,7 @@ def selected_job(context, *, services):
     progress = transfer.native_progress
     from shelf.obtain_tv_flow import validate_native_progress
     validate_native_progress(progress, binding=binding, job_id=job.pk,
-                             verification=transfer.library_verification, provider_job=transfer.provider_job)
+                             verification=transfer.library_verification, provider_job=transfer.provider_job, scope=job.scope)
     if (type(progress) is not dict or progress.get('schema') != 'obtain-tv-progress/v1'
             or type(progress.get('service_generations')) is not list):
         raise Blocked('Historical request has no frozen service binding')
@@ -72,16 +72,25 @@ def selected_job(context, *, services):
     return result
 
 
-def _native_cas(context, progress, *, verification=None, failed=False):
+def _native_cas(context, progress, *, verification=None, failed=False, series_evidence=None):
     from django.db.models import F
     from shelf.portable_saved_authority import write_for
     from shelf.obtain_native_context import native_job_context
     from shelf.disclosure import canonical_bytes
     context.revalidate()
     from shelf.obtain_tv_flow import validate_native_progress
-    transfer = ObtainTransfer.objects.get(pk=context.job_id)
+    transfer = ObtainTransfer.objects.select_related('job').get(pk=context.job_id)
+    original = transfer.native_progress.get('series_evidence')
+    introduced = progress.get('series_evidence')
+    if original is not None:
+        if introduced != original:
+            raise Blocked('The first validated Series receipt is immutable')
+    elif introduced is not None:
+        from shelf.jellyfin_native import ValidatedSeriesBinding, series_evidence_material
+        if type(series_evidence) is not ValidatedSeriesBinding or series_evidence_material(series_evidence) != introduced:
+            raise Blocked('Only a typed resolver result may introduce Series evidence')
     validate_native_progress(progress, binding=transfer.binding, job_id=context.job_id,
-                             verification=verification, provider_job=transfer.provider_job)
+                             verification=verification, provider_job=transfer.provider_job, scope=transfer.job.scope)
     if len(canonical_bytes(progress)) > 65536:
         raise Blocked('Bounded selected progress required')
     access = context._access
@@ -225,30 +234,55 @@ def advance_selected(context, *, expected_revision, services):
     _native_cas(context, progress)
     context = native_job_context(access, job_id=job.job_id, operation='verify_library')
     services = _services_again(context, job, services.delivery)
+    # Decoded history selects one exact Series for a fresh authenticated read;
+    # it cannot supply identity authority or renew its original observation.
+    evidence = (jellyfin_native.read_series_evidence(progress['series_evidence'])
+                if 'series_evidence' in progress else None)
+    if evidence is not None and evidence.binding != services.library:
+        raise Blocked('Validated Series belongs to a different library binding')
     with context.effect_window():
-        target = services.target_for(context, job, destination, progress.get('series_ref'))
+        target = services.target_for(context, job, destination, evidence)
         if (type(target) is not jellyfin_native.EpisodeResolutionTarget
                 or (target.request_id, target.binding_digest, target.content_identity_digest,
                     target.destination_binding_digest, target.scope) !=
                    (job.request_id, job.binding_digest, job.content_identity_digest,
                     destination.destination_binding_digest, job.episode_scope)):
             raise Blocked('Current permitted library target required')
+        if ((evidence is not None and (target.show_id, target.show_name, target.series_id) !=
+                (None, None, evidence.series_id)) or (evidence is None and target.series_id is not None)):
+            raise Blocked('Series continuation requires exact typed evidence, without a search fallback')
         target = replace(target, facts_valid_until=min(target.facts_valid_until, context.authority_deadline()))
         def current(binding, selected_target):
             if (services.generations(context) != job.service_generations or binding != services.library
                     or selected_target != target):
                 raise Blocked('Current library/native binding changed')
-            renewed = services.target_for(context, job, destination, progress.get('series_ref'))
+            renewed = services.target_for(context, job, destination, evidence)
             renewed = replace(renewed, facts_valid_until=min(renewed.facts_valid_until, context.authority_deadline()))
             if renewed != target:
                 raise Blocked('Permitted library identity changed')
             return binding, selected_target
         resolution = jellyfin_native.resolve_episode(services.library, target,
             credential_scope=services.library_credential_scope, revalidate=current, clock=services.library_clock)
+    observed_series = resolution.series_evidence
+    if observed_series is not None:
+        if (type(observed_series) is not jellyfin_native.ValidatedSeriesBinding
+                or (observed_series.request_id, observed_series.job_binding_digest,
+                    observed_series.content_identity_digest, observed_series.destination_binding_digest,
+                    observed_series.scope, observed_series.binding, observed_series.target_digest) !=
+                   (job.request_id, job.binding_digest, job.content_identity_digest,
+                    destination.destination_binding_digest, job.episode_scope, services.library,
+                    jellyfin_native._digest(target.material()))
+                or resolution.status not in ('resolved', 'not_indexed')
+                or (evidence is not None and observed_series.series_id != evidence.series_id)):
+            raise Blocked('Validated Series result changed its selected binding')
+        # Later reads prove currentness for this request. Keep the bootstrap
+        # receipt byte-for-byte so recovery never restamps expired source facts.
+        if evidence is None:
+            progress['series_evidence'] = jellyfin_native.series_evidence_material(observed_series)
     if resolution.status != 'resolved':
         progress.update(stage='awaiting_library_index', reason=resolution.reason,
                         series_ref=resolution.series_id or progress.get('series_ref'))
-        _native_cas(context, progress)
+        _native_cas(context, progress, series_evidence=observed_series)
         return
     def revalidate_services():
         actual = services.generations(context)
@@ -261,12 +295,12 @@ def advance_selected(context, *, expected_revision, services):
     if verified.status != 'verified':
         progress.update(stage='verification_' + verified.status, reason=verified.reason,
                         series_ref=resolution.series_id)
-        _native_cas(context, progress)
+        _native_cas(context, progress, series_evidence=observed_series)
         return
     proof = verified.verification
     wire = {**asdict(proof), 'observed_at': proof.observed_at.isoformat(), 'valid_until': proof.valid_until.isoformat()}
     progress.update(stage='verified', reason='', series_ref=resolution.series_id, observed_at=proof.observed_at.isoformat())
-    fresh = _native_cas(context, progress, verification=wire)
+    fresh = _native_cas(context, progress, verification=wire, series_evidence=observed_series)
     _remember_verified(fresh, proof, wire)
 
 

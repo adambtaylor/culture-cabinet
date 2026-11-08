@@ -1,5 +1,5 @@
 """Server-only composition using existing scoped records; disabled by default."""
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 import os
 from pathlib import Path
 from uuid import UUID
@@ -47,7 +47,55 @@ class CurrentTVServiceProvider(TVServiceProvider):
         job = acquire.owned_job(context._access.actor, context.profile_id, context.job_id)
         if value.delivery != self.delivery_binding(context._access, job):
             raise Blocked('Current delivery mapping changed')
-        return value
+        return replace(value, target_for=lambda current, selected, destination, evidence:
+            selected_library_target(current, selected, destination, evidence, library=value.library))
+
+
+def selected_library_target(context, job, destination, series_evidence, *, library):
+    """Use current source facts or reread an independently validated Series.
+
+    An expired bootstrap receipt supplies only the operational Series selector.
+    The unchanged library binding and actual native deadline bound the new read;
+    the resolver must independently prove the content identity again.
+    """
+    from . import jellyfin_native as jf
+    from .obtain_native_context import NativeJobContext
+    from .obtain_tv_flow import tv_content_identity_digest
+    if type(context) is not NativeJobContext or context.operation != 'verify_library':
+        raise Blocked('Current native library context required')
+    context.revalidate()
+    if (type(library) is not jf.ServiceBinding or context._access.authority.now() >= library.expires_at
+            or (job.actor_id, job.profile_id, job.job_id) !=
+               (context.actor_id, context.profile_id, context.job_id)):
+        raise Blocked('Current selected library binding required')
+    if series_evidence is not None:
+        if (type(series_evidence) is not jf.ValidatedSeriesBinding
+                or (series_evidence.request_id, series_evidence.job_binding_digest,
+                    series_evidence.content_identity_digest, series_evidence.destination_binding_digest,
+                    series_evidence.scope, series_evidence.binding) !=
+                   (job.request_id, job.binding_digest, job.content_identity_digest,
+                    destination.destination_binding_digest, job.episode_scope, library)):
+            raise Blocked('Exact validated Series evidence required')
+        jf.series_evidence_material(series_evidence)
+        show_id = show_name = None
+        series_id = series_evidence.series_id
+        end = min(library.expires_at, context.authority_deadline())
+    else:
+        from .portable_obtain_origin import resolve_obtain_origin_again
+        from .episode_scope import parse_scope
+        row = acquire.owned_job(context._access.actor, context.profile_id, context.job_id)
+        source = resolve_obtain_origin_again(context._access, row.publication_origin,
+            row.scope, context._access.authority.now())
+        source.require_title_export()
+        if type(source.source_id) is not int or source.source_id <= 0:
+            raise Blocked('Current exact Series identity required')
+        show_id, show_name, series_id = source.source_id, source.title, None
+        season, episode = parse_scope(row.scope)
+        if tv_content_identity_digest(tmdb_show_id=show_id, season=season, episode=episode) != job.content_identity_digest:
+            raise Blocked('Current source content identity changed')
+        end = min(source.valid_until, library.expires_at, context.authority_deadline())
+    return jf.EpisodeResolutionTarget(job.request_id, job.binding_digest, job.content_identity_digest,
+        destination.destination_binding_digest, show_id, job.episode_scope, show_name, series_id, end)
 
 
 @dataclass(frozen=True)
