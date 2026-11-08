@@ -43,7 +43,7 @@ class BoundaryCase(TransactionTestCase):
         self.addCleanup(self.directory.cleanup)
         self.root = Path(self.directory.name) / 'owner'
         from .portable_fixture import BoundSocketLease
-        lease = BoundSocketLease(self.id())
+        lease = BoundSocketLease(self.id(), lifetime=getattr(self, 'bound_socket_lifetime', 20))
         self.addCleanup(lease.close)  # Registered before acquisition/partial setup.
         self.boundary = open_boundary(self.root)
         lease.attach(self.boundary)

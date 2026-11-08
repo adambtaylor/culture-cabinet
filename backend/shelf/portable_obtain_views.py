@@ -223,12 +223,22 @@ def submission_review(request, job_id):
     data = _fields(request, {'profile_ref', 'selection_token'})
     with _scope(request, data, mutate=True) as access:
         job = acquire.owned_job(access.actor, access.identity.profile_id, job_id)
-        with access.effect_window(action='select'):
-            services = obtain_runtime.submission_factory(actor=access.actor, profile_id=access.identity.profile_id, job=job)
-        result = acquire.review_submission(actor=access.actor, profile_id=access.identity.profile_id, job_id=job_id,
-            context=services.context, evidence=services.evidence, max_bytes=services.max_bytes,
-            retriever=services.retriever, complete_root=services.complete_root, test_only=services.test_only,
-            completion_intent=services.completion_intent)
+        try:
+            with access.effect_window(action='select'):
+                services = obtain_runtime.submission_factory(actor=access.actor, profile_id=access.identity.profile_id, job=job)
+            result = acquire.review_submission(actor=access.actor, profile_id=access.identity.profile_id, job_id=job_id,
+                context=services.context, evidence=services.evidence, max_bytes=services.max_bytes,
+                retriever=services.retriever, complete_root=services.complete_root, test_only=services.test_only,
+                completion_intent=services.completion_intent)
+        except acquire.ContractError:
+            # Render before the live scope closes. Both projections recheck PA1;
+            # authority loss must still deny, without exposing retained job data.
+            response = _render(request, access, 'cabinet/portable_saved_items.html',
+                acquisition_job=_job(access, job), error_message=(
+                    'Submission review is unavailable or has changed. '
+                    'Read this request’s recorded status before taking further action.'))
+            response.status_code = 409
+            return response
         return _render(request, access, 'cabinet/portable_obtain_submission.html', acquisition_job=_job(access, job),
             obtain_submission=result['binding'], obtain_submit_form=SubmissionForm(initial={'token': result['token']}),
             obtain_submit_url=BASE + f'jobs/{job_id}/submit/')
