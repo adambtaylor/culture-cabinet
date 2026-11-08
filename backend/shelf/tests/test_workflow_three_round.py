@@ -1,5 +1,7 @@
 """Three native Enhance rounds; only external wire responses are synthetic."""
 import uuid
+import traceback
+from shelf.portable_enhance_service import _DurablePorts
 from urllib.parse import urlencode
 from unittest.mock import patch
 
@@ -61,7 +63,15 @@ class NativeThreeRoundTests(NativeFeedbackCase):
                 {'recordings': [{**row, 'title': 'Synthetic discovered recording'}]})
             return 200, canonical_bytes(document), ()
 
-        with patch.object(CheckedTransport, 'send', model_reply), patch(
+        original_dispatch = _DurablePorts.dispatch
+        def diagnose_dispatch(ports, *args, **kwargs):
+            try:
+                return original_dispatch(ports, *args, **kwargs)
+            except Exception as error:
+                traceback.print_tb(error.__traceback__)
+                raise
+
+        with patch.object(_DurablePorts, 'dispatch', diagnose_dispatch), patch.object(CheckedTransport, 'send', model_reply), patch(
                 'shelf.discovery_transport.musicbrainz_authorized', side_effect=source_reply):
             # Validate the hosted adapter with its real permit, using only a fake
             # wire response. An isolated disclosure fixture cannot authorize it.
