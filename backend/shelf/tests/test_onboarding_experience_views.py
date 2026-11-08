@@ -130,7 +130,9 @@ class OnboardingExperienceTests(SimpleTestCase):
                                'CC0 core data', 'no audio rights are implied',
                                'matches names, not a verified artist identity',
                                'separate configuration and source permission',
-                               'TMDB and Hardcover are unavailable'):
+                               'Movie and TV lookups use TMDB; book lookups use Hardcover. '
+                               'Each source needs its own connection and permission. '
+                               'Check its source page for current readiness.'):
                     self.assertIn(phrase, html)
                 self.assertTrue(any(tag == 'a' and attrs.get('href') ==
                                     'https://musicbrainz.org/doc/About/Data_License'
