@@ -127,3 +127,36 @@ class EpisodeResolutionTests(TestCase):
         result = self.run_resolve(revalidate=revalidate)
         self.assertEqual(result.status, 'unavailable')
         self.assertLess(self.factory_count, 3)
+
+    def test_validated_series_survives_explicit_missing_episode_without_arrival(self):
+        result = self.run_resolve([{'Items': [self.series]}, {'Items': []}])
+        self.assertEqual(result.status, 'not_indexed')
+        self.assertIsNone(result.series_id)
+        self.assertIsNone(result.selection)
+        self.assertIsNone(result.observation)
+        self.assertIsNone(result.binding)
+        evidence = result.series_evidence
+        self.assertIs(type(evidence), jf.ValidatedSeriesBinding)
+        self.assertEqual(evidence.series_id, self.series['Id'])
+        self.assertEqual(evidence.binding, self.binding)
+        self.assertEqual(evidence.content_identity_digest, self.target.content_identity_digest)
+        self.assertEqual(evidence.operation_digest, result.operation_digests[0])
+        self.assertEqual(evidence.response_digest, result.response_digests[0])
+        self.assertEqual(evidence.observed_at, self.clock.now())
+        self.assertEqual(evidence.valid_until, self.target.facts_valid_until)
+        self.assertEqual(self.factory_count, 2)
+
+    def test_series_evidence_closed_roundtrip_preserves_original_bounds(self):
+        result = self.run_resolve()
+        evidence = result.series_evidence
+        self.assertEqual(result.status, 'resolved')
+        self.assertIs(type(evidence), jf.ValidatedSeriesBinding)
+        self.assertEqual(len(result.operation_digests), 3)
+        self.assertEqual(len(result.response_digests), 3)
+        material = jf.series_evidence_material(evidence)
+        self.clock.elapsed = 600
+        self.assertEqual(jf.read_series_evidence(material), evidence)
+        self.assertEqual(jf.series_evidence_material(jf.read_series_evidence(material)), material)
+        self.assertEqual(evidence.valid_until, self.target.facts_valid_until)
+        for forbidden in ('ProviderIds', '1399', 'Fictional Fixture Show', 'SYNTHETIC_NOT_A_KEY'):
+            self.assertNotIn(forbidden, json.dumps(material))

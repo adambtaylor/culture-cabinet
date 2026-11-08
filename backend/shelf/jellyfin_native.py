@@ -411,6 +411,72 @@ class EpisodeResolutionTarget:
 
 
 @dataclass(frozen=True)
+class ValidatedSeriesBinding:
+    """Historical operational selector, never current authority or arrival proof."""
+    request_id: str
+    job_binding_digest: str
+    content_identity_digest: str
+    destination_binding_digest: str
+    scope: str
+    target_digest: str
+    service_binding_digest: str
+    series_id: str
+    operation_digest: str
+    response_digest: str
+    observed_at: datetime
+    valid_until: datetime
+    binding: ServiceBinding
+
+
+def series_evidence_material(value):
+    """Closed historical receipt: validate identity/bounds, never refresh dates."""
+    _require(type(value) is ValidatedSeriesBinding and type(value.binding) is ServiceBinding)
+    _text(value.request_id, 64)
+    for digest in (value.job_binding_digest, value.content_identity_digest,
+                   value.destination_binding_digest, value.target_digest,
+                   value.service_binding_digest, value.operation_digest, value.response_digest):
+        _require(type(digest) is str and re.fullmatch('[0-9a-f]{64}', digest) is not None)
+    _guid(value.series_id)
+    try:
+        _require(parse_scope(value.scope) is not None)
+    except ScopeError:
+        raise Unavailable('invalid_series_evidence') from None
+    binding = value.binding.material()
+    _require(set(binding) == set(ServiceBinding.__dataclass_fields__)
+             and _digest(binding) == value.service_binding_digest
+             and _stamp(value.observed_at) < _stamp(value.valid_until) <= value.binding.expires_at)
+    return {'schema': 'obtain-tv-series-evidence/v1',
+            **{name: getattr(value, name) for name in ValidatedSeriesBinding.__dataclass_fields__
+               if name not in ('observed_at', 'valid_until', 'binding')},
+            'observed_at': value.observed_at.isoformat(),
+            'valid_until': value.valid_until.isoformat(), 'binding': binding}
+
+
+def read_series_evidence(material):
+    """Decode historical material only; an expired receipt grants no live read."""
+    _require(type(material) is dict
+             and set(material) == {'schema', *ValidatedSeriesBinding.__dataclass_fields__}
+             and type(material['schema']) is str
+             and material['schema'] == 'obtain-tv-series-evidence/v1')
+    raw_binding = material['binding']
+    _require(type(raw_binding) is dict and set(raw_binding) == set(ServiceBinding.__dataclass_fields__))
+    try:
+        def stamp(value):
+            _require(type(value) is str)
+            return _stamp(datetime.fromisoformat(value))
+        binding = ServiceBinding(**{**raw_binding, 'expires_at': stamp(raw_binding['expires_at'])})
+        value = ValidatedSeriesBinding(**{name: material[name]
+            for name in ValidatedSeriesBinding.__dataclass_fields__
+            if name not in ('observed_at', 'valid_until', 'binding')},
+            observed_at=stamp(material['observed_at']), valid_until=stamp(material['valid_until']),
+            binding=binding)
+        series_evidence_material(value)
+        return value
+    except (TypeError, ValueError, OverflowError):
+        raise Unavailable('invalid_series_evidence') from None
+
+
+@dataclass(frozen=True)
 class ResolvedEpisodeBinding:
     status: str
     reason: str
@@ -434,6 +500,7 @@ class ResolvedEpisodeBinding:
     observed_at: datetime | None
     valid_until: datetime | None
     binding: ServiceBinding | None = None
+    series_evidence: ValidatedSeriesBinding | None = None
 
 
 class _ResolutionStop(Exception):
@@ -475,6 +542,7 @@ def resolve_episode(binding, target, *, credential_scope=None, revalidate=None, 
     selected = observation = None
     series_id = None
     identity_digest = ''
+    series_evidence = None
     try:
         _require(type(binding) is ServiceBinding and type(target) is EpisodeResolutionTarget)
         bound_digest, target_digest = _digest(binding.material()), _digest(target.material())
@@ -536,6 +604,15 @@ def resolve_episode(binding, target, *, credential_scope=None, revalidate=None, 
         identity_digest = tv_content_identity_digest(tmdb_show_id=int(provider_id),
             season=season, episode=episode_number)
         _require(identity_digest == target.content_identity_digest)
+        current()
+        # Mint only after the complete Series validation and currentness fence.
+        # Its original dates survive a later missing Episode; the selector must
+        # still be reread under current authority before any arrival proof.
+        series_evidence = ValidatedSeriesBinding(target.request_id, target.binding_digest,
+            identity_digest, target.destination_binding_digest, target.scope, target_digest,
+            bound_digest, series_id, operations[0], responses[0], _stamp(clock.now()),
+            min(binding.expires_at, target.facts_valid_until), binding)
+        series_evidence_material(series_evidence)
         episode = query(series_id)
         item_id = _guid(episode['Id'])
         _require(episode['ServerId'] == binding.server_id and episode['Type'] == 'Episode'
@@ -563,8 +640,16 @@ def resolve_episode(binding, target, *, credential_scope=None, revalidate=None, 
             binding.server_id, binding.user_id, binding.library_id, binding.tv_root,
             binding.configuration_generation, binding.credential_generation, series_id,
             selected, observation, tuple(operations), tuple(responses), clock.now(),
-            min(binding.expires_at, target.facts_valid_until), binding)
+            min(binding.expires_at, target.facts_valid_until), binding, series_evidence)
     except Exception as error:
+        partial_evidence = None
+        if (type(error) is _ResolutionStop and error.status == 'not_indexed'
+                and series_evidence is not None):
+            try:
+                current()
+                partial_evidence = series_evidence
+            except Exception:
+                error = Unavailable('episode_resolution_unavailable')
         status = error.status if type(error) is _ResolutionStop else 'unavailable'
         reason = error.reason if type(error) is _ResolutionStop else 'episode_resolution_unavailable'
         # No names, provider IDs, paths from unaccepted results or raw errors.
@@ -575,4 +660,5 @@ def resolve_episode(binding, target, *, credential_scope=None, revalidate=None, 
             binding.server_id if type(binding) is ServiceBinding else '',
             binding.user_id if type(binding) is ServiceBinding else '',
             binding.library_id if type(binding) is ServiceBinding else '',
-            '', '', '', None, None, None, tuple(operations), tuple(responses), None, None)
+            '', '', '', None, None, None, tuple(operations), tuple(responses), None, None,
+            series_evidence=partial_evidence)
