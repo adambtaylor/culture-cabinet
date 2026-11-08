@@ -501,7 +501,10 @@ class EnhanceService:
                 source_count=len(value['source_previews']))
             source = value['source_preview']
             public['disclosure'].update({key: source[key] for key in
-                ('plan_digest', 'operation_digest', 'method', 'origin', 'path', 'query', 'headers')})
+                ('plan_digest', 'operation_digest', 'method', 'origin', 'path', 'query')})
+            # Public headers are adapter-specific; required wire fields stay strict.
+            if 'headers' in source:
+                public['disclosure']['headers'] = source['headers']
         return public
 
     @sensitive_variables()
