@@ -48,7 +48,8 @@ def signal_rows(state, target, signals=ENTRY_SIGNALS):
             'value': body.get('value') if body is not None and signal != 'note' else None,
             'text': body['text'] if body is not None and signal == 'note' else '',
             'event_ref': str(effective) if effective else '',
-            'can_undo': body is not None and not erased,
+            'can_undo': effective is not None and not erased,
+            'cleared': effective is not None and body is None and not erased,
             'mutation_id': str(uuid.uuid4()), 'undo_mutation_id': str(uuid.uuid4())})
     return rows
 
