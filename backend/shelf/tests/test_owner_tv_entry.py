@@ -561,8 +561,50 @@ class OwnerTVEntryTests(RecoveryCase):
             current = self.real_recipient_reader(actor=self.actor, profile_id=self.state.profile_id)
             self.assertNotEqual(current.credential_generation, reviewed.credential_generation)
             backend = preview._reviewed_backend(actor=self.actor, profile_id=self.state.profile_id,
-                                                 recipient=reviewed, revalidate=lambda: None)
+                                                 recipient=reviewed, revalidate=lambda actual: None)
             with patch.object(type(backend._client), 'caps', side_effect=AssertionError('Changed key reached transport')) as transport:
                 with self.assertRaises(Blocked):
                     backend.caps(actor_id=self.actor.pk, profile_id=self.state.profile_id)
                 transport.assert_not_called()
+
+    def test_actual_reviewed_backend_reaches_caps_search_and_closes_single_lock(self):
+        from shelf import credential_store as store
+        from .fixtures_credentials import FakeTree
+        from .test_acquisition_backend import grant
+        from .test_acquisition_contract import CAPS
+        ref, _ = self.selected()
+        with patch('tempfile.tempdir', self.directory.name):
+            tree = FakeTree(store, provider='hydra')
+        self.addCleanup(tree.temporary.cleanup)
+        metadata = grant('hydra')
+        metadata = replace(metadata, binding=replace(metadata.binding,
+            actor_id=str(self.actor.pk), profile_id=str(self.state.profile_id)))
+        self.assertEqual(store.commit_entry(tree.store, metadata,
+            bytearray(b'SYNTHETIC-HYDRA-SUCCESS')).outcome, 'stored')
+        tree.store.close(); handles = []; operations = []
+        def opener(*, provider):
+            handle = store._fixture_store(tree.path, provider=provider)
+            handles.append(handle)
+            return handle
+        def send(request, *, private_params, nzb=None):
+            # Only public requests are retained; synthetic credential bytes do
+            # not enter this evidence or replace the real credential boundary.
+            operations.append(request.public_dict())
+            return CAPS if request.operation == 'caps' else payload(
+                item(title='Fiction Series 2024 S02E01 1080p', category='5000'))
+        transport = Mock(); transport.send.side_effect = send
+        with patch.object(store, 'open_store', side_effect=opener), \
+                patch('shelf.obtain_preview.read_search_recipient', side_effect=self.real_recipient_reader), \
+                patch('shelf.acquisition_backend.LoopbackTransport', return_value=transport):
+            response = self.http.get('/cabinet/obtain/options/?owner_selection_ref=' + ref, **self.headers)
+            self.assertEqual(response.status_code, 200, response.content)
+            self.assertContains(response, 'Fiction Series 2024 S02E01')
+            token = re.search(r'name="search_review_ref" value="([^"]+)"', response.content.decode())[1]
+            response = self.post('/cabinet/obtain/search/', {'owner_selection_ref': ref,
+                'search_review_ref': token, 'search_confirmed': 'on'})
+        self.assertEqual(response.status_code, 302, response.content)
+        self.assertEqual([operation['params']['t'] for operation in operations], ['caps', 'search'])
+        self.assertEqual(operations[-1]['params']['q'], 'Fiction Series 2024 S02E01')
+        self.assertEqual(preview.ObtainPreview.objects.get().state, 'results')
+        self.assertTrue(handles)
+        self.assertTrue(all(handle.fd == -1 and (handle._lock is None or handle._lock.fd == -1) for handle in handles))

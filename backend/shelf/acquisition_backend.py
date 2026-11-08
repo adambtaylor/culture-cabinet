@@ -54,9 +54,13 @@ def _canonical_uuid(value):
 
 class Backend:
     def __init__(self, *, hydra_grant=None, sab_grant=None,
-                 _open_store=store.open_store, _transport=None, job_options=None):
+                 _open_store=store.open_store, _transport=None, job_options=None,
+                 _credential_validator=None):
+        if _credential_validator is not None and not callable(_credential_validator):
+            raise Blocked('Trusted credential validator required')
         self._grants = {'hydra': hydra_grant, 'sab': sab_grant}
         self._open_store = _open_store
+        self._credential_validator = _credential_validator
         self.job_options = job_options
         self._client = Client(Permissions(search=True, enqueue=True),
                               LoopbackTransport() if _transport is None else _transport)
@@ -78,6 +82,11 @@ class Backend:
             record = store.read_record(handle)
             store.validate_metadata(record.metadata, now=store.utc_now(), provider=provider)
             if record.metadata.binding != grant.binding:
+                raise store.Refused('invalid_input')
+            # This same lock covers generation validation and credential use.
+            # Existing callers retain the original metadata-only path.
+            if self._credential_validator is not None and self._credential_validator(record,
+                    provider=provider, actor_id=actor_id, bound_profile_id=profile_id) is not True:
                 raise store.Refused('invalid_input')
             key = store._secret_text(record.secret, provider=provider)
         except (store.Refused, OSError):

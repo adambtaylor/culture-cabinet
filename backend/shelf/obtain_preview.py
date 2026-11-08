@@ -102,30 +102,23 @@ def read_search_recipient(*, actor, profile_id):
 
 
 def _reviewed_backend(*, actor, profile_id, recipient, revalidate):
-    def opener(*, provider):
-        if provider != 'hydra':
-            raise store.Refused()
-        revalidate()
-        handle = record = None
+    def validate(record, *, provider, actor_id, bound_profile_id):
         try:
-            handle = store.open_store(provider=provider)
-            if handle.context != store._provider_context(provider):
+            if provider != 'hydra' or (actor_id, bound_profile_id) != (actor.pk, profile_id):
                 raise store.Refused()
-            store.lock_store(handle); record = store.read_record(handle)
-            if _record_recipient(record, actor, profile_id) != recipient:
+            actual = _record_recipient(record, actor, profile_id)
+            if actual != recipient:
                 raise store.Refused()
-            # Keep this SAME store lock until Backend closes the handle. A key
-            # replacement cannot slip between our generation check and its
-            # credential read; Backend retains its normal validation and I/O.
-            record.close(); record = None
-            result, handle = handle, None
-            return result
-        finally:
-            if record is not None:
-                record.close()
-            if handle is not None:
-                handle.close()
-    return Backend(hydra_grant=recipient.metadata, _open_store=opener)
+            # Backend alone owns the lock. Reuse its authenticated record here
+            # rather than reopening/locking the same store during source checks.
+            revalidate(actual)
+            return True
+        except Exception:
+            # The credential boundary owns cleanup for its fixed refusal type.
+            # Native/source errors must not skip closing the record and handle.
+            raise store.Refused() from None
+    return Backend(hydra_grant=recipient.metadata, _open_store=store.open_store,
+                   _credential_validator=validate)
 
 
 def origin_search_request(target):
@@ -171,7 +164,7 @@ def issue_search_review(*, access, origin, scope):
                 'destination': operation.endpoint, 'expires_at': end.isoformat()}
 
 
-def _checked_search_review(access, origin, scope, review_ref):
+def _checked_search_review(access, origin, scope, review_ref, *, recipient=None):
     from .portable_obtain_origin import resolve_obtain_origin_again
     from .disclosure import canonical_bytes
     reviews = _search_reviews(access.authority)
@@ -186,8 +179,10 @@ def _checked_search_review(access, origin, scope, review_ref):
         target = resolve_obtain_origin_again(access, origin, scope, access.authority.now())
         target.require_title_export()
         operation = origin_search_request(target)
+        actual_recipient = recipient if recipient is not None else read_search_recipient(
+            actor=access.actor, profile_id=access.identity.profile_id)
         if (hashlib.sha256(canonical_bytes(operation.public_dict())).hexdigest() != value['operation_digest']
-                or read_search_recipient(actor=access.actor, profile_id=access.identity.profile_id) != value['recipient']):
+                or actual_recipient != value['recipient']):
             raise saved.SavedError('The reviewed query or indexer connection changed. Review again.', 409)
         return value, target, operation
     except Exception:
@@ -268,8 +263,8 @@ def search_origin(*, access, origin, scope, search_review_ref, factory=None):
     from .portable_obtain_origin import resolve_obtain_origin_again
     actor, profile_id = access.actor, access.identity.profile_id
     require_available()
-    def current():
-        return _checked_search_review(access, origin, scope, search_review_ref)
+    def current(recipient=None):
+        return _checked_search_review(access, origin, scope, search_review_ref, recipient=recipient)
     with access.effect_window(action='export'):
         review, target, operation = current()
         if review['attempted']:
@@ -284,8 +279,8 @@ def search_origin(*, access, origin, scope, search_review_ref, factory=None):
         private = None; rows = []; state = 'failed'
         try:
             review['attempted'] = True
-            def fence():
-                _, fresh, current_operation = current()
+            def fence(recipient=None):
+                _, fresh, current_operation = current(recipient)
                 if release_title(fresh) != title or current_operation != operation:
                     raise Blocked('Current source or indexer destination changed')
             fence()
