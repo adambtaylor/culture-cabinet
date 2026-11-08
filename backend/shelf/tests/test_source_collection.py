@@ -67,6 +67,42 @@ class Backend(SourceBackend):
 
 
 class SourceCollectionTests(TestCase):
+    def test_minimal_hardcover_checkpoint_still_requires_every_scalar_cache_and_retain(self):
+        from shelf.disclosure import SCALARS
+        cases = [(None, None, ())]
+        cases += [(target, use, ()) for target in sorted(SCALARS) for use in ('cache', 'retain')]
+        cases += [(None, None, (('cache-control', value),)) for value in ('no-store', 'no-cache')]
+        for target, denied_use, headers in cases:
+            with self.subTest(target=target, denied_use=denied_use, headers=headers):
+                registry, query = plan(('book',)); clock = Clock()
+                backend = Backend('hardcover', clock, [(200, {'data': {'search': {
+                    'ids': [81001], 'error': None, 'results': 'UNSELECTED_TEXT_MUST_NOT_BE_RETAINED'}}}, headers)])
+                backend.rights = replace(backend.rights, permissions=tuple(
+                    (name, tuple(use for use in uses if not (name == target and use == denied_use)))
+                    for name, uses in backend.rights.permissions))
+                authorize = backend.authorize
+                def source_authorize(request, plan, *, now):
+                    if request.operation == 'book_details':
+                        # Synthetic issuer models the separate, not-yet-given
+                        # detail confirmation; this does not prove native auth.
+                        raise EnhanceFault('AUTHORITY_DENIED')
+                    return authorize(request, plan, now=now)
+                backend.authorize = source_authorize
+                collector = SourceCollection((('book', ('hardcover',)),), {'hardcover': backend},
+                    clock=clock, isolated_fixture=True)
+                result = collector.collect(query, registry, CollectionBudget())
+                self.assertEqual(result.records, [])
+                self.assertEqual([name for name, _ in backend.sent], ['book_search'])
+                permitted = target is None and not headers
+                self.assertEqual(len(collector.state.pending), int(permitted))
+                if permitted:
+                    pending = next(iter(collector.state.pending.values()))
+                    self.assertEqual(read_json(pending[2].body),
+                        {'data': {'search': {'ids': [81001], 'error': None}}})
+                    self.assertEqual(pending[2].observed_at, NOW)
+                    self.assertLessEqual(pending[4], backend.rights.expires_at)
+                    self.assertNotIn('UNSELECTED_TEXT', pending[2].body.decode())
+
     def test_configured_api_precedes_page_without_enabling_unconfigured_sources(self):
         from shelf.category_registry import KEYS
         registry, query = plan(KEYS)

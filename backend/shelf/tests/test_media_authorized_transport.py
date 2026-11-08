@@ -72,18 +72,25 @@ class MediaAuthorizedTests(TestCase):
                 child.stdout.close.assert_called_once()
                 self.assertNotIn('SYNTHETIC-ONLY-CANARY', repr(spawn.call_args))
 
-    def test_four_fixed_operations_share_exact_legacy_wire_bytes(self):
+    def test_four_fixed_operations_preserve_legacy_bytes_and_select_native_minimal_details(self):
         for source, name in [('tmdb_movie', 'search_movie'), ('tmdb_tv', 'search_tv'),
                              ('hardcover', 'book_search'), ('hardcover', 'book_details')]:
             request = self.request(source, name)
             operation = catalogue.media_operation(request)
             value = list(request.ids) if request.ids else request.terms[0]
             provider, args = catalogue._command(name, value)
+            legacy = catalogue.MediaOperation(source, name, ids=request.ids) if request.ids else \
+                catalogue.MediaOperation(source, name, request.terms[0])
             self.assertEqual(provider, operation.provider)
             self.assertEqual(args[args.index('--url') + 1], operation.origin + operation.path +
                 ('?' + operation.query if operation.query else ''))
             if operation.body:
-                self.assertEqual(args[args.index('--data-binary') + 1].encode(), operation.body)
+                self.assertEqual(args[args.index('--data-binary') + 1].encode(), legacy.body)
+                if name == 'book_details':
+                    self.assertNotEqual(operation.body, legacy.body)
+                    self.assertEqual(operation.projection, 'native_minimal')
+                else:
+                    self.assertEqual(operation.body, legacy.body)
             self.assertEqual(len(operation.operation_digest), 64)
             self.assertNotIn('Synthetic title', repr(operation))
             with self.assertRaises(catalogue.CatalogueError):
@@ -98,13 +105,17 @@ class MediaAuthorizedTests(TestCase):
     def test_independent_pinned_wires_and_digests_reach_authorized_process(self):
         import hashlib
         import json
-        # Literal documents/parameter order copied from the pinned pre-change
-        # contract, independently of the builder under test.
+        # Independently pin both the unchanged legacy document and the new
+        # closed native document; preview and transport must bind selected bytes.
         fields = ('id title slug description book_category_id canonical_id image{url width height} '
             'book_series(limit:12){book_id series_id position details compilation series{id name slug}} '
             'editions(limit:12){id book_id canonical_id edition_format edition_information}')
         search = 'query Search($q:String!){search(query:$q,per_page:9,page:1){ids error}}'
-        details = 'query Details($ids:[Int!]!){books(where:{id:{_in:$ids}},limit:9){' + fields + '}}'
+        details = 'query Details($ids:[Int!]!){books(where:{id:{_in:$ids}},limit:9){id title slug}}'
+        legacy_details = 'query Details($ids:[Int!]!){books(where:{id:{_in:$ids}},limit:9){' + fields + '}}'
+        legacy = catalogue.MediaOperation('hardcover', 'book_details', ids=(81001, 81002))
+        self.assertEqual(legacy.body, json.dumps({'query': legacy_details,
+            'variables': {'ids': [81001, 81002]}}, ensure_ascii=True).encode())
         query = 'include_adult=false&language=en-US&page=1&query=Synthetic+title'
         expected = [
             ('tmdb_movie', 'search_movie', 'GET', 'https://api.themoviedb.org', '/3/search/movie', query, b''),
