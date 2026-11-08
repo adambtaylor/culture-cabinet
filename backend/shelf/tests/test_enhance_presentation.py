@@ -802,3 +802,44 @@ class EnhancePresentationTests(SimpleTestCase):
         legacy = views._source_setup_display({'profile_ref': profile})
         self.assertEqual(legacy['source_adapter'], 'musicbrainz_recording')
         self.assertEqual(legacy['source_consent_action_url'], '/cabinet/source/musicbrainz/consent')
+
+    def test_feedback_outcome_acknowledges_write_separately_from_unavailable_publication(self):
+        from django.test import RequestFactory
+        from shelf import enhancement_views as views
+        profile = self.backend_feedback_fixture()['profile_ref']
+        for code, text in [('RESPONSE_SAVED', 'Your response was saved.'),
+                           ('RESPONSE_UNDONE', 'Your response was undone.')]:
+            with self.subTest(code=code):
+                response = views._native_cabinet_html(RequestFactory().get('/cabinet'),
+                    {'profile_ref': profile, 'profile_label': 'Test cabinet', 'read_code': 'PREVIEW_STALE',
+                     'published': False, 'categories': [], 'selection_token': 'synthetic-selection',
+                     'feedback_outcome': {'schema': 'feedback-action-outcome/v1', 'code': code}}, status=409)
+                self.assertEqual(response.status_code, 409)
+                doc = Document(response.content.decode())
+                notice = next(n for n in doc.tagged('section') if n.attrs.get('id') == 'cabinet-feedback-outcome')
+                self.assertEqual(notice.attrs['role'], 'status')
+                self.assertEqual(notice.attrs['tabindex'], '-1')
+                self.assertIn('autofocus', notice.attrs)
+                self.assertIn(text, notice.text())
+                self.assertIn('Current picks cannot be shown', doc.root.text())
+                self.assertIn('No older copy has been restored', doc.root.text())
+                self.assertTrue(any(n.attrs.get('href') == '/cabinet/taste?profile_ref=' + profile
+                                    for n in notice.nodes()))
+                self.assertFalse(any('data-card-feedback' in n.attrs for n in doc.tagged('form')))
+
+    def test_feedback_outcome_absent_is_quiet_and_cannot_be_supplied_as_display_prose(self):
+        from django.test import RequestFactory
+        from shelf import enhancement_views as views
+        from shelf.portable_authority import AuthorityFault
+        profile = self.backend_feedback_fixture()['profile_ref']
+        response = views._native_cabinet_html(RequestFactory().get('/cabinet?feedback_outcome=RESPONSE_SAVED'),
+            {'profile_ref': profile, 'published': False, 'selection_token': 'synthetic-selection',
+             'feedback_outcome_message': 'Injected success prose'})
+        doc = Document(response.content.decode())
+        self.assertFalse(any(n.attrs.get('id') == 'cabinet-feedback-outcome' for n in doc.tagged('section')))
+        self.assertNotIn('Injected success prose', doc.root.text())
+        for value in ('RESPONSE_SAVED', {}, {'schema': 'other', 'code': 'RESPONSE_SAVED'},
+                      {'schema': 'feedback-action-outcome/v1', 'code': 'UNPROVEN'},
+                      {'schema': 'feedback-action-outcome/v1', 'code': 'RESPONSE_SAVED', 'text': 'Injected'}):
+            with self.subTest(value=value), self.assertRaises(AuthorityFault):
+                views._feedback_outcome_display(value)

@@ -725,6 +725,25 @@ def _source_setup_display(value):
     return {'source_adapter': adapter, **expected}
 
 
+def _feedback_outcome_display(value):
+    """Display only the consumed backend receipt's closed historical outcome.
+
+    A committed response and a noncurrent publication can coexist. This notice
+    cannot certify current card values or restore a publication; its absence on
+    reload likewise says nothing about whether the durable write happened.
+    """
+    if value is None:
+        return ''
+    from .portable_authority import AuthorityFault
+    messages = {'RESPONSE_SAVED': 'Your response was saved.',
+                'RESPONSE_UNDONE': 'Your response was undone.'}
+    if (type(value) is not dict or set(value) != {'schema', 'code'}
+            or value.get('schema') != 'feedback-action-outcome/v1'
+            or type(value.get('code')) is not str or value['code'] not in messages):
+        raise AuthorityFault('CONTRACT_INVALID', 422)
+    return messages[value['code']]
+
+
 @sensitive_variables()
 def _native_cabinet_html(request, context, *, status=200):
     from django.http import HttpResponse
@@ -734,7 +753,9 @@ def _native_cabinet_html(request, context, *, status=200):
         context = {**context, **_taste_display_context(context)}
     if context.get('source_setup') is True:
         context = {**context, **_source_setup_display(context)}
-    context = {**context, 'csrf_token': get_token(request),
+    context = {**context,
+               'feedback_outcome_message': _feedback_outcome_display(context.get('feedback_outcome')),
+               'csrf_token': get_token(request),
                'enhancement_base': Engine.get_default().from_string(_PORTABLE_ENHANCE_BASE)}
     return HttpResponse(render_to_string('cabinet/portable_cabinet.html', context), status=status,
                         headers={'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff'})

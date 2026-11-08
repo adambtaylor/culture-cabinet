@@ -231,6 +231,14 @@
   {% else %}<p>No authorized bound cabinet is available. Existing profiles will not be adopted or recreated automatically. Review the current owner and permissions.</p>{% endif %}
 </section>
 {% else %}
+{% if feedback_outcome_message %}
+{% comment %}The consumed receipt acknowledges a completed action only. Keep the publication refusal below independent; never imply that preferences exposes an unavailable card's response.{% endcomment %}
+<section id="cabinet-feedback-outcome" class="paper-panel" role="status" tabindex="-1" autofocus>
+  <h2>{{ feedback_outcome_message }}</h2>
+  <p>This confirms your completed response action. Current picks and permissions are checked separately below.</p>
+  <p><a href="/cabinet/taste?profile_ref={{ profile_ref|urlencode }}">Preferences and notes</a></p>
+</section>
+{% endif %}
 <header class="cabinet-header" aria-labelledby="cabinet-title">
   <div class="cabinet-workflow">
     <div><p class="eyebrow">Your current picks</p><h1 id="cabinet-title">{{ profile_label }}</h1></div>
