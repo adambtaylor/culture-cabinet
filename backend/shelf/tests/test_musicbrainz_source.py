@@ -10,7 +10,8 @@ from shelf.discovery_sources import SourceError
 from shelf.discovery_transport import MediaHostLimiter
 from shelf.enhance_contract import CollectionBudget, EnhanceFault, digest
 from shelf.musicbrainz_source import (SOURCE, OPERATION, MusicBrainzBackend,
-                                     MusicBrainzOperation, musicbrainz_operation)
+                                     MusicBrainzOperation, musicbrainz_operation,
+                                     ARTIST_SOURCE, ARTIST_OPERATION, musicbrainz_template)
 from shelf.source_adapters import (SourceAuthorityIssuer, SourcePermit, SourceReply,
                                    SourceRequest, normalize, registered_source)
 from shelf.source_collection import SourceCollection
@@ -35,8 +36,9 @@ def recording_plan(categories=('recording',)):
 
 class Issuer(SourceAuthorityIssuer):
     """Synthetic port, not evidence of native grant/owner authorization."""
-    def __init__(self):
-        self.rights = FieldPolicy('synthetic-cc0-core', 1, NOW - timedelta(seconds=1),
+    def __init__(self, source=SOURCE):
+        self.source = source
+        self.rights = FieldPolicy('synthetic-cc0-core:' + source, 1, NOW - timedelta(seconds=1),
             NOW + timedelta(seconds=300), (('*', ('fetch',)),) + tuple(
                 (key, ('fetch', 'display', 'retain', 'model_context')) for key in sorted(SCALARS)))
         self.current, self.processor, self.generation = True, True, 0
@@ -48,7 +50,7 @@ class Issuer(SourceAuthorityIssuer):
     def authorize(self, request, query, operation, *, now):
         key = (query.plan_ref, request.request_digest)
         if key not in self.permits:
-            permit = SourcePermit(SOURCE, 'https://musicbrainz.org', 'catalogue_lookup',
+            permit = SourcePermit(self.source, 'https://musicbrainz.org', 'catalogue_lookup',
                 query.plan_ref, query.bindings, request.request_digest, 1, 1,
                 self.rights.ref, self.rights.revision, self.rights.expires_at,
                 ('synthetic-disclosed-artist',), self.generation)
@@ -72,6 +74,135 @@ class FixtureBackend(MusicBrainzBackend):
 
 
 class MusicBrainzSourceTests(TestCase):
+    def test_artist_wire_identity_literal_and_template_cannot_be_recording(self):
+        title = 'A" OR artist:* + AC/DC & X'
+        request = SourceRequest(ARTIST_SOURCE, 'artist', ARTIST_OPERATION, (title,))
+        operation = musicbrainz_operation(request, IDENTITY)
+        self.assertEqual(urlsplit(operation.url).path, '/ws/2/artist/')
+        self.assertEqual(parse_qs(urlsplit(operation.url).query), {
+            'query': ['artist:"A\\" OR artist\\:\\* \\+ AC\\/DC \\& X"'],
+            'fmt': ['json'], 'limit': ['9'], 'offset': ['0']})
+        self.assertEqual(operation.material['path'], '/ws/2/artist/')
+        self.assertNotEqual(operation.operation_digest,
+                            MusicBrainzOperation(title, IDENTITY).operation_digest)
+        self.assertEqual(musicbrainz_template(ARTIST_SOURCE), {
+            'source': ARTIST_SOURCE, 'method': 'GET', 'origin': 'https://musicbrainz.org',
+            'path': '/ws/2/artist/', 'operation': ARTIST_OPERATION, 'query_field': 'artist',
+            'fixed_parameters': {'fmt': 'json', 'limit': 9, 'offset': 0},
+            'projection': ['artist_mbid', 'name', 'source_url']})
+        self.assertEqual(musicbrainz_template()['path'], '/ws/2/recording/')
+        for source in ('musicbrainz', 'artist', 'https://example.invalid', None):
+            with self.subTest(source=source), self.assertRaises(EnhanceFault):
+                MusicBrainzOperation(title, IDENTITY, source)
+        with self.assertRaises(EnhanceFault):
+            SourceRequest(ARTIST_SOURCE, 'recording', ARTIST_OPERATION, (title,))
+        with self.assertRaises(EnhanceFault):
+            SourceRequest(ARTIST_SOURCE, 'artist', OPERATION, (title,))
+
+    def test_artist_projection_is_core_only_stable_and_never_relabels_recordings(self):
+        request = SourceRequest(ARTIST_SOURCE, 'artist', ARTIST_OPERATION, ('Synthetic artist',))
+        rows = [{'id': SECOND, 'name': 'Synthetic second', 'score': 'MUST_NOT_PROJECT',
+                 'sort-name': 'MUST_NOT_PROJECT', 'relations': [{'target': 'MUST_NOT_PROJECT'}]},
+                {'id': FIRST, 'name': 'Synthetic first', 'tags': [{'name': 'MUST_NOT_PROJECT'}]},
+                {'id': FIRST, 'name': 'Synthetic alternate'}]
+        def parse(body):
+            return normalize(registered_source(ARTIST_SOURCE), request,
+                SourceReply(request.request_digest, 200, canonical_bytes(body), NOW), now=NOW).cards
+        cards = parse({'artists': rows})
+        self.assertEqual(cards, parse({'artists': list(reversed(rows))}))
+        self.assertEqual([(row.key, row.title, row.source_url, row.locator) for row in cards], [
+            ('musicbrainz:artist:' + FIRST, 'Synthetic alternate',
+             'https://musicbrainz.org/artist/' + FIRST, 'normalized-core-artist:0'),
+            ('musicbrainz:artist:' + SECOND, 'Synthetic second',
+             'https://musicbrainz.org/artist/' + SECOND, 'normalized-core-artist:1')])
+        self.assertTrue(all(row.medium == 'artist' and row.facts == () for row in cards))
+        for body in ({'recordings': [{'id': FIRST, 'title': 'Not an artist'}]},
+                     {'artists': rows * 4}, {'artists': [{'id': 'bad-id', 'name': 'Bad'}]},
+                     {'artists': [{'id': FIRST, 'title': 'No actual name'}]}):
+            with self.subTest(body=body), self.assertRaises((EnhanceFault, SourceError, KeyError)):
+                parse(body)
+
+    def test_artist_and_recording_collect_distinct_identities_with_same_host_limiter(self):
+        from shelf.category_registry import KEYS
+        registry, query = recording_plan(KEYS)
+        clock, limiter = Clock(), MediaHostLimiter('musicbrainz')
+        artist = FixtureBackend(Issuer(ARTIST_SOURCE), limiter, clock=clock, source=ARTIST_SOURCE)
+        recording = FixtureBackend(Issuer(), limiter, clock=clock)
+        self.assertIs(artist.limiter, recording.limiter)
+        seen = []
+        def wire(operation, **bounds):
+            seen.append(operation.source)
+            self.assertIs(bounds['limiter'], limiter)
+            self.assertTrue(bounds['revalidate']())
+            body = ({'artists': [{'id': FIRST, 'name': 'Synthetic artist', 'score': 'MUST_NOT_PROJECT'}]}
+                if operation.source == ARTIST_SOURCE else
+                {'recordings': [{'id': FIRST, 'title': 'Synthetic recording'}]})
+            return 200, canonical_bytes(body), ()
+        with patch('shelf.discovery_transport.musicbrainz_authorized', side_effect=wire), \
+             patch('shelf.credential_store.open_store', side_effect=AssertionError('No credential access')):
+            collector = SourceCollection((('artist', (ARTIST_SOURCE,)), ('recording', (SOURCE,))),
+                {ARTIST_SOURCE: artist, SOURCE: recording}, clock=clock, isolated_fixture=True)
+            result = collector.collect(query, registry, CollectionBudget())
+            self.assertEqual(collector.model_eligible_keys(result, query, registry),
+                frozenset({'musicbrainz:artist:' + FIRST, 'musicbrainz:recording:' + FIRST}))
+        self.assertEqual(seen, [ARTIST_SOURCE, SOURCE])
+        outcomes = {row.category: row for row in result.outcomes}
+        self.assertEqual(tuple(row.category for row in result.outcomes), KEYS)
+        self.assertTrue(all(outcomes[key].state == 'fresh' for key in ('artist', 'recording')))
+        self.assertTrue(all(row.state == 'unavailable' for key, row in outcomes.items()
+                            if key not in ('artist', 'recording')))
+        self.assertTrue(all(row['candidate']['evidence_type'] == 'fixture_not_live' for row in result.records))
+        self.assertNotIn('MUST_NOT_PROJECT', result._material.decode())
+        self.assertEqual(collector.state.cache, {})
+
+    def test_artist_local_only_rights_collect_without_model_eligibility(self):
+        registry, query = plan(('artist',))
+        clock, issuer = Clock(), Issuer(ARTIST_SOURCE)
+        issuer.rights = replace(issuer.rights, permissions=tuple(
+            (target, tuple(use for use in uses if use != 'model_context'))
+            for target, uses in issuer.rights.permissions))
+        issuer.processor = False
+        backend = FixtureBackend(issuer, MediaHostLimiter('musicbrainz'), clock=clock, source=ARTIST_SOURCE)
+        with patch('shelf.discovery_transport.musicbrainz_authorized',
+            return_value=(200, canonical_bytes({'artists': [{'id': FIRST, 'name': 'Synthetic artist'}]}), ())):
+            collector = SourceCollection((('artist', (ARTIST_SOURCE,)),), {ARTIST_SOURCE: backend},
+                clock=clock, isolated_fixture=True)
+            result = collector.collect(query, registry, CollectionBudget())
+            self.assertEqual(result.outcomes[0].state, 'fresh')
+            self.assertEqual(collector.model_eligible_keys(result, query, registry), frozenset())
+
+    def test_artist_wrong_issuer_operation_and_foreign_or_replayed_permit_never_send(self):
+        _, query = plan(('artist', 'recording'))
+        clock, limiter = Clock(), MediaHostLimiter('musicbrainz')
+        request = SourceRequest(ARTIST_SOURCE, 'artist', ARTIST_OPERATION, ('Synthetic artist',))
+        with patch('shelf.discovery_transport.musicbrainz_authorized') as wire:
+            recording = FixtureBackend(Issuer(), limiter, clock=clock)
+            with self.assertRaises(EnhanceFault):
+                recording.authorize(request, query, now=NOW)
+            artist = FixtureBackend(Issuer(), limiter, clock=clock, source=ARTIST_SOURCE)
+            with self.assertRaises(EnhanceFault):
+                artist.authorize(request, query, now=NOW)  # Recording source permit from wrong issuer.
+            issuer = Issuer(ARTIST_SOURCE)
+            artist = FixtureBackend(issuer, limiter, clock=clock, source=ARTIST_SOURCE)
+            with patch.object(issuer, 'operation_for', return_value=MusicBrainzOperation('Synthetic artist', IDENTITY)):
+                with self.assertRaises(EnhanceFault):
+                    artist.authorize(request, query, now=NOW)
+            permit = artist.authorize(request, query, now=NOW)
+            with self.assertRaises(EnhanceFault):
+                artist.request(request, replace(permit), response_bytes=131072, request_seconds=5, parent_seconds=6)
+            wire.assert_not_called()
+        def fail(operation, **bounds):
+            self.assertEqual(operation.source, ARTIST_SOURCE)
+            self.assertTrue(bounds['revalidate']())
+            raise TimeoutError
+        with patch('shelf.discovery_transport.musicbrainz_authorized', side_effect=fail) as wire:
+            with self.assertRaises(TimeoutError):
+                artist.request(request, permit, response_bytes=131072, request_seconds=5, parent_seconds=6)
+            self.assertIs(artist.authorize(request, query, now=NOW), permit)
+            with self.assertRaises(EnhanceFault):
+                artist.request(request, permit, response_bytes=131072, request_seconds=5, parent_seconds=6)
+            wire.assert_called_once()
+
     def test_fixed_literal_query_prevents_parameter_and_lucene_injection(self):
         op = MusicBrainzOperation('A" OR artist:* + AC/DC & X', IDENTITY)
         parsed = urlsplit(op.url)
