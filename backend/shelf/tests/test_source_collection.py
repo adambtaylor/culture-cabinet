@@ -67,6 +67,46 @@ class Backend(SourceBackend):
 
 
 class SourceCollectionTests(TestCase):
+    def test_configured_api_precedes_page_without_enabling_unconfigured_sources(self):
+        from shelf.category_registry import KEYS
+        registry, query = plan(KEYS)
+        clock, order = Clock(), []
+
+        class ObservedBackend(Backend):
+            def request(self, request, permit, **bounds):
+                order.append(self.source)
+                return super().request(request, permit, **bounds)
+
+        page = ObservedBackend('rrr', clock, [(503, {}, ())])
+        api = ObservedBackend('moshtix', clock, [(403, {}, ())])
+        collector = SourceCollection((('event', ('rrr', 'moshtix')),),
+            {'rrr': page, 'moshtix': api}, clock=clock, isolated_fixture=True)
+        result = collector.collect(query, registry, CollectionBudget())
+        self.assertEqual(order, ['moshtix', 'rrr'])
+        self.assertEqual(tuple(row.category for row in result.outcomes), KEYS)
+        self.assertEqual(len(result.outcomes), 13)
+        self.assertTrue(all(row.state != 'empty_bounded' for row in result.outcomes))
+        recorded = read_json(result.source_revisions)['_collection']
+        self.assertEqual(recorded['sends'], 2)
+        self.assertEqual(recorded['configured_sources'], {'event': ['moshtix', 'rrr']})
+        self.assertEqual([row['source'] for row in recorded['source_outcomes']], order)
+
+    def test_missing_fetch_permission_prevents_api_and_page_sends(self):
+        from shelf.category_registry import KEYS
+        registry, query = plan(KEYS)
+        clock = Clock()
+        api, page = Backend('moshtix', clock, []), Backend('rrr', clock, [])
+        for backend in (api, page):
+            backend.rights = replace(backend.rights,
+                permissions=tuple(row for row in backend.rights.permissions if row[0] != '*'))
+        result = SourceCollection((('event', ('rrr', 'moshtix')),),
+            {'rrr': page, 'moshtix': api}, clock=clock, isolated_fixture=True).collect(
+                query, registry, CollectionBudget())
+        self.assertEqual((api.sent, page.sent), ([], []))
+        self.assertEqual(len(result.outcomes), 13)
+        event = next(row for row in result.outcomes if row.category == 'event')
+        self.assertEqual((event.state, event.code), ('unavailable', 'AUTHORITY_DENIED'))
+
     def test_local_collection_keeps_all_category_progress_without_model_keys(self):
         from shelf.category_registry import KEYS
         registry, query = plan(KEYS)

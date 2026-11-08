@@ -66,3 +66,17 @@ def fixed_moshtix_configuration(registry):
     """
     require(type(registry) is RegistryView and registry == registry_view(registry.categories))
     return (('event', ('moshtix',)),) if 'event' in registry.categories else ()
+
+
+def registered_source_coverage():
+    """Nonsecret registration projection; never configuration or rights proof.
+
+    Empty rows remain explicit. A parser/SourceSpec alone does not establish
+    a native backend, owner consent, credentials or permitted live collection.
+    Callers must project those current runtime facts independently.
+    """
+    from .source_adapters import SOURCES
+    return tuple({'category': category.key, 'sources': tuple(
+        {'source': source.key, 'operations': source.operations, 'kind': source.kind}
+        for source in SOURCES if category.key in source.categories)}
+        for category in CATEGORIES)
