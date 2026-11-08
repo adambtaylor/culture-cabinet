@@ -274,3 +274,135 @@ class NativeFeedbackTests(NativeFeedbackCase):
         binding = next(row for row in card_feedback_context(self.authority, self.ref, self.profile_ref,
             target_ref=opaque)['signals'] if row['signal'] == 'note')
         self.assertEqual((binding['revision'], binding['can_undo'], binding['cleared']), (4, True, False))
+
+
+class NativeFeedbackOutcomeTests(NativeFeedbackCase):
+    """Real native mutations/receipts and normal store; labelled fixture cards."""
+    def publish_card(self):
+        from shelf.disclosure import canonical_bytes
+        from shelf.enhance_contract import EnhanceIntent
+        store = self.enhance._store(self.ref, self.profile_ref, str(self.config.pk))
+        row = store.admit(EnhanceIntent(str(uuid.uuid4()), str(uuid.uuid4()), str(uuid.uuid4()),
+            store.current().bindings))
+        card = dict(key='fixture:movie:81001', category='movie', title='PRIVATE fixture card title',
+            medium='movie', provider='fixture', source_id='81001', source_url='https://example.invalid/81001',
+            identity_status='fixture_identity_only', evidence_type='fixture_not_live',
+            observed_at=self.clock.wall.isoformat(), valid_until=self.expires.isoformat(),
+            rights_ref='fixture-no-durable-rights', source_roots=['fixture-evidence'], facts=[])
+        outcomes = [dict(category=k, state='fresh' if k == 'movie' else 'unavailable',
+            candidate_count=int(k == 'movie'), code='OK' if k == 'movie' else 'CAPABILITY_UNAVAILABLE')
+            for k in self.enhance.registry.categories]
+        row = store.checkpoint(str(row.pk), stage='awaiting_preview', outcomes=outcomes,
+            metadata={'phase': 'inference', 'submitted_refs': {'signals': [], 'candidates': [
+                {'key': card['key'], 'evidence_refs': card['source_roots']}]}},
+            collection_digest='c'*64, body_digest='b'*64, sealed_run_digest='d'*64)
+        row = store.reserve(str(row.pk), body_digest=row.body_digest, expected_revision=row.revision)
+        store.record_result(str(row.pk), canonical_bytes(dict(schema='cabinet-inference-result/v1',
+            associations=None, candidate_assessments=[dict(candidate_key=card['key'], decision='uncertain',
+                signal_keys=[], evidence_refs=card['source_roots'], hypothesis='Synthetic publication only.') ])))
+        self.state.refresh_from_db()
+        store.publish(str(row.pk), manifest=dict(schema='cabinet-manifest/v1', categories=[dict(
+            category=k, state='fresh' if k == 'movie' else 'unavailable',
+            code='OK' if k == 'movie' else 'CAPABILITY_UNAVAILABLE', cards=[card] if k == 'movie' else [])
+            for k in self.enhance.registry.categories], for_you=[]),
+            expected_publication_revision=self.state.publication_revision, allowed_candidates=[card])
+        return target_ref(self.profile_ref, card['key'])
+
+    def prepare_card(self):
+        self.consent(self.profile_ref)
+        target = self.publish_card()
+        return dict(profile_ref=self.profile_ref, target_ref=target, mutation_id=str(uuid.uuid4()),
+            base_revision='0', operation='set', signal='note', text='')
+
+    def landing(self, response=None, **query):
+        from unittest.mock import patch
+        from shelf import enhancement_views as views
+        with patch.object(views, '_native_cabinet_html', wraps=views._native_cabinet_html) as render:
+            page = self.http.get(response['Location'] if response else '/cabinet',
+                query or ({} if response else {'profile_ref': self.profile_ref}), **self.headers)
+            context = render.call_args.args[1] if render.called else {}
+        return page, context
+
+    def test_actual_set_undo_stale_landing_ack_once_and_separate_current_readback(self):
+        from shelf.models import SynthesisRun
+        fields = self.prepare_card()
+        before = list(SynthesisRun.objects.values_list('pk', 'attempts'))
+        saved = self.post('/cabinet/feedback', fields)
+        self.assertEqual(saved.status_code, 303)
+        page, context = self.landing(saved)
+        self.assertEqual(page.status_code, 409)
+        self.assertEqual(context['feedback_outcome'],
+            {'schema': 'feedback-action-outcome/v1', 'code': 'RESPONSE_SAVED'})
+        self.assertEqual(context['categories'], [])
+        self.assertNotIn(b'PRIVATE fixture card title', page.content)
+        self.assertEqual(list(SynthesisRun.objects.values_list('pk', 'attempts')), before)
+        self.assertEqual(FeedbackEvent.objects.count(), 1)
+        self.assertNotIn('feedback_outcome', self.landing(saved)[1])
+        self.publish_card()
+        binding = next(row for row in card_feedback_context(self.authority, self.ref, self.profile_ref,
+            target_ref=fields['target_ref'])['signals'] if row['signal'] == 'note')
+        self.assertEqual(binding['text'], '')
+        self.assertTrue(binding['can_undo'])
+        undo = dict(profile_ref=self.profile_ref, target_ref=fields['target_ref'],
+            mutation_id=str(uuid.uuid4()), base_revision='1', operation='reverse', signal='note',
+            reverses_id=binding['event_ref'])
+        before = list(SynthesisRun.objects.values_list('pk', 'attempts'))
+        undone = self.post('/cabinet/feedback', undo)
+        self.assertEqual(undone.status_code, 303)
+        page, context = self.landing(undone)
+        self.assertEqual(page.status_code, 409)
+        self.assertEqual(context['feedback_outcome']['code'], 'RESPONSE_UNDONE')
+        self.assertNotIn(b'PRIVATE fixture card title', page.content)
+        self.assertEqual(list(SynthesisRun.objects.values_list('pk', 'attempts')), before)
+        self.assertEqual(FeedbackEvent.objects.count(), 2)
+        self.assertNotIn('feedback_outcome', self.landing(undone)[1])
+        self.publish_card()
+        self.assertFalse(next(row for row in card_feedback_context(self.authority, self.ref,
+            self.profile_ref, target_ref=fields['target_ref'])['signals'] if row['signal'] == 'note')['can_undo'])
+
+    def test_bad_descriptor_and_query_flags_never_supply_success(self):
+        from shelf.portable_feedback_views import _PENDING_OUTCOME
+        fields = self.prepare_card()
+        self.assertEqual(self.post('/cabinet/feedback', fields).status_code, 303)
+        pending = dict(self.http.session[_PENDING_OUTCOME])
+        self.assertEqual(set(pending), {'profile_ref', 'session_digest', 'mutation_id',
+            'event_ref', 'accepted_revision', 'code'})
+        for changes in [dict(profile_ref=str(uuid.uuid4())), dict(session_digest='f'*64),
+                dict(mutation_id=str(uuid.uuid4())), dict(event_ref=str(uuid.uuid4())),
+                dict(accepted_revision=2), dict(code='RESPONSE_UNDONE'), dict(code='arbitrary prose'),
+                dict(note='PRIVATE UNEXPECTED NOTE')]:
+            with self.subTest(fields=list(changes)):
+                session = self.http.session
+                session[_PENDING_OUTCOME] = {**pending, **changes}
+                session.save()
+                page, context = self.landing()
+                self.assertEqual(page.status_code, 409)
+                self.assertNotIn('feedback_outcome', context)
+                self.assertNotIn(_PENDING_OUTCOME, self.http.session)
+        page, context = self.landing(profile_ref=self.profile_ref, feedback_outcome='RESPONSE_SAVED')
+        self.assertEqual(page.status_code, 422)
+        self.assertNotIn('feedback_outcome', context)
+        self.assertEqual(FeedbackEvent.objects.count(), 1)
+
+    def test_failed_new_command_clears_prior_notice_and_recovery_refusal_has_none(self):
+        from shelf.portable_feedback_views import _PENDING_OUTCOME
+        fields = self.prepare_card()
+        self.assertEqual(self.post('/cabinet/feedback', fields).status_code, 303)
+        self.assertIn(_PENDING_OUTCOME, self.http.session)
+        failed = self.post('/cabinet/feedback', {**fields, 'text': 'x'*501})
+        self.assertEqual(failed.status_code, 422)
+        self.assertNotIn(_PENDING_OUTCOME, self.http.session)
+        self.assertNotIn('feedback_outcome', self.landing()[1])
+        self.assertEqual(self.post('/cabinet/feedback', fields).status_code, 303)
+        self.assertEqual(self.post('/cabinet/feedback', {**fields, 'text': 'changed replay'}).status_code, 409)
+        self.assertNotIn(_PENDING_OUTCOME, self.http.session)
+        self.assertNotIn('feedback_outcome', self.landing()[1])
+        # Exact replay creates no new event but can acknowledge its real durable
+        # receipt. A later recovery refusal must discard all display content.
+        self.assertEqual(self.post('/cabinet/feedback', fields).status_code, 303)
+        self.prepare_restriction(self.coordinator)
+        page, context = self.landing()
+        self.assertEqual(page.status_code, 503)
+        self.assertNotIn('feedback_outcome', context)
+        self.assertNotIn(b'PRIVATE fixture card title', page.content)
+        self.assertEqual(FeedbackEvent.objects.count(), 1)
