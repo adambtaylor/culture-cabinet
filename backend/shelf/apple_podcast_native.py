@@ -210,9 +210,11 @@ class ApplePodcastBackend(SourceBackend):
         return context
 
     def authorize(self, request, plan, *, now):
-        operation = apple_podcast_operation(request)
-        retained = self.issuer.operation_for(request, plan, now=now)
-        require(type(retained) is ApplePodcastOperation and retained == operation, 'PREVIEW_STALE')
+        expected = apple_podcast_operation(request)
+        operation = self.issuer.operation_for(request, plan, now=now)
+        # Equal request bytes are not the issuer's retained preview capability.
+        # Pass that exact object back through authorize and every revalidation.
+        require(type(operation) is ApplePodcastOperation and operation == expected, 'PREVIEW_STALE')
         permit = self.issuer.authorize(request, plan, operation, now=now)
         require(type(permit) is SourcePermit and type(permit.credential_generation) is int
                 and permit.credential_generation == 0, 'AUTHORITY_DENIED')
