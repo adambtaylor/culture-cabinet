@@ -162,18 +162,15 @@ def _copy_plan(context, delivery, completion, intent, edition, ports):
 
 
 def _services_again(context, expected_job, delivery):
-    from django.conf import settings
-    from shelf.obtain_tv_flow import TVServiceProvider, SelectedTVServices, delivery_binding_material
-    provider = getattr(settings, 'PORTABLE_OBTAIN_TV_SERVICES', None)
-    if not isinstance(provider, TVServiceProvider):
-        raise Blocked('Current native TV factory unavailable')
-    current = provider.current(context)
-    if (type(current) is not SelectedTVServices or current.generations(context) != expected_job.service_generations
+    from shelf.obtain_runtime import selected_services
+    from shelf.obtain_tv_flow import delivery_binding_material
+    current = selected_services(context)
+    if (current.generations(context) != expected_job.service_generations
             or delivery_binding_material(current.delivery) != delivery_binding_material(delivery)):
         raise Blocked('Confirmed selected service binding changed')
     worker = getattr(context._access.authority, '_obtain_workers', {}).get(context.job_id)
     if worker is not None and not worker.done.is_set() and worker.session_ref == context._access.session_ref:
-        worker.stop_children = current.stop_owned_children
+        worker.bind_stop_port(current.stop_owned_children)
     return current
 
 

@@ -138,6 +138,8 @@ class SelectedTVServices:
 
     target_for receives (native context, selected job, destination receipt,
     ValidatedSeriesBinding | None). A bare historical series_ref is not evidence.
+    stop_owned_children is bounded, idempotent and thread-safe; it cancels only
+    already owned resources without recovery, ORM or positive authority checks.
     """
     delivery: DeliveryBinding
     observer: object

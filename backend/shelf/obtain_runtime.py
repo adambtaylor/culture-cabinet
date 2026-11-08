@@ -349,6 +349,18 @@ class _SelectedWorker:
     def start(self):
         self.monitor.start()
 
+    def bind_stop_port(self, port):
+        with self._cancel_lock:
+            self.stop_children = port
+            stopped = self.stop_event.is_set()
+            if stopped:
+                try:
+                    port()
+                except Exception:
+                    self.cleanup_failed = True
+        if stopped:
+            raise Blocked('Selected continuation stopped before adopting ports')
+
     def stop(self, reason=''):
         self.stop_event.set()
         # The port is bounded, idempotent and independent of owner/recovery/SQL
@@ -489,8 +501,7 @@ class _SelectedSupervisor:
                     raise Blocked('Selected worker revision changed')
                 context._deadline = worker.deadline
                 services = selected_services(context)
-                with worker._cancel_lock:
-                    worker.stop_children = services.stop_owned_children
+                worker.bind_stop_port(services.stop_owned_children)
                 context.revalidate()
                 revision = advance_selected(context, expected_revision=worker.expected_revision, services=services)
                 transfer = ObtainTransfer.objects.get(pk=worker.job_id)

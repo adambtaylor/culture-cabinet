@@ -661,6 +661,10 @@ class OwnerTVEntryTests(RecoveryCase):
             services.stop_owned_children.assert_called_once_with()
             self.assertEqual(worker.reason, 'original_authority_window_ended')
             self.assertEqual(vars(session), original)
+            newly_constructed_port = Mock()
+            with self.assertRaises(Blocked):
+                worker.bind_stop_port(newly_constructed_port)
+            newly_constructed_port.assert_called_once_with()
         finally:
             worker.done.set()
             worker.monitor.join(timeout=2)
