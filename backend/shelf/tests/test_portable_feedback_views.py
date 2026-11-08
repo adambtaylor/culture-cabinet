@@ -254,6 +254,13 @@ class NativeFeedbackTests(RecoveryCase):
             target_ref=opaque)['signals'] if row['signal'] == 'note')
         self.assertEqual((binding['revision'], binding['event_ref'], binding['can_undo'], binding['cleared']),
                          (2, cleared['event_ref'], True, True))
+        self.consent(self.profile_ref, purpose='catalogue_lookup', classes=['raw_notes', 'free_text_entry'])
+        source_view = ga.current_view(self.authority, self.ref, profile_ref=self.profile_ref,
+            connection_ref=str(self.config.pk), purpose='catalogue_lookup')
+        query, _ = disclosure.catalogue_input(profile_snapshot.capture(source_view), source_view.grants,
+            source_view.context, registry_view().categories, now=self.clock.wall)
+        self.assertTrue(all(row['terms'] == [] for row in disclosure.read_json(query)['queries']))
+        self.assertNotIn('raw_notes', disclosure.read_json(query)['profile'])
         reactions.mutate(self.ref, self.profile_ref, opaque, str(uuid.uuid4()), 2, 'reverse',
             {'signal': 'note', 'value': None}, cleared['event_ref'])
         self.assertEqual(project()[1]['raw_notes'][0]['text'], text)
