@@ -323,6 +323,8 @@ def run(root, *, port=0, approved_policies=None, approved_policies_factory=None)
         while not stopping:
             server.handle_request()
             if not stopping:
+                # A bounded synchronous pass may delay the next request. Return
+                # to serving between passes, without a polling/draining loop.
                 supervisor.tick_once()
         return 0
     except PortableStop:

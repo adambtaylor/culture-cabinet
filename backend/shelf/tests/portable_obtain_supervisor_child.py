@@ -241,14 +241,16 @@ def main(folder, mode='normal'):
             try:
                 target = urlsplit(boundary.origin)
                 cookie = cookies
-                def request(method, path, fields=None):
+                current_csrf = csrf_value
+                def request(method, path, fields=None, *, json_body=False):
                     nonlocal cookie
                     conn = http.client.HTTPConnection('127.0.0.1', target.port, timeout=5)
                     try:
-                        body = urlencode(fields or {}) if method == 'POST' else None
+                        body = ((json.dumps(fields or {}) if json_body else urlencode(fields or {}))
+                                if method == 'POST' else None)
                         conn.request(method, path, body=body, headers={'Host': target.netloc, 'Origin': boundary.origin,
-                            'Cookie': cookie, 'X-CSRFToken': csrf_value,
-                            'Content-Type': 'application/x-www-form-urlencoded'})
+                            'Cookie': cookie, 'X-CSRFToken': current_csrf,
+                            'Content-Type': 'application/json' if json_body else 'application/x-www-form-urlencoded'})
                         response = conn.getresponse(); data = response.read()
                         changes = response.getheaders()
                         jar = dict(part.split('=', 1) for part in cookie.split('; '))
@@ -281,6 +283,12 @@ def main(folder, mode='normal'):
                     {**base, 'expected_revision': current['revision']})
                 assert status == 302
                 assert authority._obtain_workers[job.pk] is worker
+                assert (worker.deadline, worker.monotonic_end) == original_deadlines
+                status, body = request('POST', '/setup/reauthenticate', {'passphrase': PASSWORD}, json_body=True)
+                assert status == 200, ('reauthentication', status)
+                status, body = request('GET', '/setup/status')
+                assert status == 200
+                current_csrf = json.loads(body)['csrf_token']
                 assert (worker.deadline, worker.monotonic_end) == original_deadlines
                 if mode == 'witness_loss':
                     state['lose_witness'] = True

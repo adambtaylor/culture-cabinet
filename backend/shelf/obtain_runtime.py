@@ -382,9 +382,9 @@ class _SelectedWorker:
             self.done.set()
         if invalidate or self.cleanup_failed:
             getattr(self.authority, '_obtain_verified', {}).pop(self.job_id, None)
+        self.token = self.session = None
         if self.monitor.is_alive() or self.cleanup_failed:
             raise Blocked('Selected worker shutdown unconfirmed')
-        self.token = self.session = None
 
 
 class _SelectedSupervisor:
@@ -494,6 +494,8 @@ class _SelectedSupervisor:
                 context.revalidate()
                 revision = advance_selected(context, expected_revision=worker.expected_revision, services=services)
                 transfer = ObtainTransfer.objects.get(pk=worker.job_id)
+                # Only this pass's returned CAS revision can advance the record;
+                # rereading a foreign writer's state cannot adopt its authority.
                 if type(revision) is not int or transfer.revision != revision:
                     raise Blocked('Selected worker cannot adopt a foreign revision')
                 worker.expected_revision = revision
