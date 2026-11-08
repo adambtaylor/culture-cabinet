@@ -496,3 +496,220 @@ class EnhancePresentationTests(SimpleTestCase):
         self.assertIn('Fictional &lt;img&gt; artist', html)
         self.assertEqual(doc.tagged('img'), [])
         self.assertNotIn('not-current', html)
+
+    def taste_groups(self, *, note='  A quiet preference.\nKeep the pause — café.  '):
+        def signal(name, value=None, revision=0, can_undo=False):
+            return {'signal': name, 'value': value, 'revision': revision,
+                'mutation_id': 'new-' + name, 'event_ref': 'event-' + name,
+                'undo_mutation_id': 'undo-' + name, 'can_undo': can_undo}
+        return [
+            {'entry_ref': 'new-item', 'entry_kind': 'item', 'is_new': True, 'title': '',
+             'signals': [signal('interest'), signal('enjoyment'), signal('note')]},
+            {'entry_ref': 'category-note', 'entry_kind': 'category_note', 'is_new': True,
+             'title': 'Category context', 'signals': [signal('note')]},
+            {'entry_ref': 'saved-item', 'entry_kind': 'item', 'is_new': False,
+             'title': 'Fictional <img> work', 'signals': [signal('note', note, 3, True)]}]
+
+    def test_workflow_preferences_keep_all_registry_domains_independent_of_publication(self):
+        from shelf.category_registry import CATEGORIES
+        _, doc = self.cabinet(taste_input=True, published=False,
+            taste_categories=[{'key': row.key, 'label': row.label} for row in CATEGORIES],
+            taste_category='dining', profile_ref='fictional-profile', taste_groups=[])
+        form = doc.marked('data-taste-category')
+        self.assertEqual(form.attrs['method'], 'get')
+        self.assertEqual(form.attrs['action'], '/cabinet/taste')
+        self.assertEqual([n.attrs['value'] for n in form.nodes() if n.tag == 'option'],
+                         [row.key for row in CATEGORIES])
+        self.assertEqual(len(doc.tagged('option')), 13)
+        selected = [n.attrs['value'] for n in doc.tagged('option') if 'selected' in n.attrs]
+        self.assertEqual(selected, ['dining'])
+        self.assertEqual({n.attrs.get('name') for n in form.nodes() if n.tag in ('input', 'select')},
+                         {'profile_ref', 'category'})
+        self.assertIn('unavailable categories separately from an empty search', doc.root.text())
+        self.assertNotIn('No published picks yet', doc.root.text())
+
+    def test_workflow_intake_posts_one_signal_and_no_browser_authority_or_implicit_rating(self):
+        _, doc = self.cabinet(taste_input=True, taste_category='book',
+            taste_groups=self.taste_groups()[:2], csrf_token='s' * 64)
+        forms = [n for n in doc.tagged('form') if 'data-taste-set' in n.attrs]
+        self.assertEqual(len(forms), 4)
+        for form in forms:
+            fields = {n.attrs.get('name'): n for n in form.nodes() if n.tag in ('input', 'select', 'textarea')}
+            signal = fields['signal'].attrs['value']
+            self.assertEqual(form.attrs['action'], '/cabinet/taste')
+            self.assertEqual(form.attrs['method'], 'post')
+            common = {'csrfmiddlewaretoken', 'profile_ref', 'entry_ref', 'entry_kind', 'category',
+                      'mutation_id', 'base_revision', 'operation', 'signal'}
+            kind = fields['entry_kind'].attrs['value']
+            expected = common | ({'title'} if kind == 'item' else set())
+            expected |= {'text'} if signal == 'note' else {'value'}
+            if signal == 'enjoyment':
+                expected.add('experienced_ack')
+                self.assertIn('required', fields['experienced_ack'].attrs)
+                self.assertNotIn('checked', fields['experienced_ack'].attrs)
+            self.assertEqual(set(fields), expected)
+            self.assertEqual(fields['csrfmiddlewaretoken'].attrs['value'], 's' * 64)
+            self.assertEqual(fields['base_revision'].attrs['value'], '0')
+            self.assertEqual(fields['operation'].attrs['value'], 'set')
+            if signal != 'note':
+                self.assertIn('required', fields['value'].attrs)
+                self.assertFalse(any('selected' in n.attrs for n in fields['value'].nodes()))
+                self.assertEqual(next(n for n in fields['value'].nodes() if n.tag == 'option').attrs['value'], '')
+        self.assertIn('not a hard rule or a source fact', doc.root.text())
+        self.assertIn('Notes stay local by default', doc.root.text())
+
+    def test_workflow_note_markup_preserves_exact_whitespace_unicode_and_escapes_text(self):
+        note = '\n  Gentle <script>fiction</script> — café.\nSecond line.  '
+        html, doc = self.cabinet(taste_input=True, taste_category='gallery',
+            taste_groups=self.taste_groups(note=note)[2:])
+        saved = next(n for n in doc.tagged('p') if n.attrs.get('class') == 'cabinet-exact-note')
+        self.assertEqual(saved.text(), note)
+        textarea = doc.tagged('textarea')[0]
+        # HTML consumes the first newline immediately after textarea. The
+        # deliberate sentinel preserves even an authored leading newline.
+        self.assertEqual(textarea.text(), '\n' + note)
+        self.assertEqual(textarea.attrs['maxlength'], '500')
+        self.assertEqual(textarea.attrs['name'], 'text')
+        self.assertEqual(doc.tagged('script') + doc.tagged('img'), [])
+        self.assertIn('&lt;script&gt;fiction&lt;/script&gt;', html)
+        self.assertNotIn('name="constraint"', html)
+
+    def test_workflow_undo_carries_current_event_without_replacement_note_or_title(self):
+        _, doc = self.cabinet(taste_input=True, taste_category='book',
+            taste_groups=self.taste_groups(), csrf_token='s' * 64, profile_ref='fictional-profile')
+        undo = [n for n in doc.tagged('form') if 'data-taste-undo' in n.attrs]
+        self.assertEqual(len(undo), 1)
+        fields = {n.attrs.get('name'): n.attrs.get('value') for n in undo[0].nodes() if n.tag == 'input'}
+        self.assertEqual(fields, {'csrfmiddlewaretoken': 's' * 64, 'profile_ref': 'fictional-profile',
+            'entry_ref': 'saved-item', 'mutation_id': 'undo-note', 'base_revision': '3',
+            'operation': 'reverse', 'signal': 'note', 'reverses_id': 'event-note'})
+        self.assertFalse({'text', 'title', 'value', 'category', 'entry_kind'} & fields.keys())
+
+    def test_workflow_stale_response_shows_current_values_and_no_automatic_resubmit(self):
+        for code in ('REVISION_CONFLICT', 'IDEMPOTENCY_CONFLICT', 'PREVIEW_STALE'):
+            with self.subTest(code=code):
+                _, doc = self.cabinet(taste_input=True, taste_category='book',
+                    taste_groups=self.taste_groups()[2:], feedback_error_code=code)
+                alert = next(n for n in doc.root.nodes() if n.attrs.get('id') == 'taste-feedback-error')
+                self.assertEqual(alert.attrs['role'], 'alert')
+                self.assertEqual(alert.attrs['tabindex'], '-1')
+                self.assertIn('Review the current saved values', alert.text())
+                self.assertIn('Nothing is retried automatically', alert.text())
+                self.assertIn('Keep the pause — café.', doc.root.text())
+                self.assertEqual(doc.tagged('script'), [])
+
+    def test_workflow_card_forms_bind_only_backend_target_and_keep_note_out_of_other_signals(self):
+        signals = [{**r, 'can_set': True} for r in self.taste_groups()[0]['signals']]
+        feedback = {'target_ref': 'opaque-backend-target', 'can_set': True, 'signals': signals}
+        categories = [{'category': 'book', 'label': 'Books', 'visible': True, 'cards': [
+            {'title': 'Fictional card', 'feedback': feedback, 'reasons': [], 'facts': []}]}]
+        _, doc = self.cabinet(categories=categories, feedback_available=True,
+            feedback_url='/cabinet/taste?profile_ref=fictional-profile', csrf_token='s' * 64)
+        forms = [n for n in doc.tagged('form') if 'data-card-feedback' in n.attrs]
+        self.assertEqual(len(forms), 3)
+        for form in forms:
+            fields = {n.attrs.get('name'): n for n in form.nodes() if n.tag in ('input', 'select', 'textarea')}
+            signal = fields['signal'].attrs['value']
+            expected = {'csrfmiddlewaretoken', 'profile_ref', 'target_ref', 'mutation_id',
+                        'base_revision', 'operation', 'signal'}
+            expected |= {'text'} if signal == 'note' else {'value'}
+            if signal == 'enjoyment':expected.add('experienced_ack')
+            self.assertEqual(set(fields), expected)
+            self.assertEqual(form.attrs['action'], '/cabinet/feedback')
+            self.assertEqual(fields['target_ref'].attrs['value'], 'opaque-backend-target')
+            self.assertFalse({'source_id', 'candidate_key', 'title', 'provider', 'actor_id'} & fields.keys())
+        self.assertIn('Preferences and notes', doc.root.text())
+        self.assertNotIn('Ratings and reactions are not connected', doc.root.text())
+
+    def test_workflow_card_undo_remains_available_without_enabling_set(self):
+        response = {**self.taste_groups()[2]['signals'][0], 'can_set': False}
+        feedback = {'target_ref': 'opaque-backend-target', 'can_set': False, 'signals': [response]}
+        _, doc = self.cabinet(categories=[{'category': 'book', 'label': 'Books', 'visible': True,
+            'cards': [{'title': 'Fictional card', 'feedback': feedback}]}], csrf_token='s' * 64)
+        self.assertFalse(any('data-card-feedback' in n.attrs for n in doc.tagged('form')))
+        form = next(n for n in doc.tagged('form') if 'data-card-undo' in n.attrs)
+        fields = {n.attrs.get('name'): n.attrs.get('value') for n in form.nodes() if n.tag == 'input'}
+        self.assertEqual(set(fields), {'csrfmiddlewaretoken', 'profile_ref', 'target_ref',
+            'mutation_id', 'base_revision', 'operation', 'signal', 'reverses_id'})
+        self.assertEqual(fields['reverses_id'], 'event-note')
+        self.assertEqual(fields['base_revision'], '3')
+
+    def backend_feedback_fixture(self, note='\n  Quiet — café.\nKeep this spacing.  '):
+        from uuid import uuid4
+        from shelf.category_registry import CATEGORIES
+        def uid():return str(uuid4())
+        def signals(saved=False):
+            return [{'signal': name, 'value': None, 'text': note if name == 'note' and saved else '',
+                'revision': 2 if saved and name == 'note' else 0,
+                'event_ref': uid() if saved and name == 'note' else '',
+                'can_undo': saved and name == 'note', 'mutation_id': uid(), 'undo_mutation_id': uid()}
+                    for name in ('interest', 'enjoyment', 'note')]
+        return {'feedback_version': 'workflow-taste/v1', 'taste_input': True,
+            'profile_ref': uid(), 'profile_label': 'Fictional test profile',
+            'feedback_categories': [vars(row).copy() for row in CATEGORIES], 'feedback_category': 'book',
+            'new_entry': {'entry_ref': uid(), 'base_revision': 0,
+                'signals': [{'signal': r['signal'], 'mutation_id': r['mutation_id']} for r in signals()]},
+            'feedback_entries': [{'entry_ref': uid(), 'entry_kind': 'item', 'category': 'book',
+                'title': 'Fictional known book', 'signals': signals(True)},
+                {'entry_ref': uid(), 'entry_kind': 'category_note', 'category': 'dining',
+                 'title': 'Dining context', 'signals': signals(True)}],
+            'taste_action': '/cabinet/taste', 'feedback_action': '/cabinet/feedback',
+            'feedback_code': '', 'cabinet_url': '/cabinet'}
+
+    def test_workflow_real_renderer_binds_frozen_handler_shape_and_exact_note_text(self):
+        from django.test import RequestFactory
+        from shelf import enhancement_views as views
+        value = self.backend_feedback_fixture()
+        value['feedback_code'] = 'REVISION_CONFLICT'
+        response = views._native_cabinet_html(RequestFactory().get('/cabinet/taste'), value, status=409)
+        self.assertEqual(response.status_code, 409)
+        self.assertEqual(response['Cache-Control'], 'no-store')
+        doc = Document(response.content.decode())
+        note = next(n for n in doc.tagged('p') if n.attrs.get('class') == 'cabinet-exact-note')
+        self.assertEqual(note.text(), value['feedback_entries'][0]['signals'][2]['text'])
+        self.assertNotIn('Dining context', doc.root.text())
+        forms = [n for n in doc.tagged('form') if 'data-taste-set' in n.attrs]
+        self.assertEqual(len(forms), 7)  # 3 new item + 1 category note + 3 saved signals.
+        saved_title = [n for n in doc.tagged('input') if n.attrs.get('name') == 'title'
+                       and n.attrs.get('value') == 'Fictional known book']
+        self.assertTrue(saved_title)
+        self.assertTrue(all(n.attrs['type'] == 'hidden' for n in saved_title))
+        self.assertIn('Your response was not saved', doc.root.text())
+
+    def test_workflow_projection_refuses_malformed_note_bindings_instead_of_normalizing(self):
+        from copy import deepcopy
+        from shelf import enhancement_views as views
+        from shelf.portable_authority import AuthorityFault
+        original = self.backend_feedback_fixture()
+        changes = [lambda x:x['new_entry'].update(base_revision=False),
+                   lambda x:x['feedback_entries'][0]['signals'][2].update(text='bad\x00note'),
+                   lambda x:x['feedback_entries'][0]['signals'][2].update(revision=True),
+                   lambda x:x['feedback_entries'][0]['signals'][2].update(can_undo=True, event_ref=''),
+                   lambda x:x['feedback_categories'].append('not a descriptor')]
+        for change in changes:
+            value = deepcopy(original);change(value)
+            with self.subTest(change=changes.index(change)), self.assertRaises(AuthorityFault):
+                views._taste_display_context(value)
+
+    def test_workflow_card_projection_uses_handler_actions_and_rejects_identity_mismatch(self):
+        from shelf import enhancement_views as views
+        from shelf.portable_authority import AuthorityFault
+        value = self.backend_feedback_fixture()
+        raw = {'target_ref': value['new_entry']['entry_ref'], 'profile_ref': value['profile_ref'],
+            'signals': value['feedback_entries'][0]['signals'], 'actions': ['interest'],
+            'feedback_action': '/cabinet/feedback'}
+        display = views._card_feedback_display(raw, profile_ref=raw['profile_ref'], target_ref=raw['target_ref'])
+        self.assertEqual([r['signal'] for r in display['signals'] if r['can_set']], ['interest'])
+        self.assertEqual(display['signals'][2]['value'], raw['signals'][2]['text'])
+        with self.assertRaises(AuthorityFault):
+            views._card_feedback_display(raw, profile_ref='a-different-profile', target_ref=raw['target_ref'])
+
+    def test_workflow_note_sharing_classes_are_separate_explicit_unchecked_choices(self):
+        from shelf.enhancement_views import _INFERENCE_CHOICES
+        _, doc = self.cabinet(consent=True, consent_record_active=False,
+            inference_choices=[{'code': code, 'label': label} for code, label in _INFERENCE_CHOICES])
+        checks = {n.attrs.get('name'): n for n in doc.tagged('input') if n.attrs.get('type') == 'checkbox'}
+        self.assertIn('allow_raw_notes', checks)
+        self.assertIn('allow_free_text_entry', checks)
+        self.assertFalse(any('checked' in n.attrs for n in checks.values()))
+        self.assertIn('Leaving either unchecked keeps those notes out of the request', doc.root.text())

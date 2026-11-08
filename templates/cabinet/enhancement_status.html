@@ -114,7 +114,7 @@
       <ul>
         {% for use in enhancement.source_use %}
         <li>
-          <strong>{% if use.category == 'movie' %}Films
+          <strong>{% if use.category_label %}{{ use.category_label }}{% elif use.category == 'movie' %}Films
             {% elif use.category == 'tv' %}TV
             {% elif use.category == 'book' %}Books
             {% elif use.category == 'artist' or use.category == 'music' %}Music
@@ -136,7 +136,7 @@
       <p data-enhance-coverage-pending{% if enhancement.category_outcomes %} hidden{% endif %}>Category outcomes have not been recorded yet. Missing results do not mean an empty category or successful collection.</p>
       <ul data-enhance-outcomes class="enhance-outcomes">
         {% for outcome in enhancement.category_outcomes %}
-        <li><strong>{{ outcome.category }}</strong> —
+        <li><strong>{{ outcome.category_label|default:outcome.category }}</strong> —
           {% if outcome.state == 'fresh' %}{{ outcome.candidate_count }} sourced candidate{{ outcome.candidate_count|pluralize }} collected; new picks are not confirmed by collection alone.
           {% elif outcome.state == 'empty_bounded' %}No candidates within this round’s collection limits.
           {% elif outcome.state == 'unavailable' %}

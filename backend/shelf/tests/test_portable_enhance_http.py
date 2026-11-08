@@ -54,6 +54,12 @@ class PortableEnhanceHTTPTests(SimpleTestCase):
             current=Mock(return_value={'schema': 'cabinet-current/v1', 'published': False,
                                       'publication_revision': None, 'manifest': None, 'code': 'OK'}))
         self.lookup = self.enterContext(patch('shelf.portable_enhance_service.get_service', return_value=self.service))
+        # Existing HTTP tests isolate the display read, not backend authority.
+        # Real handler/PA1/event proofs stay in Taste's native fixture suite.
+        self.feedback_read = self.enterContext(patch('shelf.portable_feedback_views.card_feedback_context',
+            side_effect=lambda authority, session_ref, profile_ref, *, target_ref: {
+                'profile_ref': profile_ref, 'target_ref': target_ref, 'signals': [],
+                'actions': [], 'feedback_action': '/cabinet/feedback'}))
 
     def request(self, method='GET', payload=None, *, native=False, csrf=True, query=None):
         if method == 'GET':
@@ -206,7 +212,7 @@ class PortableEnhanceHTTPTests(SimpleTestCase):
         self.assertEqual([node.attrs['href'] for node in sources], ['https://source.invalid/work?x=1&y=2'])
         category_nav = next(node for node in doc.tagged('nav') if node.attrs.get('aria-label') == 'Cabinet categories')
         labels = [node.text() for node in category_nav.nodes() if node.tag == 'a']
-        self.assertEqual(labels, ['All categories', 'Books', 'Films', 'TV', 'Music', 'Events', 'Outings'])
+        self.assertEqual(labels, ['All categories', 'Books', 'Films', 'TV series', 'Music artists', 'Events', 'Outings'])
         self.service.current.assert_called_once_with('isolated-session', profile_ref=PROFILE)
         self.service.start.assert_not_called()
         self.service.status.assert_not_called()
@@ -270,3 +276,37 @@ class PortableEnhanceHTTPTests(SimpleTestCase):
             self.assertEqual(set(request.session), {'portable_session'})
             self.service.start.assert_not_called()
             self.service.confirm.assert_not_called()
+
+    def test_workflow_feedback_binding_is_fresh_read_only_and_refusal_does_not_revive_cards(self):
+        self.service.current.return_value = self.publication()
+        with patch.object(portable_setup_views, 'cabinet_choices', return_value=self.cabinet_choices()):
+            response = views.portable_cabinet(self.cabinet_request())
+            self.assertEqual(response.status_code, 200)
+            self.feedback_read.assert_called_once()
+            args, kwargs = self.feedback_read.call_args
+            self.assertEqual(args, (self.authority, 'isolated-session', PROFILE))
+            self.assertEqual(set(kwargs), {'target_ref'})
+            self.feedback_read.side_effect = AuthorityFault('PREVIEW_STALE', 409)
+            response = views.portable_cabinet(self.cabinet_request())
+        self.assertEqual(response.status_code, 409)
+        self.assertNotIn('Published &lt;img', response.content.decode())
+        self.assertNotIn('name="target_ref"', response.content.decode())
+        self.service.start.assert_not_called();self.service.confirm.assert_not_called()
+
+    def test_workflow_html_progress_labels_all_domains_without_changing_source_receipt(self):
+        from copy import deepcopy
+        from shelf.category_registry import CATEGORIES
+        value = {**self.status, 'category_outcomes': [
+            {'category': r.key, 'state': 'unavailable', 'candidate_count': 0,
+             'code': 'CAPABILITY_UNAVAILABLE'} for r in CATEGORIES]}
+        before = deepcopy(value)
+        response = views._portable_html(self.request(native=True), value,
+            selection={'profile_ref': PROFILE, 'connection_ref': CONNECTION})
+        doc = Document(response.content.decode())
+        outcomes = doc.marked('data-enhance-outcomes')
+        self.assertEqual([n.text() for n in outcomes.nodes() if n.tag == 'strong'],
+                         [r.label for r in CATEGORIES])
+        self.assertEqual(value, before)
+        self.assertTrue(any(n.attrs.get('href') == '/cabinet/taste?profile_ref=' + PROFILE
+                            for n in doc.tagged('a')))
+        self.service.start.assert_not_called();self.service.confirm.assert_not_called()

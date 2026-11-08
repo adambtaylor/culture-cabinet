@@ -238,6 +238,11 @@ def _portable_html(request, value, *, status=200, selection=None):
     # No request/RequestContext, provider prose or arbitrary action URLs enter
     # presentation. Exact body text is supplied only by the service's preview.
     commands = _portable_actions(value)
+    value = {**value}
+    for name in ('category_outcomes', 'source_use'):
+        if value.get(name):
+            value[name] = [{**row, 'category_label': _CATEGORY_LABELS.get(row['category'], row['category'])}
+                           for row in value[name]]
     context = {'enhancement_base': Engine.get_default().from_string(_PORTABLE_ENHANCE_BASE),
         'portable_ui': True, 'enhancement': value, 'portable_commands': commands,
         'csrf_token': get_token(request), 'disclosure': value.get('disclosure')}
@@ -258,6 +263,7 @@ def _portable_html(request, value, *, status=200, selection=None):
     if navigation:
         context['cabinet_url'] = _cabinet_url(navigation['profile_ref'], navigation.get('connection_ref'),
             run_ref=value.get('run_ref'))
+        context['feedback_url'] = '/cabinet/taste?' + urlencode({'profile_ref': navigation['profile_ref']})
     html = render_to_string('cabinet/enhancement_page.html', context)
     return HttpResponse(html, status=status, headers={'Cache-Control': 'no-store',
                                                     'X-Content-Type-Options': 'nosniff'})
@@ -505,8 +511,9 @@ def _source_link(value):
     return text if safe else ''
 
 
-_CATEGORY_LABELS = {'book': 'Books', 'movie': 'Films', 'tv': 'TV', 'artist': 'Music',
-    'music': 'Music', 'events': 'Events', 'outings': 'Outings'}
+from .category_registry import CATEGORIES as _FEEDBACK_CATEGORIES
+_CATEGORY_LABELS = {row.key: row.label for row in _FEEDBACK_CATEGORIES}
+_CATEGORY_LABELS.update(music='Music', events='Events', outings='Outings')
 _CATEGORY_COPY = {'fresh': 'Published picks', 'empty_bounded': 'No candidates within the collection limits.',
     'unavailable': 'Source unavailable; no fresh picks.', 'failed': 'Collection failed; not an empty result.',
     'cancelled': 'Collection cancelled; no fresh picks.',
@@ -594,11 +601,110 @@ def _cabinet_projection(current):
     return {'published': True, 'publication_revision': revision, 'categories': result, 'code': current['code']}
 
 
+def _feedback_signals(rows, *, actions=()):
+    """Detach typed display state without normalizing the exact note text.
+
+    Revisions/events remain opaque command bindings, never permission. Only the
+    handler can authorize a write or decide whether an old event can be undone.
+    """
+    from .portable_authority import AuthorityFault
+    from .portable_connection_views import _uuid
+    def require(value):
+        if not value:
+            raise AuthorityFault('CONTRACT_INVALID', 422)
+    require(type(rows) is list and len(rows) <= 3)
+    result, seen = [], set()
+    for row in rows:
+        require(type(row) is dict)
+        signal = row.get('signal')
+        require(signal in ('interest', 'enjoyment', 'note') and signal not in seen)
+        seen.add(signal)
+        revision, undo = row.get('revision', 0), row.get('can_undo', False)
+        require(type(revision) is int and 0 <= revision <= 2**53 - 1 and type(undo) is bool)
+        event = row.get('event_ref', '')
+        require(type(event) is str)
+        if event:
+            event = str(_uuid(event))
+        require(not undo or bool(event))
+        value = row.get('value')
+        if signal == 'note':
+            text = _display_text(row.get('text', ''), 500)
+            require('\x00' not in text)
+            value = text if event else None
+        elif signal == 'interest':
+            require(value is None or type(value) is str and value in ('no', 'maybe', 'yes'))
+        else:
+            require(value is None or type(value) is int and 1 <= value <= 5)
+        item = {'signal': signal, 'value': value, 'revision': revision, 'event_ref': event,
+                'mutation_id': str(_uuid(row.get('mutation_id'))), 'can_undo': undo,
+                'can_set': signal in actions}
+        item['undo_mutation_id'] = str(_uuid(row.get('undo_mutation_id'))) if undo else ''
+        result.append(item)
+    return result
+
+
+def _taste_display_context(value):
+    """Map the frozen native handler projection into category-scoped forms.
+
+    Never generate mutation IDs here. The one new-entry intent offers a choice
+    of forms; after any successful POST, the handler issues fresh bindings.
+    Category-note labels/text are display context, not source query material.
+    """
+    from .category_registry import KEYS
+    from .portable_authority import AuthorityFault
+    from .portable_connection_views import _uuid
+    if value.get('feedback_version') != 'workflow-taste/v1':
+        raise AuthorityFault('CONTRACT_INVALID', 422)
+    rows, category = value['feedback_categories'], value['feedback_category']
+    if (type(rows) is not list or len(rows) != len(KEYS) or any(type(r) is not dict for r in rows)
+            or [r.get('key') for r in rows] != list(KEYS) or category not in KEYS):
+        raise AuthorityFault('CONTRACT_INVALID', 422)
+    categories = [{'key': r['key'], 'label': _display_text(r['label'], 80)} for r in rows]
+    new = value['new_entry']
+    if type(new) is not dict or type(new.get('base_revision')) is not int or new['base_revision'] != 0:
+        raise AuthorityFault('CONTRACT_INVALID', 422)
+    signals = _feedback_signals(new.get('signals'))
+    if {row['signal'] for row in signals} != {'interest', 'enjoyment', 'note'}:
+        raise AuthorityFault('CONTRACT_INVALID', 422)
+    entry_ref = str(_uuid(new.get('entry_ref')))
+    groups = [{'entry_ref': entry_ref, 'entry_kind': 'item', 'is_new': True,
+               'title': '', 'signals': signals},
+              {'entry_ref': entry_ref, 'entry_kind': 'category_note', 'is_new': True,
+               'title': '', 'signals': [r for r in signals if r['signal'] == 'note']}]
+    entries = value['feedback_entries']
+    if type(entries) is not list or len(entries) > 100:
+        raise AuthorityFault('CONTRACT_INVALID', 422)
+    for row in entries:
+        if type(row) is not dict or row.get('category') not in KEYS or row.get('entry_kind') not in ('item', 'category_note'):
+            raise AuthorityFault('CONTRACT_INVALID', 422)
+        if row['category'] != category:
+            continue
+        signals = _feedback_signals(row.get('signals'))
+        if row['entry_kind'] == 'category_note':
+            signals = [r for r in signals if r['signal'] == 'note']
+        groups.append({'entry_ref': str(_uuid(row.get('entry_ref'))), 'entry_kind': row['entry_kind'],
+            'title': _display_text(row['title'], 200), 'is_new': False, 'signals': signals})
+    return {'taste_categories': categories, 'taste_category': category, 'taste_groups': groups,
+            'feedback_error_code': _display_text(value.get('feedback_code', ''), 80)}
+
+
+def _card_feedback_display(value, *, profile_ref, target_ref):
+    from .portable_authority import AuthorityFault
+    if (type(value) is not dict or value.get('profile_ref') != profile_ref
+            or value.get('target_ref') != target_ref or value.get('feedback_action') != '/cabinet/feedback'
+            or type(value.get('actions')) is not list
+            or any(a not in ('interest', 'enjoyment', 'note') for a in value['actions'])):
+        raise AuthorityFault('CONTRACT_INVALID', 422)
+    return {'target_ref': target_ref, 'signals': _feedback_signals(value['signals'], actions=value['actions'])}
+
+
 @sensitive_variables()
 def _native_cabinet_html(request, context, *, status=200):
     from django.http import HttpResponse
     from django.middleware.csrf import get_token
     from django.template import Engine
+    if context.get('taste_input') is True:
+        context = {**context, **_taste_display_context(context)}
     context = {**context, 'csrf_token': get_token(request),
                'enhancement_base': Engine.get_default().from_string(_PORTABLE_ENHANCE_BASE)}
     return HttpResponse(render_to_string('cabinet/portable_cabinet.html', context), status=status,
@@ -705,6 +811,28 @@ def portable_cabinet(request):
     for row in context['categories']:
         row['url'] = _cabinet_url(profile_ref, connection_ref, category=row['category'], run_ref=run_ref)
         row['visible'] = not category or row['category'] == category
+    from .portable_feedback_views import card_feedback_context
+    from .portable_reactions import target_ref as feedback_target_ref
+    context['feedback_available'] = True
+    context['feedback_url'] = '/cabinet/taste?' + urlencode({'profile_ref': profile_ref,
+        **({'category': category} if category else {})})
+    # Only missing feedback capability may leave a filtered card readable with
+    # controls withheld. Fresh authority/currentness refusals propagate: never
+    # render an earlier private card or cached binding after that refusal.
+    for row in context['categories']:
+        if not row['visible']:
+            continue
+        for card in row['cards']:
+            target = feedback_target_ref(profile_ref, card['candidate_key'])
+            try:
+                feedback = card_feedback_context(request.portable_authority, session_ref,
+                    profile_ref, target_ref=target)
+            except AuthorityFault as fault:
+                if fault.status != 503:
+                    raise
+                card['feedback_unavailable'] = True
+            else:
+                card['feedback'] = _card_feedback_display(feedback, profile_ref=profile_ref, target_ref=target)
     return _native_cabinet_html(request, context, status=status)
 
 
@@ -724,6 +852,7 @@ _INFERENCE_CHOICES = (
     ('reaction', 'Saved reactions'), ('anticipated_reactions', 'Anticipated interest'),
     ('experienced_enjoyment', 'Experienced enjoyment'), ('legacy_choices', 'Original legacy choices'),
     ('raw_notes', 'Exact notes (may contain personal information)'),
+    ('free_text_entry', 'Free text you entered (also required to share typed preference notes)'),
     ('inferred_traits', 'Inferred traits with permitted ancestors'))
 
 
