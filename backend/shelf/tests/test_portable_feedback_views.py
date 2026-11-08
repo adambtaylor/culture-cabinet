@@ -212,3 +212,60 @@ class NativeFeedbackTests(RecoveryCase):
             self.assertEqual(FeedbackTarget.objects.count(), 2)
         read = PortableTasteInputs(self.authority).read(self.ref, self.profile_ref)
         self.assertEqual((read[0]['title'], read[0]['signals'][0]['value']), ('Fictional Artist', 'yes'))
+
+    def test_shared_note_null_clear_keeps_revision_undo_and_exact_empty_codec(self):
+        from shelf import inference_body
+        from shelf.portable_reactions import PortableReactions
+        from .test_inference_body import InferenceBodyTests
+        card = {'key': 'synthetic:book:null-note', 'title': 'Synthetic book', 'category': 'book'}
+        opaque = target_ref(self.profile_ref, card['key'])
+        service = SimpleNamespace(authority=self.authority,
+            current=lambda *a, **k: {'manifest': {'categories': [{'cards': [card]}]}})
+        self.authority._enhance_service = service
+        reactions = PortableReactions(self.authority, service=service)
+        self.consent(self.profile_ref, classes=['raw_notes', 'free_text_entry'])
+        text = '  e\u0301 / é\t\r\n雪  '
+        def set_note(value, revision):
+            return reactions.mutate(self.ref, self.profile_ref, opaque, str(uuid.uuid4()), revision,
+                'set', {'signal': 'note', 'value': value})
+        def project():
+            view = self.view(self.profile_ref)
+            snapshot = profile_snapshot.capture(view)
+            prepared = disclosure.prepare(snapshot, view.grants, view.context, [], {}, {}, now=self.clock.wall)
+            self.assertTrue(prepared.ok)
+            collection = self.disclosure.fixture_collection([InferenceBodyTests.record(self)],
+                {'observation:1': {'revision': 7, 'digest': 'c' * 64}},
+                {'policy:1': {'revision': 3}}, expires_at=self.expires)
+            encoded = inference_body.serialize(snapshot, view.grants, view.context, collection, now=self.clock.wall)
+            self.assertEqual(json.loads(json.loads(encoded.body)['input'])['profile'],
+                             disclosure.read_json(prepared.profile_bytes)['profile'])
+            return snapshot, disclosure.read_json(prepared.profile_bytes)['profile']
+        first = set_note({'text': text}, 0)
+        self.assertEqual(project()[1]['raw_notes'][0]['text'], text)
+        cleared = set_note(None, 1)
+        snapshot, projected = project()
+        node = next(row for row in snapshot['evidence'] if row['value']['signal'] == 'note')
+        self.assertIsNone(node['value']['value'])
+        self.assertEqual([row['revision'] for row in node['event_lineage']], [1, 2])
+        self.assertEqual(snapshot['hard_constraints'], [])
+        self.assertEqual(projected['signals'], [])
+        self.assertNotIn('raw_notes', projected)
+        binding = next(row for row in card_feedback_context(self.authority, self.ref, self.profile_ref,
+            target_ref=opaque)['signals'] if row['signal'] == 'note')
+        self.assertEqual((binding['revision'], binding['event_ref'], binding['can_undo'], binding['cleared']),
+                         (2, cleared['event_ref'], True, True))
+        self.consent(self.profile_ref, purpose='catalogue_lookup', classes=['raw_notes', 'free_text_entry'])
+        source_view = ga.current_view(self.authority, self.ref, profile_ref=self.profile_ref,
+            connection_ref=str(self.config.pk), purpose='catalogue_lookup')
+        query, _ = disclosure.catalogue_input(profile_snapshot.capture(source_view), source_view.grants,
+            source_view.context, registry_view().categories, now=self.clock.wall)
+        self.assertTrue(all(row['terms'] == [] for row in disclosure.read_json(query)['queries']))
+        self.assertNotIn('raw_notes', disclosure.read_json(query)['profile'])
+        reactions.mutate(self.ref, self.profile_ref, opaque, str(uuid.uuid4()), 2, 'reverse',
+            {'signal': 'note', 'value': None}, cleared['event_ref'])
+        self.assertEqual(project()[1]['raw_notes'][0]['text'], text)
+        set_note({'text': ''}, 3)
+        self.assertEqual(project()[1]['raw_notes'][0]['text'], '')
+        binding = next(row for row in card_feedback_context(self.authority, self.ref, self.profile_ref,
+            target_ref=opaque)['signals'] if row['signal'] == 'note')
+        self.assertEqual((binding['revision'], binding['can_undo'], binding['cleared']), (4, True, False))

@@ -20,9 +20,10 @@ class SourceAdapterTests(TestCase):
         self.assertEqual(tuple(row['category'] for row in rows), KEYS)
         self.assertEqual(len(rows), 13)
         self.assertEqual({row['category'] for row in rows if not row['sources']},
-            {'artist', 'art_fair', 'regional_day_trip', 'outing', 'dining'})
+            {'art_fair', 'regional_day_trip', 'outing', 'dining'})
         self.assertEqual({source.key for source in SOURCES if source.kind == 'api'},
-            {'hardcover', 'tmdb_movie', 'tmdb_tv', 'musicbrainz_recording', 'moshtix', 'apple_podcast'})
+            {'hardcover', 'tmdb_movie', 'tmdb_tv', 'musicbrainz_recording', 'musicbrainz_artist',
+             'moshtix', 'apple_podcast'})
         self.assertTrue(all(set(source) == {'source', 'operations', 'kind'}
             for row in rows for source in row['sources']))
         rows[0]['sources'][0]['source'] = 'caller-changed'

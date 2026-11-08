@@ -1,4 +1,4 @@
-"""One anonymous core-recording operation through the existing source ports.
+"""Fixed anonymous core-recording/artist operations through existing ports.
 
 An artist name is a disclosed query input, not a verified favourite/artist ID.
 This module never discovers credentials, grants consent or enables a policy.
@@ -20,6 +20,16 @@ SOURCE = 'musicbrainz_recording'
 ORIGIN = 'https://musicbrainz.org'
 PATH = '/ws/2/recording/'
 OPERATION = 'recordings_by_artist_name'
+ARTIST_SOURCE = 'musicbrainz_artist'
+ARTIST_PATH = '/ws/2/artist/'
+ARTIST_OPERATION = 'artists_by_name'
+
+
+def _operation_spec(source):
+    # Two explicit wire identities, never an arbitrary endpoint/query builder.
+    require(type(source) is str and source in (SOURCE, ARTIST_SOURCE), 'AUTHORITY_DENIED')
+    return (('recording', OPERATION, PATH, 'artistname') if source == SOURCE else
+            ('artist', ARTIST_OPERATION, ARTIST_PATH, 'artist'))
 
 
 def _identity(value):
@@ -48,8 +58,10 @@ def _identity(value):
 class MusicBrainzOperation:
     artist_name: str
     application_identity: str
+    source: str = SOURCE
 
     def __post_init__(self):
+        _operation_spec(self.source)
         if (type(self.artist_name) is not str or not 1 <= len(self.artist_name) <= 200
                 or not self.artist_name.strip()
                 or any(ord(char) < 32 or ord(char) == 127 for char in self.artist_name)):
@@ -66,12 +78,12 @@ class MusicBrainzOperation:
         # URL encoding so a supplied name cannot add fields/operators/parameters.
         literal = ''.join('\\' + char if char in '+-&|!(){}[]^"~*?:\\/' else char
                           for char in self.artist_name)
-        return urlencode((('query', 'artistname:"' + literal + '"'),
+        return urlencode((('query', _operation_spec(self.source)[3] + ':"' + literal + '"'),
                           ('fmt', 'json'), ('limit', '9'), ('offset', '0')))
 
     @property
     def url(self):
-        return ORIGIN + PATH + '?' + self.query
+        return ORIGIN + _operation_spec(self.source)[2] + '?' + self.query
 
     @property
     def body(self):
@@ -79,7 +91,7 @@ class MusicBrainzOperation:
 
     @property
     def material(self):
-        return {'method': 'GET', 'origin': ORIGIN, 'path': PATH, 'query': self.query,
+        return {'method': 'GET', 'origin': ORIGIN, 'path': _operation_spec(self.source)[2], 'query': self.query,
             'headers': [['accept', 'application/json'], ['accept-encoding', 'identity'],
                         ['user-agent', self.application_identity]],
             'body_digest': sha256(self.body).hexdigest()}
@@ -90,18 +102,21 @@ class MusicBrainzOperation:
 
 
 def musicbrainz_operation(request, application_identity):
-    require(type(request) is SourceRequest and request.source == SOURCE
-            and request.category == 'recording' and request.operation == OPERATION
+    require(type(request) is SourceRequest, 'AUTHORITY_DENIED')
+    category, operation, _, _ = _operation_spec(request.source)
+    require(request.category == category and request.operation == operation
             and len(request.terms) == 1 and not request.ids, 'AUTHORITY_DENIED')
-    return MusicBrainzOperation(request.terms[0], application_identity)
+    return MusicBrainzOperation(request.terms[0], application_identity, request.source)
 
 
-def musicbrainz_template():
+def musicbrainz_template(source=SOURCE):
     """Canonical fixed template for the source issuer's current-profile binding."""
-    return {'source': SOURCE, 'method': 'GET', 'origin': ORIGIN, 'path': PATH,
-            'operation': OPERATION, 'query_field': 'artistname',
+    category, operation, path, query_field = _operation_spec(source)
+    return {'source': source, 'method': 'GET', 'origin': ORIGIN, 'path': path,
+            'operation': operation, 'query_field': query_field,
             'fixed_parameters': {'fmt': 'json', 'limit': 9, 'offset': 0},
-            'projection': ['recording_mbid', 'title', 'source_url']}
+            'projection': (['recording_mbid', 'title', 'source_url'] if category == 'recording'
+                           else ['artist_mbid', 'name', 'source_url'])}
 
 
 @dataclass(repr=False)
@@ -115,14 +130,15 @@ class _Context:
 
 class MusicBrainzBackend(SourceBackend):
     """Retained issuer capabilities plus one bounded keyless HTTP operation."""
-    def __init__(self, issuer, limiter, *, clock):
+    def __init__(self, issuer, limiter, *, clock, source=SOURCE):
         from .discovery_transport import MediaHostLimiter
         require(isinstance(issuer, SourceAuthorityIssuer), 'CAPABILITY_UNAVAILABLE')
         require(type(limiter) is MediaHostLimiter and limiter.provider == 'musicbrainz',
                 'CAPABILITY_UNAVAILABLE')
         require(callable(getattr(clock, 'now', None)), 'CAPABILITY_UNAVAILABLE')
+        _operation_spec(source)
         self.issuer, self.limiter, self.clock = issuer, limiter, clock
-        self.source, self._contexts, self._lock = SOURCE, {}, RLock()
+        self.source, self._contexts, self._lock = source, {}, RLock()
 
     def _context(self, permit):
         with self._lock:
@@ -131,6 +147,9 @@ class MusicBrainzBackend(SourceBackend):
         return value
 
     def authorize(self, request, plan, *, now):
+        # A recording issuer/grant/backend cannot be borrowed for artist use.
+        require(type(request) is SourceRequest and request.source == self.source,
+                'AUTHORITY_DENIED')
         operation = self.issuer.operation_for(request, plan, now=now)
         require(type(operation) is MusicBrainzOperation
                 and operation == musicbrainz_operation(request, operation.application_identity),
