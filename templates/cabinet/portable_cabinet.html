@@ -157,6 +157,15 @@
     {% if profile_ref %}<p><a href="/cabinet/source/musicbrainz?profile_ref={{ profile_ref|urlencode }}">Configure MusicBrainz and review source permission</a></p><p><a href="/cabinet/taste/artist?profile_ref={{ profile_ref|urlencode }}">Add an artist you know</a></p>{% endif %}
     {% if inference_consent_url %}<p><a href="{{ inference_consent_url }}">Review inference permission</a>. Source collection permission remains separate.</p>{% endif %}
   </details>
+  {% if selection_token %}
+  <p><a href="/cabinet/saved/">Saved items and Obtain for {{ profile_label }}</a></p>
+  {% else %}
+  <form method="post" action="/cabinet/saved/select/">{% csrf_token %}
+    <input type="hidden" name="profile_ref" value="{{ profile_ref }}">
+    <p>Select this cabinet before saving or reviewing Obtain options. Selection does not start acquisition or grant provider permission.</p>
+    <button type="submit">Select {{ profile_label }} for saved items</button>
+  </form>
+  {% endif %}
 </header>
 {% if read_code %}
 <section class="error-summary" role="status"><h2>Current picks cannot be shown</h2>
@@ -187,6 +196,18 @@
       {% if card.facts %}<dl class="cabinet-facts">{% for fact in card.facts %}<div><dt>{{ fact.name }}</dt><dd>{{ fact.value }}</dd></div>{% endfor %}</dl>{% endif %}
       </details>
       {% if card.reasons %}<h4>For you</h4>{% for reason in card.reasons %}<p><strong>{{ reason.label }}:</strong> {{ reason.text }} <span class="cabinet-evidence">{% if reason.evidence_count %}{{ reason.evidence_count }} evidence reference{{ reason.evidence_count|pluralize }}.{% else %}No evidence references supplied.{% endif %}</span></p>{% endfor %}{% else %}<p class="cabinet-no-reason">No current For You explanation is available.</p>{% endif %}
+      {% if card.save_list_kind %}
+        {% if save_unavailable_reason %}<p role="status">{{ save_unavailable_reason }}</p>
+        {% elif selection_token %}
+        <form method="post" action="/cabinet/saved/save/">{% csrf_token %}
+          <input type="hidden" name="profile_ref" value="{{ profile_ref }}"><input type="hidden" name="selection_token" value="{{ selection_token }}">
+          <input type="hidden" name="publication_revision" value="{{ publication_revision }}"><input type="hidden" name="candidate_key" value="{{ card.candidate_key }}">
+          <label>Save {{ card.title }} to <select name="list_kind"><option value="{{ card.save_list_kind }}">{% if card.save_list_kind == 'read' %}To read{% else %}To watch{% endif %}</option><option value="favorites">Favourites</option></select></label>
+          <button type="submit">Save {{ card.title }}</button>
+        </form>
+        <p>Save keeps this item separately from enjoyment. Current source rights and attribution must still permit saving; it never starts Obtain.</p>
+        {% else %}<p>Select this cabinet above before saving this item.</p>{% endif %}
+      {% else %}<p>Save and Obtain are unavailable for this category. Its current picks remain visible.</p>{% endif %}
     </article>
   {% empty %}<p>No fresh cards in this category. {{ category.status }}</p>{% endfor %}
   </div>

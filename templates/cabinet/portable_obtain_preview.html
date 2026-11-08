@@ -1,0 +1,35 @@
+{% extends enhancement_base %}
+{% block content %}
+<header><p class="eyebrow">Obtain · {{ profile_label }}</p><h1>{% if obtain_selected_result %}Review exact listing{% else %}Review listing search{% endif %}</h1><p><a href="/cabinet/saved/">Back to saved items for {{ profile_label }}</a></p></header>
+{% if error_message %}<p role="alert">{{ error_message }} Return to saved items and open a fresh review. Nothing is retried automatically.</p>{% endif %}
+{% if obtain_preview %}<p>Title: {{ obtain_preview.title }}</p><p>Scope: {% if obtain_preview.scope == 'film' %}Full film{% elif obtain_preview.scope == 'audiobook' %}Full audiobook, never ebook{% elif obtain_preview.episode_code %}{{ obtain_preview.episode_code }} only{% else %}{{ obtain_preview.scope }}{% endif %}</p>
+{% if obtain_preview.state == 'failed' %}<p role="status">Search failed before submission. Return to saved items and explicitly search again; no enqueue retry is implied.</p>
+{% elif obtain_preview.state == 'empty' %}<p role="status">No listings found within this search. This does not establish availability.</p>
+{% elif obtain_preview.state == 'searching' %}<p role="status">Search pending. Refresh reads the stored preview; it does not start another search.</p>
+{% elif obtain_preview.state == 'expired' %}<p role="status">This preview expired. Return to saved items for a fresh explicit search.</p>
+{% elif obtain_preview.state == 'unconfigured' %}<p role="status">Listing search is unavailable. Review the configured connection with the operator.</p>
+{% elif obtain_preview.state == 'results' or obtain_preview.state == 'partial' %}
+<p>Listing claims only. Title, edition, completeness and rights remain unverified.</p><p>Preview expires: {{ obtain_preview.expires_at }}</p>
+{% if obtain_preview.state == 'partial' %}<p role="status">Some unsafe listings were omitted; this is a partial preview.</p>{% endif %}
+{% if obtain_selected_result %}
+<article class="paper-panel"><h2>{{ obtain_selected_result.title }}</h2><dl><dt>Indexer</dt><dd>{{ obtain_selected_result.indexer }}</dd><dt>Reported size</dt><dd>{{ obtain_selected_result.size }} bytes</dd><dt>Edition</dt><dd>{{ obtain_selected_result.edition }}</dd><dt>Full work claim</dt><dd>{{ obtain_selected_result.full_work }}</dd></dl></article>
+{% if selection_token and obtain_result_form and obtain_result_confirm_url %}
+<form method="post" action="{{ obtain_result_confirm_url }}">
+  {% csrf_token %}
+  <input type="hidden" name="profile_ref" value="{{ profile_ref }}">
+  <input type="hidden" name="selection_token" value="{{ selection_token }}">
+  {{ obtain_result_form.non_field_errors }}
+  {{ obtain_result_form.review_token }}{{ obtain_result_form.review_token.errors }}
+  {{ obtain_result_form.scope }}{{ obtain_result_form.scope.errors }}
+  {{ obtain_result_form.edition.as_hidden }}{{ obtain_result_form.edition.errors }}
+  <p>{{ obtain_result_form.authorized_content.errors }}{{ obtain_result_form.authorized_content }} {{ obtain_result_form.authorized_content.label_tag }}</p>
+  <p>{{ obtain_result_form.storage.errors }}{{ obtain_result_form.storage.label_tag }} {{ obtain_result_form.storage }}</p>
+  <p>{{ obtain_result_form.storage_check.errors }}{{ obtain_result_form.storage_check }} {{ obtain_result_form.storage_check.label_tag }}</p>
+  <button type="submit">Confirm this exact local selection</button>
+</form>
+<p>This records a local selection. It cannot enqueue; submission requires a separate fresh review.</p>
+{% endif %}
+{% else %}{% for result in obtain_preview.results %}<article class="paper-panel"><h2>{{ result.title }}</h2><p>Indexer: {{ result.indexer }} · {{ result.size }} bytes</p><p>Edition: {{ result.edition }} · Full work claim: {{ result.full_work }}</p>
+{% if result.selectable and result.review_url %}<a href="{{ result.review_url }}">Review exact listing: {{ result.title }}</a>{% else %}<p>Cannot select this listing: {% if result.reason == 'ebook_not_audiobook' %}ebooks are outside full audiobook scope.{% elif result.reason == 'ambiguous_episode' %}a pack or ambiguous episode is outside the exact single-episode scope.{% else %}the listing does not match the required title, category or scope.{% endif %}</p>{% endif %}</article>{% empty %}<p>No selectable listings in this stored preview.</p>{% endfor %}{% endif %}
+{% else %}<p role="status">Preview unavailable. Return to saved items for current options.</p>{% endif %}{% endif %}
+{% endblock %}
