@@ -5,6 +5,7 @@ import resource
 import sqlite3
 import tempfile
 from unittest.mock import patch
+from types import SimpleNamespace
 import uuid
 
 from django.apps import apps
@@ -14,6 +15,52 @@ from django.test import SimpleTestCase, TransactionTestCase
 
 from cabinet.portable_boundary import open_boundary
 from cabinet import portable_runtime as runtime
+
+
+class ObtainResponsePolicyTests(SimpleTestCase):
+    def test_only_exact_named_successful_html_documents_enable_fixed_script(self):
+        from django.http import HttpResponse
+        from django.test import RequestFactory
+        from django.urls import resolve
+        from cabinet.portable_boundary import PortableSecurityMiddleware
+        from shelf import portable_obtain_views
+        with tempfile.TemporaryDirectory() as folder:
+            boundary = open_boundary(Path(folder) / 'native')
+            try:
+                with self.settings(PORTABLE_AUTHORITY=SimpleNamespace(boundary=boundary),
+                    ROOT_URLCONF='cabinet.portable_urls', SESSION_COOKIE_NAME=boundary.session_cookie,
+                    CSRF_COOKIE_NAME=boundary.csrf_cookie, SESSION_COOKIE_DOMAIN=None,
+                    CSRF_COOKIE_DOMAIN=None, SESSION_COOKIE_HTTPONLY=True, CSRF_COOKIE_HTTPONLY=True,
+                    SESSION_COOKIE_SAMESITE='Strict', CSRF_COOKIE_SAMESITE='Strict',
+                    SESSION_COOKIE_SECURE=False, CSRF_COOKIE_SECURE=False):
+                    def policy(path, *, status=200, content_type='text/html', override=None):
+                        request = RequestFactory().get(path, HTTP_HOST=boundary.origin.removeprefix('http://'))
+                        request.resolver_match = override or resolve(path)
+                        response = PortableSecurityMiddleware(lambda req: HttpResponse(
+                            'synthetic document', status=status, content_type=content_type))(request)
+                        return response['Content-Security-Policy']
+                    for path in ('/cabinet', '/cabinet/obtain/jobs/7/'):
+                        value = policy(path)
+                        self.assertIn('script-src ' + boundary.origin + '/cabinet/obtain/status.js;', value)
+                        self.assertIn('connect-src ' + boundary.origin + '/cabinet/obtain/jobs/;', value)
+                        self.assertIn("script-src-attr 'none'", value)
+                        self.assertNotIn("script-src 'self'", value)
+                        self.assertNotIn('unsafe-', value)
+                    for path, status, kind in (('/setup', 200, 'text/html'),
+                        ('/cabinet/obtain/jobs/7/status/', 200, 'application/json'),
+                        ('/cabinet/obtain/status.js', 200, 'application/javascript'),
+                        ('/cabinet', 403, 'text/html'), ('/cabinet', 303, 'text/html'),
+                        ('/cabinet', 200, 'text/plain')):
+                        self.assertNotIn('script-src', policy(path, status=status, content_type=kind))
+                    forged = SimpleNamespace(url_name='portable_cabinet', func=portable_obtain_views.job_page)
+                    self.assertNotIn('script-src', policy('/cabinet', override=forged))
+                    request = RequestFactory().get('/cabinet', HTTP_HOST='foreign.invalid')
+                    request.resolver_match = resolve('/cabinet')
+                    response = PortableSecurityMiddleware(lambda req: self.fail('Foreign Host reached handler'))(request)
+                    self.assertEqual(response.status_code, 403)
+                    self.assertNotIn('script-src', response['Content-Security-Policy'])
+            finally:
+                boundary.close()
 
 
 class ClosingConnection(sqlite3.Connection):
