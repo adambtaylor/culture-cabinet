@@ -22,6 +22,7 @@ _PENDING_OUTCOME = '_portable_feedback_outcome'
 _OUTCOME_OPERATIONS = {'RESPONSE_SAVED': 'set', 'RESPONSE_UNDONE': 'reverse'}
 
 
+@sensitive_variables()
 def _remember_feedback_outcome(request, *, profile_ref, mutation_id, operation, result):
     """A committed result supplies identifiers only; never retain the command."""
     session_ref = request.session.get('portable_session')
