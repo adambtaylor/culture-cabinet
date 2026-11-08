@@ -8,6 +8,7 @@ and an actually bounded single-request transport; incompatible sources stay off.
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
+import re
 from threading import RLock
 from urllib.parse import urlsplit
 
@@ -227,8 +228,26 @@ def _normalize(spec, request, reply, *, now):
                         and all(type(i) is int and 0 < i <= 2147483647 for i in ids))
                 return ParsedReply((), tuple(dict.fromkeys(ids)))
             rows, provider, medium = document.get('books'), 'hardcover', 'book'
-            require(type(rows) is list and all(type(row) is dict
-                    and row.get('id') in request.ids for row in rows))
+            require(type(rows) is list and len(rows) <= 9, 'SOURCE_UNAVAILABLE')
+            seen = set()
+            for index, row in enumerate(rows):
+                # Native details deliberately do NOT enter legacy metadata
+                # parsing: accepting extra content would widen the reviewed
+                # fetch/projection boundary despite a narrow final SourceCard.
+                require(type(row) is dict and set(row) == {'id', 'title', 'slug'}, 'SOURCE_UNAVAILABLE')
+                source_id, title, slug = row['id'], row['title'], row['slug']
+                require(type(source_id) is int and 0 < source_id <= 2147483647
+                        and source_id in request.ids and source_id not in seen, 'SOURCE_UNAVAILABLE')
+                require(type(title) is str and 0 < len(title) <= 300 and title.strip(), 'SOURCE_UNAVAILABLE')
+                require(type(slug) is str and len(slug) <= 200
+                        and re.fullmatch(r'[a-z0-9]+(?:-[a-z0-9]+)*', slug, re.ASCII), 'SOURCE_UNAVAILABLE')
+                seen.add(source_id)
+                cards.append(SourceCard(f'hardcover:book:{source_id}', title, 'book', 'hardcover',
+                    str(source_id), 'https://hardcover.app/books/' + slug, f'normalized-source-row:{index}'))
+            # A disappeared requested ID is an incomplete enrichment, never
+            # evidence that the earlier successful search found no inventory.
+            require(seen == set(request.ids), 'SOURCE_UNAVAILABLE')
+            return ParsedReply(tuple(cards))
         else:
             rows, provider, medium = document.get('results'), 'tmdb', request.category
         projected = parse_candidates(provider, medium, rows,

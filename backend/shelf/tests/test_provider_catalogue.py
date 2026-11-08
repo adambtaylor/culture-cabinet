@@ -13,6 +13,33 @@ from shelf.tests.fixtures_credentials import CANARY
 
 
 class ProviderCatalogueTests(TestCase):
+    def test_native_minimal_projection_is_closed_and_legacy_callers_keep_wider_bytes(self):
+        from shelf.source_adapters import SourceRequest
+        document = 'query Details($ids:[Int!]!){books(where:{id:{_in:$ids}},limit:9){id title slug}}'
+        request = SourceRequest('hardcover', 'book', 'book_details', ('Synthetic book',), (7, 9))
+        native = p.media_operation(request)
+        self.assertEqual(p.BOOK_DETAILS_MINIMAL, document)
+        self.assertEqual(native.projection, 'native_minimal')
+        self.assertEqual(native.body, json.dumps({'query': document,
+            'variables': {'ids': [7, 9]}}, ensure_ascii=True).encode('ascii'))
+        legacy = p.MediaOperation('hardcover', 'book_details', ids=(7, 9))
+        self.assertEqual(legacy.projection, 'legacy')
+        _, command = p._command('book_details', [7, 9])
+        self.assertEqual(command[command.index('--data-binary') + 1].encode(), legacy.body)
+        self.assertIn(b'description', legacy.body)
+        self.assertNotIn(b'description', native.body)
+        for name in ('BOOK_DETAILS', 'BOOK_DECK', 'BOOK_CATEGORY'):
+            self.assertIn(p.BOOK_FIELDS, getattr(p, name))
+        self.assertNotEqual(native.operation_digest, legacy.operation_digest)
+        for projection in ('minimal', '', None, True, {'fields': ['id']}):
+            with self.subTest(projection=projection), self.assertRaises(p.CatalogueError):
+                replace(native, projection=projection)
+        with self.assertRaises(p.CatalogueError):
+            p.MediaOperation('tmdb_movie', 'search_movie', 'Synthetic', projection='native_minimal')
+        for ids in ((), (7, 7), (True,), ('7',)):
+            with self.subTest(ids=ids), self.assertRaises(p.CatalogueError):
+                p.MediaOperation('hardcover', 'book_details', ids=ids, projection='native_minimal')
+
     def test_fixed_operations_no_url_or_graphql_escape(self):
         for operation in list(p.LANES) + ['search_movie', 'search_tv', 'neighbors_movie',
                                         'neighbors_tv', 'book_search', 'book_details', 'book_deck']:

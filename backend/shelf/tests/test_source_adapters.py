@@ -13,6 +13,29 @@ from shelf.tests.test_source_collection import plan
 
 
 class SourceAdapterTests(TestCase):
+    def test_hardcover_minimal_rows_never_enter_legacy_metadata_and_missing_is_not_empty(self):
+        from unittest.mock import patch
+        request = SourceRequest('hardcover', 'book', 'book_details', ('Synthetic',), (7,))
+        def parse(rows):
+            reply = SourceReply(request.request_digest, 200, canonical_bytes({'data': {'books': rows}}), NOW)
+            return normalize(registered_source('hardcover'), request, reply, now=NOW)
+        row = {'id': 7, 'title': 'Synthetic plain title', 'slug': 'synthetic-book'}
+        with patch('shelf.provider_catalogue.parse_candidates', side_effect=AssertionError('No legacy parser')), \
+             patch('shelf.book_metadata.parse', side_effect=AssertionError('No rich metadata')):
+            cards = parse([row]).cards
+            self.assertEqual(len(cards), 1)
+            self.assertEqual((cards[0].key, cards[0].title, cards[0].source_url, cards[0].facts),
+                ('hardcover:book:7', row['title'], 'https://hardcover.app/books/synthetic-book', ()))
+            for rows in ([], [row, row], [row] * 10,
+                         [{**row, 'id': 8}], [{**row, 'id': True}], [{**row, 'id': '7'}],
+                         [{**row, 'title': ' '}], [{**row, 'title': 'x' * 301}],
+                         [{**row, 'description': 'UNPERMITTED'}], [{**row, 'image': {'url': 'UNPERMITTED'}}],
+                         [{k: v for k, v in row.items() if k != 'slug'}],
+                         [{**row, 'slug': '../escape'}], [{**row, 'slug': 'x' * 201}]):
+                with self.subTest(rows=rows), self.assertRaises(EnhanceFault) as failure:
+                    parse(rows)
+                self.assertEqual(failure.exception.code, 'SOURCE_UNAVAILABLE')
+
     def test_registration_projection_preserves_thirteen_rows_without_readiness_claim(self):
         from shelf.category_registry import KEYS, registered_source_coverage
         from shelf.source_adapters import SOURCES
