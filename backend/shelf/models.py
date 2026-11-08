@@ -155,6 +155,7 @@ class SavedItem(models.Model):
     url = models.URLField(max_length=300)
     fetched_at = models.DateTimeField()
     created_at = models.DateTimeField(auto_now_add=True)
+    publication_lineage = models.JSONField(null=True, default=None)
 
     class Meta:
         ordering = ['id']
@@ -669,6 +670,54 @@ def register_closed_sql_guards(raw):
     """
     raw.create_function('cabinet_disclosure_write', 0, lambda: 0)
     raw.create_function('cabinet_content_digest', -1, _content_digest)
+    raw.create_function('cabinet_saved_lineage_valid', 1, _saved_lineage_valid)
+
+
+def validate_publication_lineage(value):
+    """Bounded opaque attribution only; display permission is not retention rights."""
+    import json
+    import re
+    from uuid import UUID
+    fields = {'schema', 'installation_ref', 'owner_revision', 'profile_ref',
+              'publication_ref', 'publication_revision', 'run_ref', 'candidate_key',
+              'candidate_digest', 'source_evidence_digest'}
+    if type(value) is not dict or set(value) != fields or value['schema'] != 'portable-saved-lineage/v1':
+        raise ValueError('Invalid publication lineage')
+    for key in ('installation_ref', 'profile_ref', 'publication_ref', 'run_ref'):
+        if type(value[key]) is not str or str(UUID(value[key])) != value[key] or UUID(value[key]).int == 0:
+            raise ValueError('Invalid publication lineage')
+    for key in ('owner_revision', 'publication_revision'):
+        if type(value[key]) is not int or not 1 <= value[key] <= 2**53 - 1:
+            raise ValueError('Invalid publication lineage')
+    for key in ('candidate_digest', 'source_evidence_digest'):
+        if type(value[key]) is not str or not re.fullmatch('[0-9a-f]{64}', value[key]):
+            raise ValueError('Invalid publication lineage')
+    if (type(value['candidate_key']) is not str or not 1 <= len(value['candidate_key']) <= 300
+            or not value['candidate_key'].strip()):
+        raise ValueError('Invalid publication lineage')
+    if len(json.dumps(value, sort_keys=True, separators=(',', ':'), allow_nan=False).encode()) > 2048:
+        raise ValueError('Invalid publication lineage')
+    return value
+
+
+def _saved_lineage_valid(raw):
+    # SQLite owns validation/immutability too: authorized raw/bulk writers cannot
+    # manufacture malformed or replace surviving lineage through an ORM bypass.
+    import json
+    def unique(pairs):
+        result = {}
+        for key, value in pairs:
+            if key in result:
+                raise ValueError
+            result[key] = value
+        return result
+    try:
+        if type(raw) is not str or len(raw.encode('utf-8')) > 2048:
+            return 0
+        validate_publication_lineage(json.loads(raw, object_pairs_hook=unique))
+        return 1
+    except (ValueError, TypeError, AttributeError, UnicodeError, RecursionError):
+        return 0
 
 
 def _content_digest(*parts):

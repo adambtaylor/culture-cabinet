@@ -357,6 +357,19 @@ class DemoLifecycleTests(TransactionTestCase):
         expected = {statement.strip().removesuffix(';').rstrip() for statement in current.TRIGGERS}
         self.assertEqual(len(expected), 77)
         self.assertEqual(len({statement.split('CREATE TRIGGER ', 1)[1].split()[0] for statement in current.TRIGGERS}), 77)
+        predecessor = expected
+        lineage = import_module('shelf.migrations.0024_portable_saved_lineage')
+        added = {statement.strip().removesuffix(';').rstrip() for statement in lineage.LINEAGE_GUARDS}
+        self.assertEqual(len(added), 2)
+        self.assertTrue(predecessor.isdisjoint(added))
+        self.assertEqual({sql.split('CREATE TRIGGER ', 1)[1].split()[0] for sql in added},
+                         {'saved_lineage_insert', 'saved_lineage_immutable'})
+        expected = predecessor | added
+        self.assertEqual({sql.strip().removesuffix(';').rstrip() for sql in lineage.TRIGGERS}, expected)
+        self.assertEqual(len(expected), 79)
+        self.assertEqual(len({sql.split('CREATE TRIGGER ', 1)[1].split()[0] for sql in expected}), 79)
+        # Latest fixtures back up 0024, preserving all77 predecessor definitions
+        # plus exactly the two specified lineage guards; no inventory fallback.
         original = recovery._empty_synthetic_store
         with patch.object(recovery, '_empty_synthetic_store', wraps=original) as checks:
             root, path, store = self.fixture('exact-authority-schema')
@@ -364,6 +377,8 @@ class DemoLifecycleTests(TransactionTestCase):
             try:
                 definitions = {row[0].strip().removesuffix(';').rstrip() for row in
                     raw.execute("SELECT sql FROM sqlite_master WHERE type='trigger'")}
+                self.assertIsNotNone(raw.execute("SELECT 1 FROM django_migrations WHERE app='shelf' AND name='0024_portable_saved_lineage'").fetchone())
+                self.assertIn('publication_lineage', {row[1] for row in raw.execute('PRAGMA table_info(shelf_saveditem)')})
                 self.assertEqual(definitions, expected)
                 self.assertFalse(raw.execute("SELECT 1 FROM sqlite_master WHERE type='view'").fetchone())
                 for table in ('profilecabinetstate', 'portabledisclosuregrant', 'portabledisclosurepreview',
@@ -385,7 +400,8 @@ class DemoLifecycleTests(TransactionTestCase):
         import re
         migration = import_module('shelf.migrations.0021_portable_disclosure_authority')
         definitions = []
-        for sql in migration.TRIGGERS:
+        lineage = import_module('shelf.migrations.0024_portable_saved_lineage')
+        for sql in list(migration.TRIGGERS) + list(lineage.LINEAGE_GUARDS):
             match = re.match(r'CREATE TRIGGER (\w+)\s+(?:BEFORE|AFTER) (?:INSERT|UPDATE|DELETE) ON (\w+)\b', sql)
             self.assertIsNotNone(match)
             definitions.append((match[1], match[2], sql))
