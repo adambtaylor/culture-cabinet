@@ -1,5 +1,7 @@
 """Three native Enhance rounds; only external wire responses are synthetic."""
 import uuid
+import traceback
+import shelf.enhance_coordinator as coordinator_module
 from urllib.parse import urlencode
 from unittest.mock import patch
 
@@ -61,7 +63,12 @@ class NativeThreeRoundTests(NativeFeedbackCase):
                 {'recordings': [{**row, 'title': 'Synthetic discovered recording'}]})
             return 200, canonical_bytes(document), ()
 
-        with patch.object(CheckedTransport, 'send', model_reply), patch(
+        original_safe_code = coordinator_module._safe_code
+        def diagnose(error):
+            traceback.print_tb(error.__traceback__)
+            return original_safe_code(error)
+
+        with patch('shelf.enhance_coordinator._safe_code', side_effect=diagnose), patch.object(CheckedTransport, 'send', model_reply), patch(
                 'shelf.discovery_transport.musicbrainz_authorized', side_effect=source_reply):
             # Validate the hosted adapter with its real permit, using only a fake
             # wire response. An isolated disclosure fixture cannot authorize it.
