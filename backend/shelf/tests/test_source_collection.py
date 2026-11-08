@@ -67,6 +67,43 @@ class Backend(SourceBackend):
 
 
 class SourceCollectionTests(TestCase):
+    def test_hardcover_id_resume_returns_evidence_without_completed_cache_hit_or_store(self):
+        class NoCompletedCache(dict):
+            def get(self, *args):
+                raise AssertionError('Hardcover cannot read a completed-result cache')
+
+            def __setitem__(self, *args):
+                raise AssertionError('Hardcover cannot retain a completed-result cache')
+
+        registry, query = plan(('book',)); clock = Clock()
+        search = (200, {'data': {'search': {'ids': [81001], 'error': None}}}, ())
+        details = (200, {'data': {'books': [
+            {'id': 81001, 'title': 'Synthetic', 'slug': 'synthetic'}]}}, ())
+        backend = Backend('hardcover', clock, [search, details, search, details])
+        authorize = backend.authorize; approved = [False]
+        def confirmed_details(request, plan, *, now):
+            if request.operation == 'book_details' and not approved[0]:
+                raise EnhanceFault('AUTHORITY_DENIED')
+            return authorize(request, plan, now=now)
+        backend.authorize = confirmed_details
+        collector = SourceCollection((('book', ('hardcover',)),), {'hardcover': backend},
+            clock=clock, isolated_fixture=True)
+        collector.state.cache = NoCompletedCache()
+        self.assertEqual(collector.collect(query, registry, CollectionBudget()).records, [])
+        self.assertEqual(len(collector.state.pending), 1)
+        approved[0] = True
+        first = collector.collect(query, registry, CollectionBudget())
+        self.assertEqual(len(first.records), 1)
+        self.assertEqual([name for name, _ in backend.sent], ['book_search', 'book_details'])
+        self.assertEqual(collector.state.pending, {})
+        clock.sleep(5)
+        second = collector.collect(query, registry, CollectionBudget())
+        self.assertEqual(len(second.records), 1)
+        self.assertEqual([name for name, _ in backend.sent],
+                         ['book_search', 'book_details', 'book_search', 'book_details'])
+        self.assertFalse(read_json(second.source_revisions)['book:hardcover']['cache_hit'])
+        self.assertEqual(collector.state.cache, {})
+
     def test_minimal_hardcover_checkpoint_still_requires_every_scalar_cache_and_retain(self):
         from shelf.disclosure import SCALARS
         cases = [(None, None, ())]
