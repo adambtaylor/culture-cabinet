@@ -471,7 +471,7 @@ class MediaHostLimiter:
     provider: str
 
     def __post_init__(self):
-        if self.provider not in ('tmdb', 'hardcover', 'musicbrainz'):
+        if self.provider not in ('tmdb', 'hardcover', 'musicbrainz', 'apple_podcast'):
             raise SourceError('Unknown media provider.')
 
     def reserve(self):
