@@ -424,7 +424,7 @@ def submission_review(request, job_id):
             result = acquire.review_submission(actor=access.actor, profile_id=access.identity.profile_id, job_id=job_id,
                 context=services.context, evidence=services.evidence, max_bytes=services.max_bytes,
                 retriever=services.retriever, complete_root=services.complete_root, test_only=services.test_only,
-                completion_intent=services.completion_intent)
+                completion_intent=services.completion_intent, delivery_binding=services.delivery_binding)
         except acquire.ContractError:
             # Render before the live scope closes. Both projections recheck PA1;
             # authority loss must still deny, without exposing retained job data.
@@ -458,7 +458,7 @@ def submit(request, job_id):
         acquire.submit(actor=access.actor, profile_id=access.identity.profile_id, job_id=job_id, context=services.context,
             token=form.cleaned_data['token'], confirmed=True, retriever=services.retriever, backend=services.backend,
             max_bytes=services.max_bytes, complete_root=services.complete_root, test_only=services.test_only,
-            completion_intent=services.completion_intent)
+            completion_intent=services.completion_intent, delivery_binding=services.delivery_binding)
     return HttpResponseRedirect(BASE + f'jobs/{job_id}/')
 
 

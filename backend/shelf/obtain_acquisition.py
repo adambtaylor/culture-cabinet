@@ -200,10 +200,10 @@ def _origin_exact_result(job, receipt, result, *, fresh):
 
 
 def review_submission(*, actor, profile_id, job_id, context, evidence, max_bytes,
-                      retriever=None, complete_root=None, test_only=True, completion_intent=None):
+                      retriever=None, complete_root=None, test_only=True, completion_intent=None, delivery_binding=None):
     job = owned_job(actor, profile_id, job_id)
     if job.publication_origin is not None:
-        _require_source_context(context, actor, profile_id, job)
+        _require_source_context(context, actor, profile_id, job, delivery_binding=delivery_binding)
     else:
         context.require(actor, profile_id)
     if job.status != 'blocked_configuration' or ObtainTransfer.objects.filter(job=job).exists():
@@ -220,10 +220,15 @@ def review_submission(*, actor, profile_id, job_id, context, evidence, max_bytes
     # Review can persist/prune descriptors: check live PA1 under its owner fence
     # before the descriptor/transport effect, with no enclosing SQL transaction.
     with effect_for(actor, profile_id):
+        if job.publication_origin is not None:
+            _require_source_context(context, actor, profile_id, job, delivery_binding=delivery_binding)
         nzb = getattr(source, 'review', source.retrieve)(exact)
     if type(nzb) is not RetrievedNZB:
         raise ContractError('Exact result NZB binding required')
-    context.require(actor, profile_id)
+    if job.publication_origin is not None:
+        _require_source_context(context, actor, profile_id, job, delivery_binding=delivery_binding)
+    else:
+        context.require(actor, profile_id)
     job = owned_job(actor, profile_id, job_id)
     current, current_receipt = exact_result(job, fresh=True)
     if (current != exact or job.status != 'blocked_configuration'
@@ -235,7 +240,7 @@ def review_submission(*, actor, profile_id, job_id, context, evidence, max_bytes
                'nonce': str(receipt.nonce), 'version': receipt.version,
                'complete_root': complete_root, 'test_only': test_only}
     if type(exact) is OriginExactResult:
-        binding = _origin_submission_binding(binding, exact, evidence)
+        binding = _origin_submission_binding(binding, exact, evidence, delivery_binding)
     if job.provider == 'album_request':
         from shelf.album_acquisition import authorization_binding
         binding['album_authorization'] = authorization_binding(job)
@@ -245,12 +250,14 @@ def review_submission(*, actor, profile_id, job_id, context, evidence, max_bytes
     return {'token': signing.dumps(binding, salt=SALT), 'binding': binding}
 
 
-def _origin_submission_binding(binding, exact, evidence):
+def _origin_submission_binding(binding, exact, evidence, delivery_binding):
     from .disclosure import canonical_bytes
+    from .obtain_tv_flow import delivery_binding_material
     result = {**binding, 'schema': ORIGIN_SUBMISSION_TAGS[exact.publication_origin['schema']],
         'publication_origin': exact.publication_origin, 'request_id': exact.snapshot.request_id,
         'snapshot_digest': exact.snapshot_digest, 'content_identity_digest': exact.content_identity_digest,
         'selection_digest': hashlib.sha256(canonical_bytes(asdict(evidence.selection))).hexdigest(),
+        'delivery_binding': delivery_binding_material(delivery_binding),
         'exact': {key: getattr(exact, key) for key in ('result_id', 'guid', 'digest', 'size')},
         'selection': {'edition': evidence.selection.edition, 'storage': evidence.selection.storage}}
     validate_origin_submission(result)
@@ -264,7 +271,9 @@ def validate_origin_submission(binding):
     fields = {'schema', 'publication_origin', 'request_id', 'snapshot_digest', 'selection_digest',
         'content_identity_digest', 'exact', 'selection', 'nzb_sha256', 'max_bytes', 'nonce', 'version',
         'complete_root', 'test_only'}
-    if type(binding) is not dict or set(binding) not in (fields, fields | {'completion_intent'}):
+    allowed = tuple(fields | extra for extra in (set(), {'completion_intent'}, {'delivery_binding'},
+                                                 {'completion_intent', 'delivery_binding'}))
+    if type(binding) is not dict or set(binding) not in allowed:
         raise ContractError('Closed source submission required')
     try:
         origin = validate_obtain_origin(binding['publication_origin'])
@@ -288,6 +297,9 @@ def validate_origin_submission(binding):
         valid = valid and preview.plain(choice['edition']) == choice['edition'] and choice['storage'] == 'local_library'
         if origin['schema'] == 'obtain-owner-selection-origin/v1':
             valid = valid and origin['target_digest'] == binding['content_identity_digest']
+        if 'delivery_binding' in binding:
+            from .obtain_tv_flow import read_delivery_binding
+            read_delivery_binding(binding['delivery_binding'])
         valid = valid and len(canonical_bytes(binding)) <= 6144
     except (ValueError, KeyError, TypeError, AttributeError):
         valid = False
@@ -376,7 +388,7 @@ class DjangoCheckpoints:
 
 
 def submit(*, actor, profile_id, job_id, context, token, confirmed, retriever=None, backend,
-           max_bytes=None, complete_root=None, test_only=True, completion_intent=None):
+           max_bytes=None, complete_root=None, test_only=True, completion_intent=None, delivery_binding=None):
     job = owned_job(actor, profile_id, job_id)
     if job.publication_origin is not None:
         if confirmed is not True:
@@ -386,7 +398,7 @@ def submit(*, actor, profile_id, job_id, context, token, confirmed, retriever=No
             return previous
         return _submit_origin(actor=actor, profile_id=profile_id, job=job, context=context, token=token,
             retriever=retriever, backend=backend, max_bytes=max_bytes, complete_root=complete_root,
-            test_only=test_only, completion_intent=completion_intent)
+            test_only=test_only, completion_intent=completion_intent, delivery_binding=delivery_binding)
     context.require(actor, profile_id)
     if type(token) is not str or not 0 < len(token) <= 8192:
         raise Blocked('Invalid submission review')
@@ -496,15 +508,19 @@ def _source_selection(snapshot):
         storage_checked=snapshot.storage_check, duplicate_checked=True, episode=episode)
 
 
-def _require_source_context(context, actor, profile_id, job):
+def _require_source_context(context, actor, profile_id, job, *, delivery_binding):
     from .obtain_runtime import SubmissionContext
+    from .obtain_tv_flow import delivery_binding_material
     if type(context) is not SubmissionContext or context.job_id != job.pk:
         raise Blocked('Current native submission context required')
     context.require(actor, profile_id)
+    reviewed = delivery_binding_material(delivery_binding)
+    if delivery_binding_material(context.current_delivery_binding(actor, profile_id)) != reviewed:
+        raise Blocked('Confirmed TV delivery mapping changed; review again')
 
 
 def _submit_origin(*, actor, profile_id, job, context, token, retriever, backend, max_bytes,
-                   complete_root, test_only, completion_intent):
+                   complete_root, test_only, completion_intent, delivery_binding):
     access = active_portable_access()
     if access is None:
         raise Blocked('Current native source access required')
@@ -515,11 +531,11 @@ def _submit_origin(*, actor, profile_id, job, context, token, retriever, backend
     except signing.BadSignature:
         raise Blocked('Source submission review expired or invalid') from None
     with access.effect_window(action='mutate'):
-        _require_source_context(context, actor, profile_id, job)
+        _require_source_context(context, actor, profile_id, job, delivery_binding=delivery_binding)
         exact, receipt = exact_result(job, fresh=True)
         evidence = Evidence(exact.snapshot, _source_selection(exact.snapshot))
         expected = _origin_submission_binding({key: binding[key] for key in
-            ('nzb_sha256', 'max_bytes', 'nonce', 'version', 'complete_root', 'test_only')}, exact, evidence)
+            ('nzb_sha256', 'max_bytes', 'nonce', 'version', 'complete_root', 'test_only')}, exact, evidence, delivery_binding)
         if completion_intent is not None:
             expected['completion_intent'] = completion_intent
         if (binding != expected or binding['nonce'] != str(receipt.nonce) or binding['version'] != receipt.version
@@ -533,7 +549,7 @@ def _submit_origin(*, actor, profile_id, job, context, token, retriever, backend
         nzb = (retriever or UnavailableRetriever()).retrieve(exact)
         if type(nzb) is not RetrievedNZB or nzb.sha256(exact) != binding['nzb_sha256']:
             raise ContractError('Reviewed source NZB changed')
-        context.require(actor, profile_id)
+        _require_source_context(context, actor, profile_id, job, delivery_binding=delivery_binding)
         current, current_receipt = exact_result(owned_job(actor, profile_id, job.pk), fresh=True)
         if current != exact or (current_receipt.nonce, current_receipt.version) != (receipt.nonce, receipt.version):
             raise Blocked('Source selection changed during retrieval')
@@ -557,14 +573,14 @@ def _submit_origin(*, actor, profile_id, job, context, token, retriever, backend
                 # Pipeline commits its no-resend barrier before invoking us.
                 # Recheck at this final edge too; expiry never rolls that
                 # durable barrier back into an implicitly retryable request.
-                _require_source_context(context, actor, profile_id, fresh_job)
+                _require_source_context(context, actor, profile_id, fresh_job, delivery_binding=delivery_binding)
                 latest, _ = exact_result(owned_job(actor, profile_id, job.pk), fresh=True)
                 if latest != exact or snapshot != exact.snapshot:
                     raise Blocked('Source authority changed at dispatch')
                 return raw_provider.enqueue(snapshot, request)
         provider = OriginDispatchProvider()
         pipeline = Pipeline(fresh_job, checkpoints, provider, None, None, trusted_snapshot=exact.snapshot)
-        context.require(actor, profile_id)
+        _require_source_context(context, actor, profile_id, job, delivery_binding=delivery_binding)
         before, _ = exact_result(owned_job(actor, profile_id, job.pk), fresh=True)
         if before != exact:
             raise Blocked('Source selection changed before dispatch')

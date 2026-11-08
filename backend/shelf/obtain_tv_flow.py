@@ -3,7 +3,8 @@
 These values describe one command. Construction never grants permission, marks
 an import verified, or supplies a missing remote destination hash.
 """
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
+from abc import ABC, abstractmethod
 from datetime import datetime
 import hashlib
 
@@ -86,6 +87,98 @@ class DestinationBinding:
     host: str
     root: str
     service_generation: ServiceGeneration
+
+
+@dataclass(frozen=True)
+class DeliveryBinding:
+    """Confirmed mapping only; a DTO never grants directory/channel authority."""
+    destination: DestinationBinding
+    relative_parent: str
+    create_parent: bool
+
+    def __post_init__(self):
+        from . import completion_registry as registry
+        from .jellyfin_native import TV_ROOTS
+        import re
+        destination = self.destination
+        if type(destination) is not DestinationBinding or type(destination.service_generation) is not ServiceGeneration:
+            raise ContractError('Current typed delivery mapping required')
+        generation = destination.service_generation
+        for value in (destination.ref, destination.host, generation.configuration_generation, generation.credential_generation):
+            if type(value) is not str or not 0 < len(value) <= 200 or any(ord(c) < 32 or ord(c) == 127 for c in value):
+                raise ContractError('Canonical delivery binding required')
+        if (generation.service != 'destination_file' or type(generation.binding_digest) is not str
+                or re.fullmatch('[0-9a-f]{64}', generation.binding_digest) is None
+                or destination.root not in TV_ROOTS or type(self.relative_parent) is not str
+                or type(self.create_parent) is not bool):
+            raise ContractError('Approved delivery binding required')
+        try:
+            registry.path_parts(destination.root, absolute=True)
+            parts = registry.path_parts(self.relative_parent) if self.relative_parent else []
+        except ValueError:
+            raise ContractError('Canonical confirmed delivery folder required') from None
+        if self.create_parent and len(parts) != 1:
+            raise ContractError('One authorized new parent required')
+
+
+class TVServiceProvider(ABC):
+    """Trusted runtime factories supply current scoped ports, never HTTP data."""
+    @abstractmethod
+    def delivery_binding(self, access, job):
+        """Current authorized mapping metadata, without a file/provider effect."""
+
+    @abstractmethod
+    def current(self, context):
+        """Current selected service ports for this one native job."""
+
+
+def delivery_binding_material(binding):
+    """The one pre-submit wire/digest producer; O1 keeps its full-path digest."""
+    if type(binding) is not DeliveryBinding:
+        raise ContractError('Typed delivery binding required')
+    binding.__post_init__()
+    material = {'schema': 'obtain-tv-delivery-binding/v1', 'destination': asdict(binding.destination),
+                'relative_parent': binding.relative_parent, 'create_parent': binding.create_parent}
+    return {**material, 'digest': hashlib.sha256(b'obtain-tv-delivery-binding/v1\x00' +
+                                               canonical_bytes(material)).hexdigest()}
+
+
+def read_delivery_binding(value):
+    """Decode immutable material, without reconstructing current permission."""
+    try:
+        if (type(value) is not dict or set(value) != {'schema', 'destination', 'relative_parent', 'create_parent', 'digest'}
+                or value['schema'] != 'obtain-tv-delivery-binding/v1'):
+            raise ValueError
+        destination = value['destination']
+        if type(destination) is not dict or set(destination) != {'ref', 'host', 'root', 'service_generation'}:
+            raise ValueError
+        generation = destination['service_generation']
+        if type(generation) is not dict or set(generation) != {'service', 'binding_digest', 'configuration_generation', 'credential_generation'}:
+            raise ValueError
+        result = DeliveryBinding(DestinationBinding(destination['ref'], destination['host'], destination['root'],
+            ServiceGeneration(**generation)), value['relative_parent'], value['create_parent'])
+        if delivery_binding_material(result) != value:
+            raise ValueError
+        return result
+    except (ValueError, TypeError, KeyError):
+        raise ContractError('Closed confirmed delivery binding required') from None
+
+
+def require_confirmed_delivery_plan(delivery, plan):
+    """Check the confirmed directory before O1 may inspect or receive bytes."""
+    from .jellyfin_tv_import import CopyPlan
+    from . import completion_registry as registry
+    if type(delivery) is not DeliveryBinding or type(plan) is not CopyPlan:
+        raise ContractError('Typed confirmed copy plan required')
+    delivery.__post_init__()
+    try:
+        parts = registry.path_parts(plan.relative_path)
+    except ValueError:
+        raise ContractError('Canonical delivery path required') from None
+    if ((plan.host_id, plan.root) != (delivery.destination.host, delivery.destination.root)
+            or '/'.join(parts[:-1]) != delivery.relative_parent or plan.create_parent is not delivery.create_parent):
+        raise ContractError('Copy plan changed the confirmed destination folder')
+    return plan
 
 
 @dataclass(frozen=True)

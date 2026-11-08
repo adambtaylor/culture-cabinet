@@ -13,6 +13,7 @@ from shelf import completion_registry as registry
 from shelf.acquisition_pipeline import Evidence, scope_family
 from shelf import obtain_acquisition as acquire
 from shelf.models import ObtainTransfer
+from shelf.obtain_tv_flow import DeliveryBinding, TVServiceProvider
 
 
 @dataclass(frozen=True)
@@ -25,6 +26,7 @@ class SubmissionServices:
     complete_root: str | None = None
     test_only: bool = True
     completion_intent: dict | None = None
+    delivery_binding: DeliveryBinding | None = None
 
 
 @dataclass(frozen=True)
@@ -131,6 +133,23 @@ class SubmissionContext:
     job_id: object
     policy: SubmissionPolicy
 
+    def current_delivery_binding(self, actor, profile_id):
+        from .portable_saved_authority import active_portable_access
+        access = active_portable_access()
+        if access is None:
+            raise Blocked('Current native destination authority required')
+        self.require(actor, profile_id)
+        provider = getattr(settings, 'PORTABLE_OBTAIN_TV_SERVICES', None)
+        if not isinstance(provider, TVServiceProvider):
+            raise Blocked('Current TV destination mapping unavailable')
+        job = acquire.owned_job(actor, profile_id, self.job_id)
+        with access.effect_window(action='mutate'):
+            value = provider.delivery_binding(access, job)
+            if type(value) is not DeliveryBinding:
+                raise Blocked('Current typed TV destination required')
+            value.__post_init__()
+            return value
+
     def require(self, actor, profile_id):
         saved.authority(actor, profile_id)
         from .portable_saved_authority import active_portable_access
@@ -175,6 +194,7 @@ def submission_factory(*, actor, profile_id, job):
         media=media, edition=snapshot.edition, storage=snapshot.storage,
         authorized_content=snapshot.authorized_content, user_confirmed=True,
         storage_checked=True, duplicate_checked=True, episode=episode)
+    delivery = context.current_delivery_binding(actor, profile_id) if job.publication_origin is not None else None
     return SubmissionServices(context, Evidence(snapshot, selection), policy.max_bytes,
                               ReviewedRetriever(backend), backend, policy.complete_root,
-                              policy.test_only, policy.intent(str(job.request_id)))
+                              policy.test_only, policy.intent(str(job.request_id)), delivery)

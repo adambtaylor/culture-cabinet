@@ -24,6 +24,7 @@ from shelf.portable_owner_tv import (OwnerLookupForm, get_owner_tv, owner_backen
                                      ObtainOriginSelectorForm)
 from shelf.source_authority import SourcePolicyProvider, SourceRights
 from shelf.source_evidence import FieldPolicy
+from shelf.obtain_tv_flow import TVServiceProvider, DeliveryBinding, DestinationBinding, ServiceGeneration
 from .test_grant_authority import RecoveryCase
 from .test_portable_obtain import PortableObtainTests
 from .test_obtain_preview import item, payload
@@ -40,6 +41,18 @@ class OwnerPolicy(SourcePolicyProvider):
 
     def current(self, authority, session_ref, **kwargs):
         return self.value
+
+
+class FixtureTVProvider(TVServiceProvider):
+    def __init__(self, delivery):
+        self.delivery = delivery
+
+    def delivery_binding(self, access, job):
+        access.require(actor_id=job.actor_id, profile_id=job.profile_id, action='mutate')
+        return self.delivery
+
+    def current(self, context):
+        raise AssertionError('Submission fixture must not launch a service worker')
 
 
 class OwnerTVEntryTests(RecoveryCase):
@@ -397,6 +410,13 @@ class OwnerTVEntryTests(RecoveryCase):
         policy = SubmissionPolicy(True, str(complete), 20000, 0, True,
             str(Path(self.directory.name) / 'source-registry'), True, COMPLETION_SCRIPT)
         options = self.settings(OBTAIN_SUBMISSION_POLICY=asdict(policy)); options.enable(); self.addCleanup(options.disable)
+        from shelf.jellyfin_native import TV_ROOTS
+        self.delivery = DeliveryBinding(DestinationBinding('synthetic-destination', 'synthetic-mac', TV_ROOTS[0],
+            ServiceGeneration('destination_file', 'd' * 64, 'synthetic-config1', 'synthetic-key1')),
+            'Fiction Series 2024', False)
+        self.delivery_provider = FixtureTVProvider(self.delivery)
+        options = self.settings(PORTABLE_OBTAIN_TV_SERVICES=self.delivery_provider)
+        options.enable(); self.addCleanup(options.disable)
         return job, SubmissionContext(self.actor.pk, self.state.profile_id, job.pk, policy)
 
     def test_native_source_submission_uses_reviewed_bytes_and_duplicate_receipt_precedes_factories(self):
@@ -412,7 +432,8 @@ class OwnerTVEntryTests(RecoveryCase):
         with self.scope():
             exact, _ = acquire.exact_result(job, fresh=True)
             evidence = Evidence(exact.snapshot, acquire._source_selection(exact.snapshot))
-        services = obtain_runtime.SubmissionServices(context, evidence, 20000, retriever, backend)
+        services = obtain_runtime.SubmissionServices(context, evidence, 20000, retriever, backend,
+                                                    delivery_binding=self.delivery)
         with patch('shelf.obtain_runtime.submission_factory', return_value=services):
             response = self.post(f'/cabinet/saved/jobs/{job.pk}/submit/review/')
         self.assertEqual(response.status_code, 200, response.content)
@@ -452,9 +473,10 @@ class OwnerTVEntryTests(RecoveryCase):
             exact, _ = acquire.exact_result(job, fresh=True)
             evidence = Evidence(exact.snapshot, acquire._source_selection(exact.snapshot))
             review = acquire.review_submission(actor=self.actor, profile_id=self.state.profile_id, job_id=job.pk,
-                context=context, evidence=evidence, max_bytes=20000, retriever=retriever)
+                context=context, evidence=evidence, max_bytes=20000, retriever=retriever, delivery_binding=self.delivery)
             transfer = acquire.submit(actor=self.actor, profile_id=self.state.profile_id, job_id=job.pk,
-                context=context, token=review['token'], confirmed=True, retriever=retriever, backend=backend)
+                context=context, token=review['token'], confirmed=True, retriever=retriever, backend=backend,
+                delivery_binding=self.delivery)
         self.assertEqual(transfer.state, 'outcome_unknown')
         count = len(retriever.calls)
         self.clock.advance(301)
@@ -479,17 +501,19 @@ class OwnerTVEntryTests(RecoveryCase):
             exact, _ = acquire.exact_result(job, fresh=True)
             evidence = Evidence(exact.snapshot, acquire._source_selection(exact.snapshot))
             review = acquire.review_submission(actor=self.actor, profile_id=self.state.profile_id, job_id=job.pk,
-                context=context, evidence=evidence, max_bytes=20000, retriever=retriever)
+                context=context, evidence=evidence, max_bytes=20000, retriever=retriever, delivery_binding=self.delivery)
             for change in ({'schema': 'obtain-publication-submission/v1'}, {'snapshot_digest': '0' * 64},
                            {'selection': {'edition': 'Changed', 'storage': 'local_library'}},
                            {'exact': {**review['binding']['exact'], 'snapshot': asdict(exact.snapshot)}}):
                 token = signing.dumps({**review['binding'], **change}, salt=acquire.SALT)
                 with self.assertRaises(acquire.ContractError):
                     acquire.submit(actor=self.actor, profile_id=self.state.profile_id, job_id=job.pk,
-                        context=context, token=token, confirmed=True, retriever=retriever, backend=backend)
+                        context=context, token=token, confirmed=True, retriever=retriever, backend=backend,
+                        delivery_binding=self.delivery)
             with self.assertRaises(acquire.Blocked):
                 acquire.submit(actor=self.actor, profile_id=self.state.profile_id, job_id=job.pk,
-                    context=Mock(), token=review['token'], confirmed=True, retriever=retriever, backend=backend)
+                    context=Mock(), token=review['token'], confirmed=True, retriever=retriever, backend=backend,
+                    delivery_binding=self.delivery)
         self.assertFalse(backend.calls)
         self.assertFalse(ObtainTransfer.objects.exists())
 
