@@ -703,24 +703,30 @@ def _card_feedback_display(value, *, profile_ref, target_ref):
 
 
 def _source_setup_display(value):
-    """Keep the two fixed MusicBrainz operations distinct in native forms.
+    """Validate fixed native labels/actions before rendering source setup.
 
-    An adapter chooses only these reviewed routes, never an arbitrary action
-    URL. A connection or permission shown here is not permission for its sibling.
-    Recording defaults keep already accepted callers compatible.
+    Display metadata never grants source or model use. The route descriptor is
+    shared with the native handlers, so a substituted action cannot solicit a key.
     """
     from .portable_authority import AuthorityFault
     from .portable_connection_views import _uuid
+    from .source_authority import NATIVE_SETUP, MEDIA, source_identity
     adapter = value.get('source_adapter', 'musicbrainz_recording')
-    if adapter not in ('musicbrainz_recording', 'musicbrainz_artist'):
+    if type(adapter) is not str or adapter not in NATIVE_SETUP:
         raise AuthorityFault('CONTRACT_INVALID', 422)
-    artist = adapter == 'musicbrainz_artist'
-    category, label = ('artist', 'MusicBrainz artists') if artist else ('recording', 'MusicBrainz recordings')
-    base = '/cabinet/source/musicbrainz' + ('/artist' if artist else '')
+    category, label, base = NATIVE_SETUP[adapter]
     page = base + '?' + urlencode({'profile_ref': str(_uuid(value['profile_ref']))})
     expected = {'source_category': category, 'source_label': label, 'source_page_url': page,
-                'source_configure_action': base + '/configure', 'source_consent_action_url': base + '/consent'}
+                'source_configure_action': base + '/configure', 'source_consent_action_url': base + '/consent',
+                'source_credential_required': adapter in MEDIA,
+                'source_credential_action': base + '/credential' if adapter in MEDIA else '',
+                'source_origin': source_identity(adapter)[1], 'source_path': source_identity(adapter)[2]}
     if any(key in value and value[key] != item for key, item in expected.items()):
+        raise AuthorityFault('CONTRACT_INVALID', 422)
+    if (any(key in value and type(value[key]) is not bool
+            for key in ('source_credential_present', 'source_credential_required'))
+            or 'source_readiness' in value and value['source_readiness'] not in
+                ('not_configured', 'credential_required', 'permission_required', 'ready')):
         raise AuthorityFault('CONTRACT_INVALID', 422)
     return {'source_adapter': adapter, **expected}
 

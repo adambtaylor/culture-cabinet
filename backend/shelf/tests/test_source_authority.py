@@ -44,6 +44,29 @@ class SourceAuthorityTests(AuthorityCase):
         self.assertEqual(preview['destination'], 'https://api.moshtix.com')
         self.assertEqual(permit.origin, operation.material['origin'])
 
+    def test_minimal_hardcover_build_invalidates_old_grant_and_template(self):
+        from shelf.source_authority import MEDIA
+        from shelf.provider_catalogue import BOOK_DETAILS_MINIMAL
+        row = self.authority._source_vault.configure(self.ref,
+            {'adapter':'hardcover','model':'','reasoning':''})
+        self.authority._source_vault.replace(self.ref,row.pk,1,b'SYNTHETIC-BOOK-TOKEN')
+        old = ('hardcover-fixed-v1','https://api.hardcover.app','/v1/graphql')
+        with patch.dict(MEDIA,{'hardcover':old}):
+            ga.change_grant(self.authority,self.ref,profile_ref=self.profile_ref,
+                connection_ref=str(row.pk),expected_revision=0,purpose='catalogue_lookup',
+                allowed_data_classes=['canonical_seed'],expires_at=self.expires,action='grant')
+            previous = current_binding(self.authority,self.ref,profile_ref=self.profile_ref,
+                                       connection_ref=str(row.pk))
+        self.fault('AUTHORITY_DENIED',current_binding,self.authority,self.ref,
+                   profile_ref=self.profile_ref,connection_ref=str(row.pk))
+        self.assertEqual(previous.connection_binding['build'],'hardcover-fixed-v1')
+        issuer = SourceAuthority(self.authority,self.ref,profile_ref=self.profile_ref,
+                                 connection_ref=str(row.pk))
+        template = issuer.operation_template()
+        self.assertEqual(template['identity'][0],'hardcover-minimal-v2')
+        self.assertEqual(template['documents'][1],BOOK_DETAILS_MINIMAL)
+        self.assertNotIn('description',template['documents'][1])
+
     def test_derived_proposals_obey_retention_and_expire_or_invalidate(self):
         from shelf.source_adapters import SourceReply
         from shelf.disclosure import read_json
@@ -77,7 +100,7 @@ class SourceAuthorityTests(AuthorityCase):
     def test_media_identity_cannot_borrow_moshtix_rights_or_inference_purpose(self):
         from shelf.disclosure import read_json
         from shelf.enhance_contract import digest
-        from shelf.provider_catalogue import BOOK_SEARCH, BOOK_DETAILS
+        from shelf.provider_catalogue import BOOK_SEARCH, BOOK_DETAILS_MINIMAL
         from shelf.source_authority import source_identity
 
         # The profile revision hashes this full template with the strict JSON codec.
@@ -87,9 +110,9 @@ class SourceAuthorityTests(AuthorityCase):
                             '/3/search/movie'], ['search_movie'], []),
             ('tmdb_tv', ['tmdb-tv-fixed-v1', 'https://api.themoviedb.org',
                          '/3/search/tv'], ['search_tv'], []),
-            ('hardcover', ['hardcover-fixed-v1', 'https://api.hardcover.app',
+            ('hardcover', ['hardcover-minimal-v2', 'https://api.hardcover.app',
                            '/v1/graphql'], ['book_search', 'book_details'],
-             [BOOK_SEARCH, BOOK_DETAILS]),
+             [BOOK_SEARCH, BOOK_DETAILS_MINIMAL]),
         )
         for source, identity, operations, documents in expected:
             with self.subTest(source=source), patch.object(self.issuer, 'source_key', return_value=source):
