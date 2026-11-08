@@ -587,6 +587,11 @@ def _flat_status(access, job, context):
             if worker is not None and worker.done.is_set() and worker.reason:
                 stage, reason, state, label, next_action = (
                     'continuation_blocked', worker.reason, 'error', 'Progress paused; review current access', 'check')
+            elif obtain_runtime.supervision_enabled():
+                supervisor = getattr(access.authority, '_selected_supervisor', None)
+                if supervisor is None or supervisor.closed or supervisor.failed:
+                    stage, reason, state, label, next_action = ('continuation_unavailable',
+                        'native_supervisor_unavailable', 'working', 'Automatic progress unavailable; review current access', 'check')
         if proof is None and next_action in {'check', 'reconcile'}:
             session = access.authority.authorize(access.session_ref, touch=False)
             if access.authority.monotonic() - session.reauthenticated >= 300:

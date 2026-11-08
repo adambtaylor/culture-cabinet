@@ -24,7 +24,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 from cabinet import portable_runtime as runtime
 
 
-def main(folder):
+def main(folder, mode='normal'):
+    assert mode in ('normal', 'witness_loss', 'cleanup_failure')
     owner_thread = threading.get_ident()
     state = {'origin': None, 'observations': [], 'cancel_threads': [], 'errors': [], 'turns': 0}
     blocked = threading.Event(); cancelled = threading.Event(); finished = threading.Event()
@@ -167,6 +168,8 @@ def main(folder):
             state['cancel_threads'].append(threading.get_ident())
             assert not witness.closed
             cancelled.set()
+            if state.get('cleanup_failure'):
+                raise RuntimeError('SYNTHETIC_OWNED_CLEANUP_REFUSED')
         def services_for(context):
             assert threading.get_ident() == owner_thread and recovery.installed_coordinator() is witness
             value = fixture.current(context)
@@ -205,6 +208,8 @@ def main(folder):
             assert active_portable_access() is None and not recovery._BARRIER_STACK.get()
             assert ga._CURRENT_WRITER.get() is None and not connection.in_atomic_block
             state['turns'] += 1
+            if state.pop('lose_witness', False):
+                witness.directory.rename(witness.directory.with_name(witness.directory.name + '.removed'))
         server.handle_request = handle
         # Wrong-thread and absent-witness ticks are denied before ORM/ports.
         refusals = []
@@ -277,6 +282,11 @@ def main(folder):
                 assert status == 302
                 assert authority._obtain_workers[job.pk] is worker
                 assert (worker.deadline, worker.monotonic_end) == original_deadlines
+                if mode == 'witness_loss':
+                    state['lose_witness'] = True
+                    status, body = request('GET', f'/cabinet/obtain/jobs/{job.pk}/status/')
+                    assert status == 200
+                    return
                 # Real selection rotation stops custody through the monitor;
                 # this thread performs HTTP only, never recovery/SQL authority.
                 status, body = request('POST', '/cabinet/saved/select/', {'profile_ref': profile, 'return_to': 'owner_tv'})
@@ -290,6 +300,7 @@ def main(folder):
                 status, body = request('GET', f'/cabinet/obtain/jobs/{job.pk}/status/')
                 current = json.loads(body)
                 state['interrupt'] = True; cancelled.clear()
+                state['cleanup_failure'] = mode == 'cleanup_failure'
                 status, body = request('POST', f'/cabinet/obtain/jobs/{job.pk}/advance/',
                     {'profile_ref': profile, 'selection_token': new_token, 'expected_revision': current['revision']})
                 assert status == 302
@@ -306,18 +317,33 @@ def main(folder):
         return server
 
     try:
-        with patch.object(runtime, 'make_server', side_effect=make):
-            result = runtime.run(Path(folder) / 'owner')
+        runtime_error = None
+        try:
+            with patch.object(runtime, 'make_server', side_effect=make):
+                result = runtime.run(Path(folder) / 'owner')
+        except Exception as error:
+            runtime_error = error
+            result = None
         if driver is not None:
             driver.join(timeout=3)
         assert driver is not None and not driver.is_alive() and finished.is_set()
-        assert result == 0, result
         assert not state['errors'], state['errors']
         assert state['sends'] == 1 and state['turns'] > 2
-        assert state['interrupted_port_unwound']
         assert state['supervisor_closed_before_witness']
         assert state['witness'].closed and state['server'].socket.fileno() == -1
         assert not [thread for thread in threading.enumerate() if thread.name.startswith('obtain-bound-')]
+        if mode == 'witness_loss':
+            assert result == 1 and runtime_error is None
+            assert len(state['observations']) == 2, state['observations']
+            print('NATIVE_SUPERVISOR_WITNESS_LOSS_REFUSED_PASS', flush=True)
+            return
+        assert state['interrupted_port_unwound']
+        if mode == 'cleanup_failure':
+            assert runtime_error is not None and type(runtime_error).__name__ == 'Blocked'
+            assert state['authority']._selected_supervisor.failed
+            print('NATIVE_SUPERVISOR_CLEANUP_REFUSED_PASS clean_success=false resources_observed_closed=true', flush=True)
+            return
+        assert result == 0 and runtime_error is None, result
         print('NATIVE_SUPERVISOR_FILE_LAUNCHER_PASS ' + json.dumps({'sends': state['sends'],
             'observations': len(state['observations']), 'minimum_spacing': state['observations'][1] - state['observations'][0],
             'serving_thread': owner_thread, 'cancel_threads': state['cancel_threads'], 'all_closed': True}), flush=True)
@@ -328,4 +354,4 @@ def main(folder):
 
 
 if __name__ == '__main__':
-    main(sys.argv[1])
+    main(sys.argv[1], sys.argv[2] if len(sys.argv) > 2 else 'normal')

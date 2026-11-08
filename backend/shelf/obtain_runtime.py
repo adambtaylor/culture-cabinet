@@ -364,7 +364,10 @@ class _SelectedWorker:
     def _monitor(self):
         while not self.done.wait(0.25):
             current = getattr(self.authority, '_saved_selections', {}).get(self.session_ref)
-            if (self.stop_event.is_set() or not self.authority.boundary.active
+            if self.stop_event.is_set():
+                self.stop()
+                return
+            if (not self.authority.boundary.active
                     or self.authority._sessions.get(self.session_ref) is not self.session
                     or current is None or current[1] != self.selection['nonce']
                     or self.authority.monotonic() >= self.monotonic_end):
@@ -548,7 +551,9 @@ def selected_supervisor(authority):
             if worker.session_ref == ref:
                 worker.stop('original_authority_window_ended')
     authority._revokers.append(revoke)
-    authority.boundary._closing.append(supervisor.close)
+    # The primary ExitStack reports cleanup failure while its witness is live.
+    # A completed fallback must not raise it again and skip unrelated closers.
+    authority.boundary._closing.append(lambda: None if supervisor.closed else supervisor.close())
     try:
         yield supervisor
     finally:

@@ -665,6 +665,33 @@ class OwnerTVEntryTests(RecoveryCase):
             worker.done.set()
             worker.monitor.join(timeout=2)
 
+    def test_enabled_missing_supervisor_preserves_ack_and_never_advances_inline(self):
+        from shelf import obtain_acquisition as acquire
+        from shelf.acquisition_pipeline import Evidence
+        from .test_obtain_acquisition import FixtureBackend, FixtureRetriever
+        job, context = self.source_job(); backend, retriever = FixtureBackend(), FixtureRetriever()
+        with self.scope():
+            exact, _ = acquire.exact_result(job, fresh=True)
+            review = acquire.review_submission(actor=self.actor, profile_id=self.state.profile_id, job_id=job.pk,
+                context=context, evidence=Evidence(exact.snapshot, acquire._source_selection(exact.snapshot)),
+                max_bytes=20000, retriever=retriever, delivery_binding=self.delivery)
+            transfer = acquire.submit(actor=self.actor, profile_id=self.state.profile_id, job_id=job.pk,
+                context=context, token=review['token'], confirmed=True, retriever=retriever, backend=backend,
+                delivery_binding=self.delivery)
+        revision = transfer.revision
+        with self.settings(PORTABLE_OBTAIN_SUPERVISE=True), \
+                patch('shelf.obtain_runtime.selected_services', side_effect=AssertionError('Missing supervisor opened ports')), \
+                patch('shelf.completion_dispatch.advance_selected', side_effect=AssertionError('Inline pass')):
+            response = self.post(f'/cabinet/obtain/jobs/{job.pk}/advance/', {'expected_revision': str(revision)})
+            self.assertEqual(response.status_code, 302)
+            status = self.http.get(f'/cabinet/obtain/jobs/{job.pk}/status/', **self.headers)
+        self.assertEqual(status.status_code, 200)
+        self.assertEqual(status.json()['reason'], 'native_supervisor_unavailable')
+        self.assertNotEqual(status.json()['state'], 'done')
+        transfer.refresh_from_db()
+        self.assertEqual((transfer.state, transfer.revision), ('queued', revision))
+        self.assertEqual(len(backend.calls), 1)
+
     def test_reviewed_options_reject_recipient_or_key_rotation_before_backend_or_caps(self):
         ref, _ = self.selected()
         for changed in (replace(self.hydra, credential_generation=uuid4().hex),
