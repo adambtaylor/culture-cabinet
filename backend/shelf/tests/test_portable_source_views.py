@@ -71,6 +71,147 @@ class NativeSourceViewTests(RecoveryCase):
         fields = {'profile_ref': self.profile_ref, 'expected_revision': '0', 'confirmed': 'yes'}
         self.assertEqual(views.musicbrainz(self.request()).status_code, 200)
         self.assertFalse(PortableConnection.objects.filter(adapter=MUSICBRAINZ).exists())
+
+
+from .test_portable_feedback_views import NativeFeedbackCase
+
+
+class NativeArtistSourceTests(NativeFeedbackCase):
+    """Real native source bindings and collection; wire replies alone are synthetic."""
+    def configure(self, artist=True):
+        from shelf.source_authority import MUSICBRAINZ_ARTIST
+        adapter = MUSICBRAINZ_ARTIST if artist else MUSICBRAINZ
+        page = '/cabinet/source/musicbrainz' + ('/artist' if artist else '')
+        self.assertEqual(self.post(page + '/configure', dict(profile_ref=self.profile_ref,
+            expected_revision='0', confirmed='yes')).status_code, 303)
+        return str(PortableConnection.objects.get(adapter=adapter).pk)
+
+    def grant(self, connection, artist=True, **changes):
+        fields = dict(profile_ref=self.profile_ref, source_connection_ref=connection,
+            expected_revision='0', action='grant', confirmed='yes', allow_anticipated_reactions='yes')
+        fields.update(changes)
+        return self.post('/cabinet/source/musicbrainz' + ('/artist' if artist else '') + '/consent', fields)
+
+    def policies(self):
+        from dataclasses import replace
+        from shelf.native_source_policy import build_native_source_policy
+        from shelf.source_authority import MUSICBRAINZ_ARTIST, SourceRights
+        from .test_source_evidence import policy
+        entries = {}
+        for source in (MUSICBRAINZ, MUSICBRAINZ_ARTIST):
+            fields = policy()
+            fields = replace(fields, ref='synthetic:' + source,
+                permissions=tuple((key, tuple(use for use in uses if use != 'cache'))
+                                  for key, uses in fields.permissions))
+            entries[source] = SourceRights(fields, 1, 'synthetic-cc0', 'synthetic-local-disclosure',
+                'synthetic-owner-scope', 'CultureCabinet/fixture (test@example.invalid)',
+                'synthetic-processor', source=source)
+        return build_native_source_policy(self.authority, approved_policies=entries)
+
+    def test_native_artist_configuration_and_consent_are_distinct_from_recording_and_processor(self):
+        from unittest.mock import patch
+        from shelf.source_authority import MUSICBRAINZ_ARTIST, _connection
+        artist, recording = self.configure(), self.configure(False)
+        self.assertEqual(self.grant(recording, False).status_code, 303)
+        self.assertEqual(self.grant(recording).status_code, 403)
+        self.fault('AUTHORITY_DENIED', ga.current_view, self.authority, self.ref,
+            profile_ref=self.profile_ref, connection_ref=artist, purpose='catalogue_lookup')
+        self.assertEqual(self.grant(artist).status_code, 303)
+        with patch.object(self.vault, 'describe', side_effect=AssertionError('No source key lookup')):
+            _, binding, _ = _connection(self.authority, self.ref, artist)
+            self.assertEqual((binding['path'], binding['credential_mode'], binding['credential_generation']),
+                             ('/ws/2/artist/', 'none', 0))
+            view = ga.current_view(self.authority, self.ref, profile_ref=self.profile_ref,
+                connection_ref=artist, purpose='catalogue_lookup')
+        self.assertEqual(view.context['adapter_id'], MUSICBRAINZ_ARTIST)
+        self.fault('AUTHORITY_DENIED', ga.current_view, self.authority, self.ref,
+            profile_ref=self.profile_ref, connection_ref=artist, purpose='inference')
+        self.assertEqual(self.http.get('/cabinet/source/musicbrainz/artist',
+            {'profile_ref': self.profile_ref}, **self.headers).status_code, 200)
+
+    def test_normal_artist_recording_collection_shares_limiter_keeps_categories_and_excludes_notes(self):
+        from types import SimpleNamespace
+        from unittest.mock import patch
+        from shelf.category_registry import KEYS
+        from shelf.disclosure import canonical_bytes, read_json
+        from shelf.models import SynthesisRun
+        from shelf.portable_enhance_service import EnhanceService
+        from shelf.source_authority import MUSICBRAINZ_ARTIST
+        artist, recording = self.configure(), self.configure(False)
+        self.assertEqual(self.grant(artist).status_code, 303)
+        self.assertEqual(self.grant(recording, False).status_code, 303)
+        self.assertEqual(self.post('/cabinet/taste', self.fields(category='artist',
+            title='Synthetic Artist + Duo')).status_code, 303)
+        self.assertEqual(self.post('/cabinet/taste', self.fields(category='recording',
+            title='RECORDING_IS_NOT_AN_ARTIST')).status_code, 303)
+        self.assertEqual(self.post('/cabinet/taste', self.note_fields(category='artist',
+            text='NOTE_IS_NOT_A_QUERY')).status_code, 303)
+        self.consent(self.profile_ref, classes=['anticipated_reactions'])
+        clock = SimpleNamespace(now=self.authority.now, monotonic=lambda: self.clock.tick, sleep=self.clock.advance)
+        service = EnhanceService.compose(self.authority, self.service, policy_provider=self.policies(), clock=clock)
+        _, collector = service._normal_context(self.ref, self.profile_ref)
+        self.assertIs(collector.backends[MUSICBRAINZ].limiter, collector.backends[MUSICBRAINZ_ARTIST].limiter)
+        run = service.start(self.ref, profile_ref=self.profile_ref, connection_ref=str(self.config.pk),
+            client_key=str(uuid.uuid4()), refresh_nonce=str(uuid.uuid4()))
+        calls = []
+        def reply(operation, *, revalidate, **bounds):
+            self.assertTrue(revalidate())
+            self.assertEqual(operation.artist_name, 'Synthetic Artist + Duo')
+            calls.append(operation.source)
+            row = {'id': '81000000-0000-4000-8000-000000000001', 'score': 'NEVER_PROJECT'}
+            document = {'artists': [{**row, 'name': 'Actual synthetic artist'}]} if operation.source == MUSICBRAINZ_ARTIST else {
+                'recordings': [{**row, 'title': 'Actual synthetic recording'}]}
+            return 200, canonical_bytes(document), ()
+        with patch('shelf.discovery_transport.musicbrainz_authorized', side_effect=reply):
+            for _ in range(3):
+                wire = service.preview(self.ref, run_ref=run['run_ref'])['disclosure']
+                if wire['kind'] == 'inference':
+                    break
+                self.assertNotIn('RECORDING_IS_NOT_AN_ARTIST', wire['query'])
+                self.assertNotIn('NOTE_IS_NOT_A_QUERY', wire['query'])
+                service.confirm(self.ref, run_ref=run['run_ref'], preview_ref=wire['preview_ref'],
+                                body_digest=wire['body_digest'], confirmed=True)
+        inference = service.preview(self.ref, run_ref=run['run_ref'])['disclosure']
+        self.assertEqual(inference['kind'], 'inference')
+        submitted = read_json(read_json(inference['body'].encode())['input'].encode())
+        self.assertEqual({row['medium'] for row in submitted['candidates']}, {'artist', 'recording'})
+        self.assertNotIn('NEVER_PROJECT', inference['body'])
+        self.assertNotIn('NOTE_IS_NOT_A_QUERY', inference['body'])
+        self.assertEqual(set(calls), {MUSICBRAINZ, MUSICBRAINZ_ARTIST})
+        row = SynthesisRun.objects.get(pk=run['run_ref'])
+        self.assertEqual(row.attempts, 0)
+        outcomes = {item['category']: item for item in row.evidence['outcomes']}
+        self.assertEqual(set(outcomes), set(KEYS))
+        self.assertEqual((outcomes['artist']['candidate_count'], outcomes['recording']['candidate_count']), (1, 1))
+        self.assertTrue(all(value['state'] == 'unavailable' for key, value in outcomes.items()
+                            if key not in ('artist', 'recording')))
+
+    def test_artist_preview_operation_binding_revocation_and_original_expiry(self):
+        from shelf.category_registry import registry_view
+        from shelf.enhance_coordinator import EnhanceCoordinator
+        from shelf.enhance_contract import EnhanceFault
+        from shelf.source_authority import SourceAuthority
+        artist = self.configure()
+        self.assertEqual(self.grant(artist).status_code, 303)
+        self.assertEqual(self.post('/cabinet/taste', self.fields(category='artist', title='Synthetic Artist')).status_code, 303)
+        view = ga.current_view(self.authority, self.ref, profile_ref=self.profile_ref,
+                              connection_ref=artist, purpose='catalogue_lookup')
+        plan = EnhanceCoordinator(None, now=self.authority.now).plan(view, registry_view(('artist',)),
+            run_ref=str(uuid.uuid4()), client_key=str(uuid.uuid4()), refresh_nonce=str(uuid.uuid4())).plan
+        issuer = SourceAuthority(self.authority, self.ref, profile_ref=self.profile_ref,
+                                 connection_ref=artist, policy_provider=self.policies())
+        preview = issuer.preview(plan)
+        request = issuer._previews[preview['preview_ref']].request
+        self.assertEqual((request.source, request.operation, preview['path']),
+                         ('musicbrainz_artist', 'artists_by_name', '/ws/2/artist/'))
+        issuer.confirm(preview['preview_ref'], plan_digest=preview['plan_digest'],
+                       operation_digest=preview['operation_digest'], confirmed=True)
+        operation = issuer.operation_for(request, plan, now=self.authority.now())
+        permit = issuer.authorize(request, plan, operation, now=self.authority.now())
+        self.assertTrue(issuer.revalidate(permit, request, plan, operation, now=self.authority.now()))
+        self.clock.advance(301)
+        with self.assertRaises((ga.AuthorityFault, EnhanceFault)):
+            issuer.revalidate(permit, request, plan, operation, now=self.authority.now())
         self.assertEqual(views.musicbrainz_configure(self.request('POST', fields)).status_code, 303)
         self.assertEqual(views.musicbrainz_configure(self.request('POST', fields)).status_code, 303)
         row = PortableConnection.objects.get(adapter=MUSICBRAINZ)

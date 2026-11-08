@@ -18,7 +18,7 @@ from .test_grant_authority import RecoveryCase
 from .test_portable_authority import PASSWORD
 
 
-class NativeFeedbackTests(RecoveryCase):
+class NativeFeedbackCase(RecoveryCase):
     def claim_owner(self, password=PASSWORD):
         self.enterContext(self.settings(ROOT_URLCONF='cabinet.portable_urls',
             PORTABLE_AUTHORITY=self.authority, SESSION_COOKIE_NAME=self.boundary.session_cookie,
@@ -68,6 +68,8 @@ class NativeFeedbackTests(RecoveryCase):
         values.update(changes)
         return values
 
+
+class NativeFeedbackTests(NativeFeedbackCase):
     def test_real_create_and_all_registry_inputs_readback_and_authored_undo(self):
         self.assertEqual(self.http.get('/cabinet/taste', {'profile_ref': self.profile_ref}, **self.headers).status_code, 200)
         for category in KEYS:
