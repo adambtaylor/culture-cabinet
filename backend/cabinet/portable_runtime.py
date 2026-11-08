@@ -296,6 +296,10 @@ def run(root, *, port=0, approved_policies=None, approved_policies_factory=None)
         lifetime.enter_context(native_first_start(boundary))
         settings.PORTABLE_AUTHORITY = authority
         settings.PORTABLE_CONNECTIONS = ConnectionValidation(authority, MemoryCredentials(authority))
+        from shelf.portable_disclosure import DisclosureServices
+        # Inference grants use the same validation instance registered here;
+        # ordinary construction also closes its previews with the boundary.
+        DisclosureServices(authority, settings.PORTABLE_CONNECTIONS)
         # Only trusted host construction supplies reviewed entries; CLI defaults
         # deny. Credentials and HTTP input cannot manufacture source permissions.
         settings.PORTABLE_SOURCE_POLICY = _compose_enhance(authority,

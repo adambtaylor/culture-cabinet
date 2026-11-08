@@ -593,3 +593,54 @@ class NormalEnhanceHostSourceTests(SimpleTestCase):
         self.assertEqual(len(calls), 1)
         self.assertIn('policy_provider', {arg.arg for arg in calls[0].keywords})
         self.assertNotIn('configure_source(', source)
+
+
+class NormalDisclosureStartupTests(SimpleTestCase):
+    """Actual run in a cold isolated interpreter; synthetic external reply only."""
+    def cold_child(self, mode):
+        import signal
+        import time
+        import subprocess
+        import sys
+        from .portable_fixture import _CHILD
+        source = Path(__file__).resolve().parents[3]
+        with tempfile.TemporaryDirectory(prefix='disclosure-startup-') as folder:
+            root = Path(folder)
+            audit = root/'audit.log'
+            audit.touch(mode=0o600)
+            # Reuse the isolated child audit. This parent owns the one bounded
+            # process group and always reaps it, including assertion failures.
+            started = time.monotonic()
+            child = subprocess.Popen([sys.executable, '-I', '-B', '-c', _CHILD,
+                str(source/'backend/shelf/tests/portable_disclosure_startup_child.py'), str(audit),
+                str(root/'install'), mode], cwd=source,
+                env={'PATH': '/usr/bin:/bin', 'LANG': 'C.UTF-8', 'PYTHONDONTWRITEBYTECODE': '1'},
+                stdout=subprocess.PIPE, stderr=subprocess.STDOUT, start_new_session=True)
+            try:
+                output, _ = child.communicate(timeout=20)
+            except subprocess.TimeoutExpired:
+                os.killpg(child.pid, signal.SIGTERM)
+                try:
+                    output, _ = child.communicate(timeout=2)
+                except subprocess.TimeoutExpired:
+                    os.killpg(child.pid, signal.SIGKILL)
+                    output, _ = child.communicate()
+                self.fail('Cold startup exceeded its existing bounded child window')
+            finally:
+                if child.poll() is None:
+                    os.killpg(child.pid, signal.SIGKILL)
+                    child.wait()
+            self.assertEqual(child.returncode, 0, output.decode()[-2500:])
+            self.assertIn(('NORMAL_STARTUP_DISCLOSURE_PASS '+mode).encode(), output)
+            self.assertEqual(audit.read_bytes(), b'')
+            # The normal boundary released its exclusive lock and socket; the
+            # child also checked every database connection was closed.
+            self.assertFalse(Path('/proc', str(child.pid)).exists())
+            print('NORMAL_DISCLOSURE_CHILD', mode, 'reaped=True auditBytes=0 seconds=',
+                  round(time.monotonic()-started, 3))
+
+    def test_normal_run_native_consent_and_credential_invalidation(self):
+        self.cold_child('normal')
+
+    def test_disclosure_constructor_failure_closes_before_ready(self):
+        self.cold_child('constructor_failure')
