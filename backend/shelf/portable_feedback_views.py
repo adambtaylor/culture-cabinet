@@ -1,4 +1,5 @@
 """Closed native intake/card forms over the existing typed event engine."""
+import hashlib
 from urllib.parse import urlencode
 import uuid
 
@@ -15,6 +16,57 @@ from .portable_setup_views import _form
 from .portable_source_views import _revision
 from .portable_taste_inputs import PortableTasteInputs, ENTRY_SIGNALS, signal_rows, typed_body
 from .portable_reactions import PortableReactions
+
+
+_PENDING_OUTCOME = '_portable_feedback_outcome'
+_OUTCOME_OPERATIONS = {'RESPONSE_SAVED': 'set', 'RESPONSE_UNDONE': 'reverse'}
+
+
+def _remember_feedback_outcome(request, *, profile_ref, mutation_id, operation, result):
+    """A committed result supplies identifiers only; never retain the command."""
+    session_ref = request.session.get('portable_session')
+    request.session[_PENDING_OUTCOME] = dict(profile_ref=profile_ref,
+        session_digest=hashlib.sha256(session_ref.encode()).hexdigest(),
+        mutation_id=str(ga._uuid(mutation_id)), event_ref=str(ga._uuid(result['event_ref'])),
+        accepted_revision=result['revision'],
+        code='RESPONSE_SAVED' if operation == 'set' else 'RESPONSE_UNDONE')
+
+
+@sensitive_variables()
+def consume_feedback_outcome(request, *, profile_ref):
+    """One-use historical completion, independent of publication currentness.
+
+    Recheck the durable receipt under today's owner/recovery guard. The event
+    projection deliberately excludes its value/body, so a stale card is never
+    restored just to acknowledge a successful earlier command.
+    """
+    pending = request.session.pop(_PENDING_OUTCOME, None)
+    if type(pending) is not dict or set(pending) != {
+            'profile_ref', 'session_digest', 'mutation_id', 'event_ref', 'accepted_revision', 'code'}:
+        return None
+    session_ref = request.session.get('portable_session')
+    if (type(session_ref) is not str or pending['profile_ref'] != profile_ref
+            or pending['session_digest'] != hashlib.sha256(session_ref.encode()).hexdigest()
+            or type(pending['code']) is not str or pending['code'] not in _OUTCOME_OPERATIONS
+            or type(pending['accepted_revision']) is not int or pending['accepted_revision'] < 1):
+        return None
+    try:
+        mutation_id, event_ref = (ga._uuid(pending[k]) for k in ('mutation_id', 'event_ref'))
+    except AuthorityFault:
+        return None
+    from .models import MutationReceipt, FeedbackEvent
+    authority = request.portable_authority
+    with ga.recovery_guard(authority, session_ref, profile_ref=profile_ref), authority._lock:
+        state, _ = ga._bound(authority, session_ref, profile_ref)
+        operation = _OUTCOME_OPERATIONS[pending['code']]
+        receipt = MutationReceipt.objects.filter(actor_id=state.actor_id, profile_id=state.profile_id,
+            mutation_id=mutation_id, event_id=event_ref, accepted_revision=pending['accepted_revision'],
+            operation_family='feedback.'+operation, state='accepted').only('target_id').first()
+        if receipt is None or not FeedbackEvent.objects.filter(pk=event_ref, actor_id=state.actor_id,
+                profile_id=state.profile_id, target_id=receipt.target_id,
+                revision=pending['accepted_revision'], operation=operation).exists():
+            return None
+        return {'schema': 'feedback-action-outcome/v1', 'code': pending['code']}
 
 
 @sensitive_variables()
@@ -128,6 +180,7 @@ def taste_mutate(request):
 @_portable_errors
 @sensitive_variables()
 def card_mutate(request):
+    request.session.pop(_PENDING_OUTCOME, None)
     fields = _fields(request, card=True)
     profile_ref = str(ga._uuid(fields['profile_ref']))
     operation, signal = fields['operation'], fields['signal']
@@ -137,13 +190,15 @@ def card_mutate(request):
     service = getattr(authority, '_enhance_service', None)
     ga._require(service is not None, 'CAPABILITY_UNAVAILABLE', 503)
     try:
-        PortableReactions(authority, service=service).mutate(request.session.get('portable_session'),
+        result = PortableReactions(authority, service=service).mutate(request.session.get('portable_session'),
             profile_ref, fields['target_ref'], fields['mutation_id'], _revision(fields['base_revision']),
             operation, {'signal': signal, 'value': body}, fields.get('reverses_id'))
     except AuthorityFault as error:
         if error.status != 409:
             raise
         return _conflict(request, profile_ref, error.code)
+    _remember_feedback_outcome(request, profile_ref=profile_ref, mutation_id=fields['mutation_id'],
+        operation=operation, result=result)
     return HttpResponse(status=303, headers={'Location': _cabinet_url(profile_ref),
                                             'Cache-Control': 'no-store'})
 

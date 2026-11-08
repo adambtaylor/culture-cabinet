@@ -705,6 +705,10 @@ def portable_cabinet(request):
     for row in context['categories']:
         row['url'] = _cabinet_url(profile_ref, connection_ref, category=row['category'], run_ref=run_ref)
         row['visible'] = not category or row['category'] == category
+    from .portable_feedback_views import consume_feedback_outcome
+    outcome = consume_feedback_outcome(request, profile_ref=profile_ref)
+    if outcome is not None:
+        context['feedback_outcome'] = outcome
     return _native_cabinet_html(request, context, status=status)
 
 
