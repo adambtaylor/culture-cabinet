@@ -778,7 +778,7 @@ def render_portable_saved(request, *, template, context, status=200):
     from django.middleware.csrf import get_token
     from django.template import Engine
     allowed = {'cabinet/portable_saved_items.html', 'cabinet/portable_obtain_preview.html',
-               'cabinet/portable_obtain_submission.html'}
+               'cabinet/portable_obtain_submission.html', 'cabinet/portable_obtain_job.html'}
     if template not in allowed:
         raise ValueError('Unsupported portable saved template')
     values = {**context, 'csrf_token': get_token(request),
@@ -883,6 +883,9 @@ def portable_cabinet(request):
             feedback = card_feedback_context(request.portable_authority, session_ref,
                 profile_ref, target_ref=target)
             card['feedback'] = _card_feedback_display(feedback, profile_ref=profile_ref, target_ref=target)
+            from .portable_obtain_views import cabinet_card_obtain_context
+            card.update(cabinet_card_obtain_context(request, profile_ref=profile_ref,
+                publication_revision=context.get('publication_revision'), card=card))
     from .portable_feedback_views import consume_feedback_outcome
     outcome = consume_feedback_outcome(request, profile_ref=profile_ref)
     if outcome is not None:

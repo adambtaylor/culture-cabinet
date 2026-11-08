@@ -4,15 +4,19 @@ No Django force_login, forged grants, private records or provider connections.
 The existing recovery fixture supplies the real coordinator and in-memory DB.
 """
 from contextvars import Context
+from datetime import timedelta
 from importlib import import_module
 import json
 import uuid
+from pathlib import Path
+import tempfile
 from unittest.mock import Mock, patch
 
 from django.contrib.auth import get_user_model
 from django.db import DatabaseError, connection, transaction
 from django.db.migrations.executor import MigrationExecutor
 from django.test import Client
+from django.http import HttpResponse
 from django.utils import timezone
 
 from shelf import grant_authority as ga, recovery, saved, obtain_preview as preview
@@ -759,3 +763,105 @@ class PortableObtainTests(RecoveryCase):
         after = ProfileCabinetState.objects.get(pk=before.pk)
         self.assertEqual((after.policy_epoch, after.restriction_watermark),
                          (before.policy_epoch, before.restriction_watermark))
+
+
+class NativeObtainStatusTests(PortableObtainTests):
+    """Normal non-1 authority/URL callers; seeded checkpoints are synthetic only."""
+    def tv_request(self, state=None):
+        with self.scope(), ga.current_writer(self.authority, self.ref, self.profile_ref), \
+                transaction.atomic(), ga.writer_window(self.actor, self.state.profile_id):
+            job = AcquisitionJob.objects.create(actor=self.actor, profile_id=self.state.profile_id,
+                request_id=uuid.uuid4(), active_key='a' * 64, provider='tmdb', medium='tv',
+                source_id=1399, title='Synthetic TV fixture', scope='episode_s02e01',
+                edition='Synthetic selected release', storage='local_library',
+                authorized_content=True, storage_check=True, reason='synthetic_only')
+            if state is not None:
+                ObtainTransfer.objects.create(job=job, binding={}, result_guid='1',
+                    nzb_sha256='b' * 64, state=state, provider_job='synthetic-selected-job')
+            return job
+
+    def test_fixed_packaged_script_get_head_errors_and_boundary_without_owner_access(self):
+        from shelf import portable_obtain_views as views
+        with tempfile.TemporaryDirectory() as folder:
+            source = Path(folder) / 'obtain.js'
+            source.write_bytes(b'/* synthetic exact asset */\nvoid 0;\n')
+            public = Client(enforce_csrf_checks=True)
+            with patch.object(views, 'STATUS_SCRIPT', source), \
+                    patch.object(self.authority, 'authorize', side_effect=AssertionError('Asset read owner session')):
+                response = public.get('/cabinet/obtain/status.js', **self.headers)
+                self.assertEqual(response.status_code, 200)
+                self.assertEqual(response.content, source.read_bytes())
+                self.assertEqual(response['Content-Type'], 'application/javascript; charset=utf-8')
+                self.assertEqual(response['Cache-Control'], 'no-store')
+                self.assertEqual(response['X-Content-Type-Options'], 'nosniff')
+                self.assertEqual(response['Cross-Origin-Resource-Policy'], 'same-origin')
+                self.assertNotIn('script-src', response['Content-Security-Policy'])
+                self.assertFalse(response.cookies)
+                head = public.head('/cabinet/obtain/status.js', **self.headers)
+                self.assertEqual((head.status_code, head.content), (200, b''))
+                self.assertEqual(head['Content-Length'], str(source.stat().st_size))
+                self.assertEqual(public.get('/cabinet/obtain/status.js?path=private', **self.headers).status_code, 400)
+                foreign = dict(self.headers, HTTP_SEC_FETCH_SITE='cross-site')
+                self.assertEqual(public.get('/cabinet/obtain/status.js', **foreign).status_code, 403)
+                for body in (b'\xff', b'x' * 65537):
+                    source.write_bytes(body)
+                    failed = public.get('/cabinet/obtain/status.js', **self.headers)
+                    self.assertEqual(failed.status_code, 503)
+                    self.assertNotIn(str(source).encode(), failed.content)
+                source.unlink()
+                self.assertEqual(public.get('/cabinet/obtain/status.js', **self.headers).status_code, 503)
+
+    def test_status_get_is_flat_owned_local_and_never_refreshes_or_advances(self):
+        job = self.tv_request('local_verified')
+        before = (ObtainTransfer.objects.count(), AcquisitionJob.objects.count(),
+                  self.state.policy_epoch, self.state.restriction_watermark)
+        with patch.object(self.authority, 'authorize', wraps=self.authority.authorize) as authorized, \
+                patch.object(acquire, 'transfer_for', side_effect=AssertionError('GET repaired registration')), \
+                patch.object(acquire, 'repair_registration', side_effect=AssertionError('GET repaired registration')):
+            response = self.http.get(f'/cabinet/obtain/jobs/{job.pk}/status/',
+                                     {'profile_ref': self.profile_ref}, **self.headers)
+        self.assertEqual(response.status_code, 200)
+        value = response.json()
+        self.assertEqual(set(value), {'id', 'state', 'label', 'detail_href', 'verification_until',
+                                     'stage', 'reason', 'revision', 'next_action', 'observed_at'})
+        self.assertEqual((value['id'], value['state'], value['stage']),
+                         (job.pk, 'working', 'verification_needed'))
+        self.assertIsNone(value['verification_until'])
+        self.assertNotIn(job.title, response.content.decode())
+        self.assertTrue(authorized.called)
+        self.assertTrue(all(call.kwargs.get('touch') is False for call in authorized.call_args_list))
+        self.assertNotIn('script-src', response['Content-Security-Policy'])
+        self.state.refresh_from_db()
+        self.assertEqual((ObtainTransfer.objects.count(), AcquisitionJob.objects.count(),
+            self.state.policy_epoch, self.state.restriction_watermark), before)
+        for query in ({'profile_ref': str(uuid.uuid4())}, {'selection_token': 'not-in-URL'}):
+            self.assertIn(self.http.get(f'/cabinet/obtain/jobs/{job.pk}/status/', query,
+                                       **self.headers).status_code, (403, 422))
+
+    def test_status_reads_do_not_keep_an_idle_session_alive(self):
+        job = self.tv_request('queued')
+        self.clock.advance(1700)
+        self.assertEqual(self.http.get(f'/cabinet/obtain/jobs/{job.pk}/status/', **self.headers).status_code, 200)
+        self.clock.advance(100)
+        self.assertEqual(self.http.get(f'/cabinet/obtain/jobs/{job.pk}/status/', **self.headers).status_code, 401)
+
+    def test_normal_job_html_has_scoped_policy_and_original_trusted_poll_bound(self):
+        from shelf import enhancement_views
+        job = self.tv_request('outcome_unknown')
+        end = self.authority.now() + timedelta(seconds=60)
+        rendered = []
+        def html(request, *, template, context):
+            rendered.append((template, context))
+            return HttpResponse('<p>synthetic recorded job</p>', content_type='text/html')
+        with self.settings(PORTABLE_OBTAIN_POLL_UNTIL=end), \
+                patch.object(enhancement_views, 'render_portable_saved', side_effect=html):
+            response = self.http.get(f'/cabinet/obtain/jobs/{job.pk}/', **self.headers)
+        self.assertEqual(response.status_code, 200)
+        self.assertIn('script-src ' + self.boundary.origin + '/cabinet/obtain/status.js;',
+                      response['Content-Security-Policy'])
+        self.assertEqual(rendered[0][0], 'cabinet/portable_obtain_job.html')
+        context = rendered[0][1]
+        self.assertEqual(context['obtain_poll_until'], end)
+        self.assertEqual(context['obtain_job']['stage'], 'outcome_unknown')
+        self.assertIsNone(context['obtain_job']['verification_until'])
+        self.assertIsNone(context['obtain_advance_url'])

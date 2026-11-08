@@ -166,4 +166,17 @@ class PortableSecurityMiddleware:
         response['Cache-Control'] = 'no-store'
         response['X-Frame-Options'] = 'DENY'
         response['Content-Security-Policy'] = "default-src 'none'; style-src 'self'; form-action 'self'; frame-ancestors 'none'; base-uri 'none'"
+        if valid and request.method in {'GET', 'HEAD'} and response.status_code == 200:
+            from shelf import enhancement_views, portable_obtain_views
+            match = getattr(request, 'resolver_match', None)
+            documents = {'portable_cabinet': enhancement_views.portable_cabinet,
+                         'portable_obtain_job': portable_obtain_views.job_page}
+            # A path prefix, response flag or HTML-looking denial cannot enable
+            # scripts. Only these exact resolved native document handlers can.
+            if (getattr(match, 'url_name', None) in documents
+                    and match.func is documents[match.url_name]
+                    and response.get('Content-Type', '').split(';')[0].strip().lower() == 'text/html'):
+                response['Content-Security-Policy'] += (
+                    f"; script-src {boundary.origin}/cabinet/obtain/status.js; script-src-attr 'none'"
+                    f"; connect-src {boundary.origin}/cabinet/obtain/jobs/; worker-src 'none'")
         return response

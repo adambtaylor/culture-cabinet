@@ -1,7 +1,15 @@
 """Native portable Save/Obtain, reusing services without forging a Django user."""
 from functools import wraps
+from datetime import datetime, timezone
+import os
+from pathlib import Path
+import stat
+from urllib.parse import urlencode
 
-from django.http import HttpResponse, HttpResponseRedirect
+from django.http import HttpResponse, HttpResponseRedirect, JsonResponse
+from django.conf import settings
+from django.urls import reverse, NoReverseMatch
+from django.template import TemplateDoesNotExist
 from django.db import IntegrityError, OperationalError
 from django.views.decorators.csrf import csrf_protect
 from django.views.decorators.http import require_GET, require_POST
@@ -13,6 +21,40 @@ from .portable_saved_authority import (portable_saved_scope, select_portable_pro
                                        selected_context)
 
 BASE = '/cabinet/saved/'
+STATUS_SCRIPT = Path(__file__).resolve().parents[2] / 'static' / 'obtain.js'
+
+
+def status_script(request):
+    """Serve one immutable packaged asset, with no owner/session access."""
+    headers = {'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff',
+               'Cross-Origin-Resource-Policy': 'same-origin'}
+    if request.method not in {'GET', 'HEAD'}:
+        return HttpResponse('Method not allowed.\n', status=405,
+                            headers={**headers, 'Allow': 'GET, HEAD'})
+    if request.META.get('QUERY_STRING'):
+        return HttpResponse('Unexpected asset parameters.\n', status=400, headers=headers)
+    descriptor = None
+    try:
+        descriptor = os.open(STATUS_SCRIPT, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC | os.O_NONBLOCK)
+        before = os.fstat(descriptor)
+        if not stat.S_ISREG(before.st_mode) or not 0 < before.st_size <= 65536:
+            raise ValueError
+        body = os.read(descriptor, 65537)
+        after = os.fstat(descriptor)
+        if (len(body) != before.st_size or len(body) > 65536
+                or (before.st_dev, before.st_ino, before.st_size, before.st_mtime_ns) !=
+                   (after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns)):
+            raise ValueError
+        body.decode('utf-8')
+    except (OSError, ValueError, UnicodeError):
+        return HttpResponse('Packaged status script unavailable.\n', status=503, headers=headers)
+    finally:
+        if descriptor is not None:
+            os.close(descriptor)
+    response = HttpResponse(body if request.method == 'GET' else b'', headers=headers,
+                            content_type='application/javascript; charset=utf-8')
+    response['Content-Length'] = str(len(body))
+    return response
 
 
 def _guard(function):
@@ -280,3 +322,147 @@ def cancel(request, job_id):
         with access.effect_window(action='select'):
             saved.cancel(actor=access.actor, profile_id=access.identity.profile_id, job_id=job_id)
     return HttpResponseRedirect(BASE + f'jobs/{job_id}/')
+
+
+def _optional_route(name, **kwargs):
+    try:
+        return reverse(name, kwargs=kwargs)
+    except NoReverseMatch:
+        return None
+
+
+def _status_job(access, job_id):
+    from .episode_scope import parse_scope, ScopeError
+    from .obtain_native_context import native_job_context
+    ga._require(type(job_id) is int and 0 < job_id < 2**53, 'CONTRACT_INVALID', 422)
+    context = native_job_context(access, job_id=job_id, operation='view')
+    job = acquire.owned_job(access.actor, access.identity.profile_id, job_id)
+    try:
+        episode = parse_scope(job.scope)
+    except ScopeError:
+        episode = None
+    publication = getattr(job, 'publication_origin', None)
+    ga._require(episode is not None and (publication is not None
+        or (job.provider, job.medium) == ('tmdb', 'tv')), 'CAPABILITY_UNAVAILABLE', 503)
+    context.revalidate()
+    return job, context
+
+
+def _flat_status(access, job, context):
+    """Read local checkpoints only; download/file receipts cannot produce green."""
+    transfer = ObtainTransfer.objects.filter(job=job).first()
+    revision = transfer.revision if transfer else 0
+    ga._require(type(revision) is int and 0 <= revision < 2**53, 'CAPABILITY_UNAVAILABLE', 503)
+    advance = _optional_route('portable_obtain_advance', job_id=job.pk)
+    stage, reason, state, label, next_action = (
+        'awaiting_submission', 'confirmation_required', 'working', 'Review exact submission', 'confirm')
+    if job.status == 'cancelled':
+        stage, reason, state, label, next_action = 'cancelled', 'local_cancelled', 'idle', 'Request cancelled', 'none'
+    elif transfer is not None:
+        states = {
+            'blocked': ('awaiting_submission', 'confirmation_required', 'working', 'Submission not sent', 'confirm'),
+            'queued': ('queued', 'completion_unobserved', 'working', 'Accepted by downloader; completion unverified', 'check'),
+            'outcome_unknown': ('outcome_unknown', 'submission_unconfirmed', 'error', 'Submission outcome unconfirmed', 'reconcile'),
+            'failed': ('failed', 'request_failed', 'error', 'Request needs attention', 'none'),
+            'cancel_pending': ('cancel_pending', 'remote_cancellation_unconfirmed', 'working', 'Remote cancellation unconfirmed', 'reconcile'),
+            'cancelled': ('cancelled', 'local_cancelled', 'idle', 'Request cancelled', 'none'),
+            'local_verified': ('verification_needed', 'library_verification_required', 'working', 'Library verification needed', 'check'),
+        }
+        ga._require(transfer.state in states, 'CAPABILITY_UNAVAILABLE', 503)
+        stage, reason, state, label, next_action = states[transfer.state]
+        if next_action in {'check', 'reconcile'} and advance is None:
+            next_action = 'none'
+    # The current integration supplies no accepted library-verification writer.
+    # Keep local_verified historical; T1/O1's typed proof/CAS producer must be
+    # composed before this projection can expose any verified availability.
+    context.revalidate()
+    return {'id': job.pk, 'state': state, 'label': label,
+        'detail_href': reverse('portable_obtain_job', kwargs={'job_id': job.pk}),
+        'verification_until': None, 'stage': stage, 'reason': reason, 'revision': revision,
+        'next_action': next_action, 'observed_at': transfer.created_at if transfer else job.created_at}
+
+
+def _read_query(request, access):
+    ga._require(set(request.GET) <= {'profile_ref'}
+        and all(len(request.GET.getlist(key)) == 1 for key in request.GET), 'CONTRACT_INVALID', 422)
+    if 'profile_ref' in request.GET:
+        ga._require(request.GET['profile_ref'] == access.profile_ref, 'AUTHORITY_DENIED', 403)
+
+
+def _poll_until(access):
+    # An assigned finite runtime supplies its original bound once. Missing means
+    # manual reads, never a fabricated duration or a polling session keepalive.
+    bound = getattr(settings, 'PORTABLE_OBTAIN_POLL_UNTIL', None)
+    if type(bound) is not datetime or bound.utcoffset() is None:
+        return ''
+    _, session = ga._bound(access.authority, access.session_ref, access.profile_ref)
+    end = min(bound, ga._end(access.authority, session))
+    return end if access.authority.now() < end else ''
+
+
+def cabinet_card_obtain_context(request, *, profile_ref, publication_revision, card):
+    """Attach one owned current job; source identity alone never selects a job."""
+    from .obtain_tv_flow import card_projection
+    choose = _optional_route('portable_obtain_choose')
+    options = _optional_route('portable_obtain_options')
+    if (card.get('medium') != 'tv' or choose is None or options is None
+            or type(publication_revision) is not int or publication_revision <= 0):
+        return {}
+    href = options + '?' + urlencode({'profile_ref': profile_ref,
+        'publication_revision': publication_revision, 'candidate_key': card['candidate_key']})
+    value = {'obtain_action': card_projection(state='idle', label='Choose an episode', detail_href=href),
+             'obtain_choose_url': choose}
+    selection = request.session.get('portable_saved_selection')
+    if (type(selection) is not dict or selection.get('profile_ref') != str(profile_ref)
+            or not hasattr(AcquisitionJob, 'publication_origin')):
+        return value
+    from .portable_obtain_origin import candidate_key_digest
+    with _scope(request) as access:
+        jobs = list(AcquisitionJob.objects.filter(actor_id=access.identity.actor_id,
+            profile_id=access.identity.profile_id,
+            publication_origin__profile_ref=access.profile_ref,
+            publication_origin__publication_revision=publication_revision,
+            publication_origin__candidate_key_digest=candidate_key_digest(card['candidate_key']))[:2])
+        if len(jobs) != 1:
+            return value
+        job, context = _status_job(access, jobs[0].pk)
+        projection = _flat_status(access, job, context)
+        value['obtain_action'] = card_projection(**{key: projection[key]
+            for key in ('state', 'label', 'detail_href', 'verification_until')})
+        value['obtain_status_context'] = {'job_id': job.pk, 'profile_ref': access.profile_ref,
+            'status_url': reverse('portable_obtain_job_status', kwargs={'job_id': job.pk}),
+            'poll_until': _poll_until(access)}
+        return value
+
+
+@require_GET
+@_guard
+def job_status(request, job_id):
+    with _scope(request) as access:
+        _read_query(request, access)
+        job, context = _status_job(access, job_id)
+        projection = _flat_status(access, job, context)
+        return JsonResponse(projection, headers={'Cache-Control': 'no-store',
+                                                 'X-Content-Type-Options': 'nosniff'})
+
+
+@require_GET
+@_guard
+def job_page(request, job_id):
+    from .enhancement_views import render_portable_saved
+    with _scope(request) as access:
+        _read_query(request, access)
+        job, context = _status_job(access, job_id)
+        state = ProfileCabinetState.objects.select_related('profile').get(profile_id=access.identity.profile_id)
+        values = {'profile_ref': access.profile_ref, 'profile_label': state.profile.label,
+            'selection_token': access.selection_token,
+            'cabinet_url': '/cabinet?' + urlencode({'profile_ref': access.profile_ref}),
+            'obtain_job': _flat_status(access, job, context), 'obtain_request_label': job.edition,
+            'obtain_status_url': reverse('portable_obtain_job_status', kwargs={'job_id': job.pk}),
+            'obtain_advance_url': _optional_route('portable_obtain_advance', job_id=job.pk),
+            'obtain_poll_until': _poll_until(access)}
+        context.revalidate()
+        try:
+            return render_portable_saved(request, template='cabinet/portable_obtain_job.html', context=values)
+        except TemplateDoesNotExist:
+            return HttpResponse('Packaged recorded-job page unavailable.\n', status=503)
