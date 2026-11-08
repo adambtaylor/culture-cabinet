@@ -67,8 +67,9 @@ def source_page(request, *, adapter=MUSICBRAINZ):
         _, origin, path = source_identity(adapter)
         category, label, page = NATIVE_SETUP[adapter]
         credential_present = bool(description and description['configured'])
+        signal_label = 'episode' if category == 'podcast_episode' else category
         choices = SOURCE_CHOICES if adapter in MUSICBRAINZ_SOURCES else tuple(
-            (code, text.replace('artist', category)) for code, text in SOURCE_CHOICES)
+            (code, text.replace('artist', signal_label)) for code, text in SOURCE_CHOICES)
         context = {'source_setup': True, 'profile_ref': profile_ref, 'profile_label': str(state.profile.label)[:80],
             'source_configured': row is not None, 'source_connection_ref': str(row.pk) if row else '',
             'source_revision': row.config_revision if row else 0,

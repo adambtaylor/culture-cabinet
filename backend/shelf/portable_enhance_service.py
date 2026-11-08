@@ -224,7 +224,7 @@ class EnhanceService:
             sources, backends, configured, limiters = [], {}, {}, {}
             for row in rows:
                 if row.adapter not in ('tmdb_movie', 'tmdb_tv', 'hardcover', 'moshtix_public',
-                                       'musicbrainz_recording', 'musicbrainz_artist'):
+                                       'musicbrainz_recording', 'musicbrainz_artist', 'apple_podcast'):
                     continue
                 issuer = SourceAuthority(self.authority, session_ref, profile_ref=profile_ref,
                     connection_ref=str(row.pk), policy_provider=self._policy_provider)
@@ -232,7 +232,10 @@ class EnhanceService:
                 require(name not in backends, 'REVISION_CONFLICT', 409)
                 sources.append(issuer)
                 try:
-                    if name in ('musicbrainz_recording', 'musicbrainz_artist'):
+                    if name == 'apple_podcast':
+                        from .apple_podcast_native import ApplePodcastBackend
+                        backend = ApplePodcastBackend(issuer, MediaHostLimiter('apple_podcast'), clock=clock)
+                    elif name in ('musicbrainz_recording', 'musicbrainz_artist'):
                         from .musicbrainz_source import MusicBrainzBackend
                         # Both fixed operations share one host reservation and
                         # pacing state; adding artists cannot double the rate.
