@@ -267,7 +267,9 @@ class SourceCollection:
                 'checked_at': policy.checked_at.isoformat(), 'expires_at': policy.expires_at.isoformat()},
             'credential_generation': permit.credential_generation,
             'parents': list(permit.parent_ids), 'fixture': self.isolated_fixture}))
-        cached = self.state.cache.get(key)
+        # Hardcover permits the separate short-lived ID checkpoint below, not
+        # reuse of completed title/detail evidence. Skip even old cache entries.
+        cached = None if request.source == 'hardcover' else self.state.cache.get(key)
         if cached and now < cached.batch.expires_at:
             retained.append((backend, permit, request, policy, plan))
             return _Result(cached_evidence(cached.batch), canonical_bytes({
@@ -356,7 +358,7 @@ class SourceCollection:
         # No Moshtix facts are kept in this collector's lazy-eviction cache.
         # A later host cache needs an admitted physical expiry/removal lifecycle;
         # rejecting stale reads alone would not bound idle data retention.
-        if (request.source != 'moshtix' and batch.cacheable
+        if (request.source not in ('moshtix', 'hardcover') and batch.cacheable
                 and 'no-store' not in cache_control and 'no-cache' not in cache_control):
             for stale in [k for k, value in self.state.cache.items() if now >= value.batch.expires_at]:
                 del self.state.cache[stale]
