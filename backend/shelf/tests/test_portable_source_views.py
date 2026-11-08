@@ -209,6 +209,24 @@ class NativeArtistSourceTests(NativeFeedbackCase):
         operation = issuer.operation_for(request, plan, now=self.authority.now())
         permit = issuer.authorize(request, plan, operation, now=self.authority.now())
         self.assertTrue(issuer.revalidate(permit, request, plan, operation, now=self.authority.now()))
+        self.assertEqual(self.post('/cabinet/source/musicbrainz/artist/consent', dict(
+            profile_ref=self.profile_ref, source_connection_ref=artist, expected_revision='1',
+            action='revoke', confirmed='yes')).status_code, 303)
+        with self.assertRaises((ga.AuthorityFault, EnhanceFault)):
+            issuer.revalidate(permit, request, plan, operation, now=self.authority.now())
+        self.assertEqual(self.grant(artist, expected_revision='2', action='regrant').status_code, 303)
+        view = ga.current_view(self.authority, self.ref, profile_ref=self.profile_ref,
+                              connection_ref=artist, purpose='catalogue_lookup')
+        plan = EnhanceCoordinator(None, now=self.authority.now).plan(view, registry_view(('artist',)),
+            run_ref=str(uuid.uuid4()), client_key=str(uuid.uuid4()), refresh_nonce=str(uuid.uuid4())).plan
+        issuer = SourceAuthority(self.authority, self.ref, profile_ref=self.profile_ref,
+                                 connection_ref=artist, policy_provider=self.policies())
+        preview = issuer.preview(plan)
+        request = issuer._previews[preview['preview_ref']].request
+        issuer.confirm(preview['preview_ref'], plan_digest=preview['plan_digest'],
+                       operation_digest=preview['operation_digest'], confirmed=True)
+        operation = issuer.operation_for(request, plan, now=self.authority.now())
+        permit = issuer.authorize(request, plan, operation, now=self.authority.now())
         self.clock.advance(301)
         with self.assertRaises((ga.AuthorityFault, EnhanceFault)):
             issuer.revalidate(permit, request, plan, operation, now=self.authority.now())
