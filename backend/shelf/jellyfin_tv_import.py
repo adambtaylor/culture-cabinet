@@ -116,6 +116,12 @@ def _identity(info):
     return info.st_dev, info.st_ino, info.st_uid, info.st_mode
 
 
+def _trusted_fd(descriptor):
+    info = os.fstat(descriptor)
+    registry.require(stat.S_ISDIR(info.st_mode) and info.st_uid in (0, os.geteuid())
+                     and not info.st_mode & 0o022)
+
+
 def _hash(parent, name, plan, expiry, clock):
     fd = os.open(name, registry.READ_FLAGS, dir_fd=parent)
     with os.fdopen(fd, 'rb', buffering=0) as source:
@@ -191,12 +197,37 @@ def receive_selected(plan, source, *, operation='inspect', allowed_roots=TV_ROOT
         journal_name = '.cabinet-obtain-' + plan.request_id
         with ExitStack() as stack:
             root = stack.enter_context(registry.directory(plan.root, trusted=True))
+            # directory(trusted=True) validates ancestors while traversing;
+            # its returned descriptor and every relative ancestor still need
+            # validation BEFORE journal creation or any source/file effect.
+            _trusted_fd(root)
             root_identity = _identity(os.fstat(root))
+            parent = root
+            trusted_directories = [root]
+            missing_parent = False
+            for component in parts[:-1]:
+                try:
+                    child = os.open(component, registry.DIR_FLAGS, dir_fd=parent)
+                except FileNotFoundError:
+                    registry.require(plan.create_parent and len(parts) == 2 and parent == root)
+                    missing_parent = True
+                    break
+                stack.callback(os.close, child)
+                _trusted_fd(child)
+                trusted_directories.append(child)
+                parent = child
+
+            def trusted():
+                for descriptor in trusted_directories:
+                    _trusted_fd(descriptor)
+
+            trusted()
             try:
                 journal = os.open(journal_name, registry.DIR_FLAGS, dir_fd=root)
             except FileNotFoundError:
                 if operation == 'inspect':
                     return ImportOutcome('pending', 'intent_not_started')
+                trusted()
                 os.mkdir(journal_name, 0o700, dir_fd=root)
                 os.fsync(root)
                 journal = os.open(journal_name, registry.DIR_FLAGS, dir_fd=root)
@@ -215,26 +246,21 @@ def receive_selected(plan, source, *, operation='inspect', allowed_roots=TV_ROOT
                 entries = list(os.scandir(journal))
                 registry.require(not entries and operation == 'receive')
                 state = {'identity': plan.identity(), 'inode': None}
+                trusted()
                 _write_state(journal, state)
                 new = True
-            if plan.create_parent:
-                try:
-                    parent = os.open(parts[0], registry.DIR_FLAGS, dir_fd=root)
-                except FileNotFoundError:
-                    if operation != 'receive':
-                        return ImportOutcome('pending', 'awaiting_copy')
-                    os.mkdir(parts[0], 0o755, dir_fd=root)
-                    os.fsync(root)
-                    parent = os.open(parts[0], registry.DIR_FLAGS, dir_fd=root)
+            if missing_parent:
+                if operation != 'receive':
+                    return ImportOutcome('pending', 'awaiting_copy')
+                trusted()
+                os.mkdir(parts[0], 0o755, dir_fd=root)
+                os.fsync(root)
+                parent = os.open(parts[0], registry.DIR_FLAGS, dir_fd=root)
                 stack.callback(os.close, parent)
-            else:
-                parent = root
-                for component in parts[:-1]:
-                    parent = os.open(component, registry.DIR_FLAGS, dir_fd=parent)
-                    stack.callback(os.close, parent)
+                _trusted_fd(parent)
+                trusted_directories.append(parent)
             parent_identity = _identity(os.fstat(parent))
-            registry.require(os.fstat(parent).st_uid in (0, os.geteuid())
-                             and not os.fstat(parent).st_mode & 0o022)
+            trusted()
             try:
                 existing = os.stat(parts[-1], dir_fd=parent, follow_symlinks=False)
             except FileNotFoundError:
@@ -253,15 +279,18 @@ def receive_selected(plan, source, *, operation='inspect', allowed_roots=TV_ROOT
                                      (existing.st_dev, existing.st_ino))
                     if operation == 'inspect':
                         return ImportOutcome('pending', 'awaiting_finalize')
+                    trusted()
                     os.unlink('content', dir_fd=journal)
                     os.fsync(journal)
             else:
                 if new:
+                    trusted()
                     fd = os.open('content', os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
                                  0o600, dir_fd=journal)
                     with os.fdopen(fd, 'wb', buffering=0) as output:
                         left = plan.size
                         while left:
+                            trusted()
                             chunk = _source_read(source, min(registry.CHUNK, left), expiry, clock)
                             registry.require(type(chunk) is bytes and 0 < len(chunk) <= left)
                             remaining = memoryview(chunk)
@@ -275,6 +304,7 @@ def receive_selected(plan, source, *, operation='inspect', allowed_roots=TV_ROOT
                         os.fsync(output.fileno())
                     staged, _ = _hash(journal, 'content', plan, expiry, clock)
                     state['inode'] = [staged.st_dev, staged.st_ino]
+                    trusted()
                     _write_state(journal, state)
                 else:
                     staged, _ = _hash(journal, 'content', plan, expiry, clock)
@@ -282,6 +312,7 @@ def receive_selected(plan, source, *, operation='inspect', allowed_roots=TV_ROOT
                 if operation == 'inspect':
                     return ImportOutcome('pending', 'awaiting_finalize')
                 _check_time(expiry, clock)
+                trusted()
                 os.link('content', parts[-1], src_dir_fd=journal, dst_dir_fd=parent,
                         follow_symlinks=False)
                 os.fsync(parent)

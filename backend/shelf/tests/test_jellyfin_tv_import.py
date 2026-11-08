@@ -142,6 +142,37 @@ class SelectedDestinationTests(TestCase):
         self.assertNotEqual(self.call(source=Bomb()).status, 'verified')
         self.assertEqual(list(outside.iterdir()), [])
 
+    def test_unsafe_allowed_root_refuses_before_every_write_and_source_read(self):
+        self.target.parent.mkdir()
+        before = sorted(str(path.relative_to(self.root)) for path in self.root.rglob('*'))
+        self.root.chmod(0o777)
+        with patch.object(imp.os, 'mkdir', wraps=os.mkdir) as mkdir, \
+             patch.object(imp, '_write_state', wraps=imp._write_state) as write_state:
+            result = self.call(source=Bomb())
+            self.assertEqual(result.status, 'unknown')
+            mkdir.assert_not_called()
+            write_state.assert_not_called()
+        self.assertEqual(sorted(str(path.relative_to(self.root)) for path in self.root.rglob('*')), before)
+        self.assertFalse(self.target.exists())
+        self.assertFalse((self.root / ('.cabinet-obtain-' + self.plan.request_id)).exists())
+
+    def test_unsafe_intermediate_refuses_before_journal_parent_or_target_mutation(self):
+        unsafe = self.root / 'Safe' / 'Unsafe'
+        final_parent = unsafe / 'Season'
+        final_parent.mkdir(parents=True)
+        unsafe.chmod(0o777)
+        plan = replace(self.plan, relative_path='Safe/Unsafe/Season/S01E02.mkv', create_parent=False)
+        before = sorted(str(path.relative_to(self.root)) for path in self.root.rglob('*'))
+        with patch.object(imp.os, 'mkdir', wraps=os.mkdir) as mkdir, \
+             patch.object(imp, '_write_state', wraps=imp._write_state) as write_state:
+            result = self.call(source=Bomb(), plan=plan)
+            self.assertEqual(result.status, 'unknown')
+            mkdir.assert_not_called()
+            write_state.assert_not_called()
+        self.assertEqual(sorted(str(path.relative_to(self.root)) for path in self.root.rglob('*')), before)
+        self.assertFalse((final_parent / 'S01E02.mkv').exists())
+        self.assertFalse((self.root / ('.cabinet-obtain-' + self.plan.request_id)).exists())
+
     def test_actual_worker_control_path_is_bounded_and_sanitized(self):
         script = Path(__file__).resolve().parents[3] / 'tools/jellyfin_tv_file_worker.py'
         spec = importlib.util.spec_from_file_location('selected_file_worker', script)
