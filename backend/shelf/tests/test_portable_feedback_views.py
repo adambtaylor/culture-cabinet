@@ -393,6 +393,10 @@ class NativeFeedbackOutcomeTests(NativeFeedbackCase):
         self.assertEqual(failed.status_code, 422)
         self.assertNotIn(_PENDING_OUTCOME, self.http.session)
         self.assertNotIn('feedback_outcome', self.landing()[1])
+        self.assertEqual(self.post('/cabinet/feedback', fields).status_code, 303)
+        self.assertEqual(self.post('/cabinet/feedback', {**fields, 'text': 'changed replay'}).status_code, 409)
+        self.assertNotIn(_PENDING_OUTCOME, self.http.session)
+        self.assertNotIn('feedback_outcome', self.landing()[1])
         # Exact replay creates no new event but can acknowledge its real durable
         # receipt. A later recovery refusal must discard all display content.
         self.assertEqual(self.post('/cabinet/feedback', fields).status_code, 303)
