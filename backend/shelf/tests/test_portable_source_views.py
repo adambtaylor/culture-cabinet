@@ -579,3 +579,65 @@ class NativeMediaSourceTests(NativeFeedbackCase):
         fields = dict(profile_ref=self.profile_ref,source_connection_ref=str(row.pk),
                       expected_revision='2',action='revoke',confirmed='yes')
         self.assertEqual(self.post(self.MEDIA_PAGES['hardcover']+'/consent',fields).status_code,401)
+
+    def credential_failure_at_exit(self, stage, *, independent_replacement=False):
+        from contextlib import contextmanager
+        from unittest.mock import patch
+        from shelf.portable_authority import AuthorityFault
+        row = self.configure_media('hardcover')
+        self.assertEqual(self.credential_media(row,secret='SYNTHETIC-OLD-TOKEN').status_code,303)
+        old = self.vault._leases[row.pk]
+        installed = []
+        real_replace = self.vault.replace
+        def record_install(*args,**kwargs):
+            status = real_replace(*args,**kwargs)
+            installed.append(self.vault._leases[row.pk])
+            return status
+        original_check = ga._RecoveryCheckpoint.check
+        def fail_final_checkpoint(checkpoint):
+            original_check(checkpoint)
+            if installed:
+                raise AuthorityFault('CAPABILITY_UNAVAILABLE',503)
+        original_guard = ga.recovery_guard
+        @contextmanager
+        def fail_outer_exit(*args,**kwargs):
+            with original_guard(*args,**kwargs) as checkpoint:
+                yield checkpoint
+            if installed:
+                if independent_replacement:
+                    # Model a separate, valid owner replacement after the view's
+                    # lock is released. Failed-view cleanup must not erase it.
+                    real_replace(self.ref,row.pk,1,b'SYNTHETIC-INDEPENDENT-REPLACEMENT')
+                raise AuthorityFault('CAPABILITY_UNAVAILABLE',503)
+        failing = patch.object(ga._RecoveryCheckpoint,'check',fail_final_checkpoint) if stage=='transaction' else \
+                  patch.object(ga,'recovery_guard',fail_outer_exit)
+        with patch.object(self.vault,'replace',side_effect=record_install), failing:
+            response = self.credential_media(row,secret='SYNTHETIC-NEW-TOKEN')
+        self.assertEqual(response.status_code,503)
+        self.assertEqual(len(installed),1)
+        self.assertIsNot(installed[0],old)
+        for canary in (b'SYNTHETIC-OLD-TOKEN',b'SYNTHETIC-NEW-TOKEN',b'SYNTHETIC-INDEPENDENT-REPLACEMENT'):
+            self.assertNotIn(canary,response.content)
+        self.assertFalse(PortableDisclosureGrant.objects.filter(connection=row).exists())
+        row.refresh_from_db()
+        if independent_replacement:
+            self.assertIsNot(self.vault._leases[row.pk],installed[0])
+            self.assertEqual(self.vault.resolve(self.ref,row.pk,1),b'SYNTHETIC-INDEPENDENT-REPLACEMENT')
+        else:
+            self.assertNotIn(row.pk,self.vault._leases)
+            self.assertFalse(self.vault.describe(self.ref,row.pk,1)['configured'])
+            self.fault('CREDENTIAL_REQUIRED',self.vault.resolve,self.ref,row.pk,1)
+            self.assertEqual(row.credential_generation,1 if stage=='transaction' else 2)
+        # There is no old-token restoration or retry. A new explicit successful
+        # owner form submission still works through the unchanged native path.
+        self.assertEqual(self.credential_media(row,secret='SYNTHETIC-EXPLICIT-RETRY').status_code,303)
+        self.assertEqual(self.vault.resolve(self.ref,row.pk,1),b'SYNTHETIC-EXPLICIT-RETRY')
+
+    def test_credential_final_transaction_failure_removes_new_ram_lease(self):
+        self.credential_failure_at_exit('transaction')
+
+    def test_credential_outer_recovery_exit_failure_removes_new_ram_lease(self):
+        self.credential_failure_at_exit('recovery')
+
+    def test_credential_failure_cleanup_preserves_a_later_independent_replacement(self):
+        self.credential_failure_at_exit('recovery',independent_replacement=True)
