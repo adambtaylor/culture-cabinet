@@ -342,6 +342,7 @@ class DestinationImportPorts:
     inspect: object
     receive: object
     clock: object
+    authority_deadline: object = None
 
 
 def destination_binding_digest(binding, relative_path, create_parent):
@@ -394,14 +395,20 @@ def import_selected(context, completion, destination_binding, *, intent, ports=N
                          and ports.generation == destination_binding.service_generation
                          and ports.generation.service == 'destination_file'
                          and ports.generation in job.service_generations
+                         and callable(ports.authority_deadline)
                          and destination_binding.ref == job.destination_ref
                          and completion.state == 'completed' and len(completion.files) == 1
                          and completion.source_manifest_digest is not None
                          and completion.history_digest is not None and completion.hook_digest is not None)
         with context.effect_window():
+            native_deadline = ports.authority_deadline()
+            registry.require(type(native_deadline) is datetime and native_deadline.utcoffset() is not None
+                             and ports.clock() < native_deadline)
             def current():
                 require_native(context, job, 'import')
-                registry.require(ports.revalidate() == ports.generation)
+                registry.require(ports.revalidate() == ports.generation
+                                 and ports.authority_deadline() == native_deadline
+                                 and ports.clock() < native_deadline)
             current()
             plan = ports.plan_for(completion, destination_binding, intent)
             registry.require(type(plan) is CopyPlan)
@@ -415,7 +422,7 @@ def import_selected(context, completion, destination_binding, *, intent, ports=N
                  job.episode_scope, job.test_only))
             registry.require(plan.destination_binding_digest == destination_binding_digest(
                 destination_binding, plan.relative_path, plan.create_parent))
-            plan.validate((destination_binding.root,))
+            registry.require(plan.validate((destination_binding.root,)) <= native_deadline)
             current()
             outcome = ports.inspect(plan)
             current()

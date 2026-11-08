@@ -12,7 +12,7 @@ from shelf import credential_store as store
 from shelf.acquisition_contract import (
     Blocked, Client, ConfirmedSelection, ContractError, Permissions, PublicRequest, MAX_NZB_BYTES,
 )
-from shelf.acquisition_pipeline import AdapterUnavailable, ProviderJob, QueueRejected, Snapshot
+from shelf.acquisition_pipeline import AdapterUnavailable, Completion, ProviderJob, QueueRejected, Snapshot
 from shelf.acquisition_transport import LoopbackTransport
 
 
@@ -130,20 +130,23 @@ class Backend:
         validate_nzb(payload)
         return payload
 
-    def provider(self, *, actor_id, profile_id, snapshot, selection, nzb):
+    def provider(self, *, actor_id, profile_id, snapshot, selection, nzb, selected_observer=None):
         """Bind exact selected bytes/evidence to Pipeline's existing Provider port."""
         if type(snapshot) is not Snapshot:
             raise Blocked('Matching confirmed request required')
         snapshot.check_selection(selection)
         ConfirmedSelection(**vars(selection))
-        return _SelectedProvider(self, actor_id, profile_id, snapshot, selection, nzb)
+        if selected_observer is not None and not callable(selected_observer):
+            raise Blocked('Selected observation port required')
+        return _SelectedProvider(self, actor_id, profile_id, snapshot, selection, nzb, selected_observer)
 
 
 class _SelectedProvider(store._Private):
-    def __init__(self, backend, actor_id, profile_id, snapshot, selection, nzb):
+    def __init__(self, backend, actor_id, profile_id, snapshot, selection, nzb, selected_observer=None):
         self._backend = backend
         self._actor_id, self._profile_id = actor_id, profile_id
         self._snapshot, self._selection, self._nzb = snapshot, selection, nzb
+        self._selected_observer = selected_observer
 
     def enqueue(self, snapshot, request):
         if snapshot != self._snapshot or request.selection != self._selection:
@@ -155,7 +158,23 @@ class _SelectedProvider(store._Private):
         raise AdapterUnavailable('Manual reconciliation required')
 
     def poll(self, job):
-        raise AdapterUnavailable('Monitoring unsupported')
+        if self._selected_observer is None:
+            raise AdapterUnavailable('Monitoring unsupported')
+        if type(job) is not ProviderJob or job.snapshot != self._snapshot:
+            raise AdapterUnavailable('Selected observation identity mismatch')
+        try:
+            result = self._selected_observer(job)
+            # Legacy Pipeline requires actual repair/unpack attestations. Its
+            # Completion grammar must not silently consume T1's richer result
+            # or convert an honest "unobserved" fact into a guessed True.
+            if result is not None and (type(result) is not Completion or result.job != job
+                    or type(result.repair_ok) is not bool or type(result.unpack_ok) is not bool):
+                raise AdapterUnavailable('Selected observation unverified')
+            return result
+        except AdapterUnavailable:
+            raise
+        except Exception:
+            raise AdapterUnavailable('Selected observation unavailable') from None
 
     def cancel(self, job):
         raise AdapterUnavailable('Cancellation unsupported')
