@@ -90,8 +90,9 @@ class SourceRights:
         require(self.processor_ref is None or type(self.processor_ref) is str
                 and 0 < len(self.processor_ref) <= 300, 'AUTHORITY_DENIED')
         if self.source in (*MUSICBRAINZ_SOURCES, APPLE_PODCAST):
-            # The fixed operation additionally validates its required contact.
-            # Rights alone cannot select a URL or authorize a request.
+            # MusicBrainz additionally validates its required public contact.
+            # Apple has no contact header; this inert evidence label cannot
+            # select a destination or authorize either source's request.
             require(type(self.application_identity) is str and 0 < len(self.application_identity) <= 300
                 and self.application_identity.isascii()
                 and all(ord(c) >= 32 and ord(c) != 127 for c in self.application_identity), 'AUTHORITY_DENIED')
