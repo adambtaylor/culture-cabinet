@@ -223,7 +223,8 @@ class EnhanceService:
             clock = self._clock or CollectionClock()
             sources, backends, configured, limiters = [], {}, {}, {}
             for row in rows:
-                if row.adapter not in ('tmdb_movie', 'tmdb_tv', 'hardcover', 'moshtix_public', 'musicbrainz_recording'):
+                if row.adapter not in ('tmdb_movie', 'tmdb_tv', 'hardcover', 'moshtix_public',
+                                       'musicbrainz_recording', 'musicbrainz_artist'):
                     continue
                 issuer = SourceAuthority(self.authority, session_ref, profile_ref=profile_ref,
                     connection_ref=str(row.pk), policy_provider=self._policy_provider)
@@ -231,10 +232,13 @@ class EnhanceService:
                 require(name not in backends, 'REVISION_CONFLICT', 409)
                 sources.append(issuer)
                 try:
-                    if name == 'musicbrainz_recording':
+                    if name in ('musicbrainz_recording', 'musicbrainz_artist'):
                         from .musicbrainz_source import MusicBrainzBackend
-                        limiter = limiters.setdefault('musicbrainz', MediaHostLimiter('musicbrainz'))
-                        backend = MusicBrainzBackend(issuer, limiter, clock=clock)
+                        # Both fixed operations share one host reservation and
+                        # pacing state; adding artists cannot double the rate.
+                        if 'musicbrainz' not in limiters:
+                            limiters['musicbrainz'] = MediaHostLimiter('musicbrainz')
+                        backend = MusicBrainzBackend(issuer, limiters['musicbrainz'], clock=clock, source=name)
                     elif name == 'moshtix':
                         backend = MoshtixBackend(issuer, MoshtixHostLimiter(), clock=clock)
                     else:
@@ -456,7 +460,8 @@ class EnhanceService:
                 except EnhanceFault as error:
                     if error.code not in ('NO_GROUNDED_CANDIDATES', 'CAPABILITY_UNAVAILABLE', 'AUTHORITY_DENIED'):
                         raise
-                    if error.code == 'NO_GROUNDED_CANDIDATES' and source.source_key() == 'musicbrainz_recording':
+                    if error.code == 'NO_GROUNDED_CANDIDATES' and source.source_key() in (
+                            'musicbrainz_recording', 'musicbrainz_artist'):
                         missing_artist = True
             require(source_previews, 'NO_GROUNDED_CANDIDATES' if missing_artist else 'CAPABILITY_UNAVAILABLE',
                     422 if missing_artist else 503)

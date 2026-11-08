@@ -239,9 +239,9 @@ def _compose_enhance(authority, connections, *, approved_policies=None, approved
     policy = build_native_source_policy(authority, approved_policies=entries)
     for rights in entries.values():
         rights.validate(authority.now())
-        if rights.source == 'musicbrainz_recording':
+        if rights.source in ('musicbrainz_recording', 'musicbrainz_artist'):
             from shelf.musicbrainz_source import MusicBrainzOperation
-            MusicBrainzOperation('Contact validation', rights.application_identity)
+            MusicBrainzOperation('Contact validation', rights.application_identity, source=rights.source)
     EnhanceService.compose(authority, connections, policy_provider=policy)
     if not entries:
         print('PORTABLE_SOURCE_POLICY_UNAVAILABLE', flush=True)
