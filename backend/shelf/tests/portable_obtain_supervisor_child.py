@@ -58,7 +58,6 @@ def main(folder):
         from shelf.tests.test_owner_tv_entry import OwnerPolicy, FixtureTVProvider
         from shelf.tests.test_portable_authority import Terminal, PASSWORD
         from shelf.tests.test_obtain_preview import payload, item
-        from shelf.tests.test_obtain_acquisition import NZB
         from shelf.tests.test_acquisition_contract import CAPS
         from shelf.tests.test_acquisition_backend import grant
         from shelf.tests.fixtures_credentials import FakeTree
@@ -137,7 +136,10 @@ def main(folder):
             if request.operation == 'caps': return CAPS
             if request.operation == 'search':
                 return payload(item(title='Fiction Series 2024 S02E01 1080p', category='5000'))
-            if request.operation == 'get': return NZB
+            if request.operation == 'get':
+                return (b'<nzb><file subject="synthetic fixture"><groups><group>synthetic.invalid</group></groups>'
+                        b'<segments><segment bytes="4096" number="1">synthetic-only.invalid</segment>'
+                        b'</segments></file></nzb>')
             assert request.operation == 'addfile'
             state['sends'] = state.get('sends', 0) + 1
             return b'{"status":true,"nzo_ids":["SABnzbd_nzo_synthetic"]}'
