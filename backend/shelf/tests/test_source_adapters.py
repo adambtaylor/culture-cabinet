@@ -22,6 +22,50 @@ class SourceAdapterTests(TestCase):
                 MediaBackend(issuer, vault, MediaHostLimiter('tmdb'), clock=Mock())
             wire.assert_not_called()
 
+        from types import SimpleNamespace
+        from shelf.source_adapters import SourceAuthorityIssuer
+        from shelf.tests.test_source_evidence import policy
+
+        class LegacyIssuer(SourceAuthorityIssuer):
+            """Exercise the default contract without a concrete issuer shortcut."""
+            def unused(self, *args, **kwargs):
+                raise AssertionError('Not used by the policy-only unit boundary')
+            operation_for = authorize = revalidate = unused
+
+            def policy(self, permit, operation, *, now):
+                self.calls.append('policy')
+                return self.rights
+
+            def model_context_current(self, permit, operation, *, now):
+                self.calls.append('processor')
+                if self.denied:
+                    raise EnhanceFault('AUTHORITY_DENIED')
+                return self.processor
+
+        issuer = LegacyIssuer()
+        issuer.calls, issuer.rights = [], policy()
+        issuer.processor, issuer.denied = True, False
+        # Isolate MediaBackend.policy's contract. Constructor rejection above and
+        # concrete issuer regressions cover admission and fresh authority checks.
+        backend = object.__new__(MediaBackend)
+        backend.issuer = issuer
+        backend._context = Mock(return_value=SimpleNamespace(request=object(), plan=object(), operation=object()))
+        backend.revalidate = Mock(return_value=True)
+        permit = SimpleNamespace(policy_ref=issuer.rights.ref, policy_revision=issuer.rights.revision)
+        self.assertIs(backend.policy(permit, now=NOW), issuer.rights)
+        self.assertEqual(issuer.calls, ['policy', 'processor'])
+        issuer.processor = False
+        with self.assertRaises(EnhanceFault):
+            backend.policy(permit, now=NOW)
+        issuer.processor, issuer.denied = True, True
+        with self.assertRaises(EnhanceFault):
+            backend.policy(permit, now=NOW)
+        self.assertEqual(issuer.calls, ['policy', 'processor'] * 3)
+        backend.revalidate.return_value = False
+        with self.assertRaises(EnhanceFault):
+            backend.policy(permit, now=NOW)
+        self.assertEqual(issuer.calls, ['policy', 'processor'] * 3)
+
     def test_only_registered_fixed_operations_and_bounded_ids_are_requests(self):
         for args in [('librarything', 'book', 'book_search', ('Synthetic',), ()),
                      ('tmdb_movie', 'movie', 'custom_url', ('Synthetic',), ()),

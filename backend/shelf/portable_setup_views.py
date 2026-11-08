@@ -330,7 +330,7 @@ def cabinet_choices(request):
         profiles = []
         for row in ProfileCabinetState.objects.filter(installation=installation,
                 actor_id=session.owner_id, owner_revision=session.owner_revision, blocked=False,
-                data_schema_version=1, profile__kind='owner', profile__active=True,
+                data_schema_version__in=(1, 2), profile__kind='owner', profile__active=True,
                 profile__grant__user_id=session.owner_id, profile__grant__can_view=True,
                 profile__grant__can_select=True, profile__grant__can_mutate=True
                 ).select_related('profile').order_by('profile_ref'):

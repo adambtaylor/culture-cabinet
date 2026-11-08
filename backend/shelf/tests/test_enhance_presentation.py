@@ -139,6 +139,64 @@ class EnhancePresentationTests(SimpleTestCase):
         self.assertIn('hidden', doc.marked('data-enhance-coverage-pending').attrs)
         self.assertIn('your current picks have not changed', doc.root.text(visible=True))
 
+    def test_collection_without_model_permission_shows_counts_without_publication_or_send(self):
+        summary = [{'category': 'movie', 'collected_count': 4, 'model_eligible_count': 0},
+                   {'category': 'book', 'collected_count': 0, 'model_eligible_count': 0}]
+        _, doc = self.render(self.stage('sealed', code='AUTHORITY_DENIED',
+            dependency='source_model_context_unavailable', source_use=summary), portable_ui=True)
+        text = doc.root.text(visible=True)
+        self.assertIn('Source facts were collected, but model use is not yet cleared', text)
+        self.assertIn('No inference was sent', text)
+        counts = doc.marked('data-enhance-source-use')
+        self.assertIn('Films', counts.text())
+        self.assertIn('4 collected; 0 eligible for model use', counts.text())
+        self.assertIn('Books', counts.text())
+        self.assertNotIn('Publication confirmed', text)
+        self.assertNotIn('TMDB', counts.text())
+        self.assertEqual(doc.tagged('form'), [])
+        self.assertIn('Source policy setup must be completed', doc.marked('data-enhance-reason').text())
+        self.assertIn('hidden', doc.marked('data-enhance-publication').attrs)
+
+    def test_mixed_collection_preserves_counts_and_unavailable_is_not_empty(self):
+        _, doc = self.render(self.stage('sealed', source_use=[
+            {'category': 'movie', 'collected_count': 3, 'model_eligible_count': 2},
+            {'category': 'book', 'collected_count': 5, 'model_eligible_count': 0},
+            {'category': 'artist', 'collected_count': 0, 'model_eligible_count': 0}],
+            category_outcomes=[{'category': 'movie', 'state': 'fresh', 'candidate_count': 3, 'code': 'OK'},
+                {'category': 'book', 'state': 'unavailable', 'candidate_count': 0, 'code': 'AUTHORITY_DENIED'},
+                {'category': 'artist', 'state': 'empty_bounded', 'candidate_count': 0, 'code': 'OK'}]))
+        counts = doc.marked('data-enhance-source-use').text()
+        self.assertIn('3 collected; 2 eligible for model use', counts)
+        self.assertIn('5 collected; 0 eligible for model use', counts)
+        outcomes = doc.marked('data-enhance-outcomes').text()
+        self.assertIn('Unavailable under current permissions; this is not an empty search', outcomes)
+        self.assertIn('No candidates within this round’s collection limits', outcomes)
+
+    def test_mixed_zero_collection_denial_does_not_infer_model_permission_cause(self):
+        # Another category's collected pool cannot explain this category's
+        # denial: missing local retention or consent can also produce 0/0.
+        _, doc = self.render(self.stage('sealed', source_use=[
+            {'category': 'movie', 'collected_count': 3, 'model_eligible_count': 2},
+            {'category': 'book', 'collected_count': 0, 'model_eligible_count': 0}],
+            category_outcomes=[{'category': 'movie', 'state': 'fresh', 'candidate_count': 3, 'code': 'OK'},
+                {'category': 'book', 'state': 'unavailable', 'candidate_count': 0, 'code': 'AUTHORITY_DENIED'}]))
+        items = [n for n in doc.marked('data-enhance-outcomes').nodes() if n.tag == 'li']
+        denied = next(n for n in items if any(child.tag == 'strong' and child.text() == 'book'
+                                            for child in n.nodes()))
+        self.assertIn('Unavailable under current permissions', denied.text())
+        self.assertIn('not an empty search', denied.text())
+        self.assertNotIn('Model use', denied.text())
+        self.assertNotIn('collected', denied.text())
+        self.assertNotIn('No candidates', denied.text())
+
+    def test_source_summary_absence_preserves_legacy_and_summary_text_is_escaped(self):
+        _, legacy = self.render({'state': 'queued', 'status_url': '/existing-status'})
+        self.assertFalse(any('data-enhance-source-use' in node.attrs for node in legacy.root.nodes()))
+        html, doc = self.render(self.stage('sealed', source_use=[{
+            'category': '<img src=x onerror=alert(1)>', 'collected_count': 1, 'model_eligible_count': 0}]))
+        self.assertEqual(doc.tagged('img'), [])
+        self.assertIn('&lt;img', html)
+
     def test_progress_receipts_never_create_commands_even_with_extra_url_fields(self):
         for stage in ('collecting', 'awaiting_preview', 'ready', 'unknown', 'failed', 'published'):
             with self.subTest(stage=stage):
@@ -293,3 +351,148 @@ class EnhancePresentationTests(SimpleTestCase):
         self.assertEqual(stage.attrs['tabindex'], '-1')
         self.assertTrue(any(n.attrs.get('href') == '#enhance-current-stage' for n in doc.tagged('a')))
         self.assertEqual(doc.tagged('script')[0].attrs['type'], 'application/json')
+
+    def test_musicbrainz_configuration_and_consent_are_separate_explicit_native_forms(self):
+        # Scalar presentation fixtures are not source authority or HTTP proof.
+        context = dict(source_setup=True, profile_ref='fictional-profile',
+            source_revision=0, csrf_token='s' * 64, source_consent_revision=3,
+            source_connection_ref='fictional-source', source_consent_action='grant',
+            source_choices=[{'code': code, 'label': code.replace('_', ' ')} for code in
+                ('canonical_seed', 'explicit_favourites', 'anticipated_reactions', 'experienced_enjoyment')])
+        _, unconfigured = self.cabinet(**context)
+        configure = unconfigured.tagged('form')
+        self.assertEqual([f.attrs['action'] for f in configure], ['/cabinet/source/musicbrainz/configure'])
+        config_fields = {n.attrs.get('name'): n.attrs.get('value') for n in configure[0].nodes() if n.tag == 'input'}
+        self.assertEqual(config_fields['expected_revision'], '0')
+        _, doc = self.cabinet(**context, source_configured=True)
+        forms = doc.tagged('form')
+        self.assertEqual([f.attrs['action'] for f in forms], ['/cabinet/source/musicbrainz/consent'])
+        for form in configure + forms:
+            self.assertEqual(form.attrs['method'], 'post')
+            fields = {n.attrs.get('name'): n.attrs.get('value') for n in form.nodes() if n.tag == 'input'}
+            self.assertEqual(fields['csrfmiddlewaretoken'], 's' * 64)
+            self.assertEqual(fields['profile_ref'], 'fictional-profile')
+            confirmation = next(n for n in form.nodes() if n.attrs.get('name') == 'confirmed')
+            self.assertIn('required', confirmation.attrs)
+            self.assertFalse(any('checked' in n.attrs for n in form.nodes()))
+            self.assertFalse({'adapter', 'origin', 'purpose', 'secret', 'allow_notes'} & fields.keys())
+        permission = {n.attrs.get('name'): n.attrs.get('value') for n in forms[0].nodes() if n.tag == 'input'}
+        self.assertEqual(permission['source_connection_ref'], 'fictional-source')
+        self.assertEqual(permission['expected_revision'], '3')
+        self.assertEqual(permission['action'], 'grant')
+        self.assertEqual(sorted(k for k in permission if k.startswith('allow_')),
+            ['allow_anticipated_reactions', 'allow_canonical_seed', 'allow_experienced_enjoyment', 'allow_explicit_favourites'])
+        text = doc.root.text(visible=True)
+        for phrase in ('separate from inference permission', 'does not send a request or approve model use',
+                       'name match does not verify an exact artist identity', 'supports recordings'):
+            self.assertIn(phrase, text)
+        self.assertEqual(doc.tagged('script'), [])
+
+    def test_musicbrainz_revoke_expired_and_regrant_states_never_imply_active_permission(self):
+        for active in (True, False):
+            with self.subTest(active=active):
+                _, doc = self.cabinet(source_setup=True, source_configured=True,
+                    source_consent_record_active=True, source_consent_active=active,
+                    source_consent_revision=4, csrf_token='s' * 64,
+                    source_consent_expires='2026-01-01T00:05:00Z')
+                forms = doc.tagged('form')
+                self.assertEqual(len(forms), 1)
+                self.assertEqual([n.attrs['value'] for n in forms[0].nodes()
+                                  if n.attrs.get('name') == 'action'], ['revoke'])
+                self.assertIn('Revoke source permission', forms[0].text())
+                self.assertNotIn('Grant source permission', doc.root.text(visible=True))
+                self.assertEqual(doc.tagged('fieldset'), [])
+                if active:
+                    self.assertIn('active until 2026-01-01T00:05:00Z', doc.root.text())
+                else:
+                    self.assertIn('expired or no longer matches', doc.root.text())
+        _, regrant = self.cabinet(source_setup=True, source_configured=True,
+            source_consent_record_active=False, source_consent_action='regrant')
+        self.assertEqual([n.attrs['value'] for n in regrant.tagged('input')
+                          if n.attrs.get('name') == 'action'], ['regrant'])
+        self.assertIn('No current source permission is active', regrant.root.text())
+
+    def test_artist_forms_have_no_inferred_response_and_keep_native_replay_bindings(self):
+        html, doc = self.cabinet(artist_input=True, profile_ref='fictional-profile',
+            entry_ref='fictional-entry', newmutation_id='fictional-mutation', base_revision=0,
+            csrf_token='s' * 64, title='<script>untrusted</script>')
+        forms = doc.tagged('form')
+        self.assertEqual(len(forms), 2)
+        for form, signal, values in zip(forms, ('interest', 'enjoyment'),
+                                       (['', 'no', 'maybe', 'yes'], ['', '1', '2', '3', '4', '5'])):
+            self.assertEqual(form.attrs['action'], '/cabinet/taste/artist')
+            self.assertEqual(form.attrs['method'], 'post')
+            fields = {n.attrs.get('name'): n.attrs for n in form.nodes() if n.tag == 'input'}
+            for name, value in (('csrfmiddlewaretoken', 's' * 64), ('profile_ref', 'fictional-profile'),
+                ('entry_ref', 'fictional-entry'), ('mutation_id', 'fictional-mutation'),
+                ('base_revision', '0'), ('operation', 'set'), ('signal', signal)):
+                self.assertEqual(fields[name]['value'], value)
+            self.assertEqual(fields['title']['maxlength'], '200')
+            self.assertIn('required', fields['title'])
+            self.assertNotIn('value', fields['title'])
+            select = next(n for n in form.nodes() if n.tag == 'select')
+            self.assertEqual(select.attrs['name'], 'value')
+            self.assertIn('required', select.attrs)
+            self.assertEqual([n.attrs['value'] for n in select.nodes() if n.tag == 'option'], values)
+            if signal == 'enjoyment':
+                self.assertIn('required', fields['experienced_ack'])
+                self.assertEqual(fields['experienced_ack']['value'], 'yes')
+            else:
+                self.assertNotIn('experienced_ack', fields)
+        self.assertFalse(any('checked' in n.attrs or 'selected' in n.attrs for n in doc.root.nodes()))
+        self.assertIn('not a verified MusicBrainz identity or imported history', doc.root.text())
+        self.assertIn('does not run Enhance or share it', doc.root.text())
+        self.assertNotIn('<script>', html)
+
+    def test_source_groups_and_artist_labels_escape_and_navigation_keeps_profile_scope(self):
+        html, doc = self.cabinet(source_setup=True, source_configured=True,
+            profile_label='<script>label</script>', source_choices=[{'code': 'canonical_seed',
+                'label': '<img src=x>'}])
+        self.assertIn('&lt;script&gt;label&lt;/script&gt;', html)
+        self.assertIn('&lt;img src=x&gt;', html)
+        self.assertEqual(doc.tagged('script') + doc.tagged('img'), [])
+        _, cabinet = self.cabinet(profile_ref='fictional-profile')
+        links = [n.attrs['href'] for n in cabinet.tagged('a')]
+        self.assertIn('/cabinet/source/musicbrainz?profile_ref=fictional-profile', links)
+        self.assertIn('/cabinet/taste/artist?profile_ref=fictional-profile', links)
+
+    def test_recording_collection_keeps_other_category_unavailability_visible(self):
+        _, doc = self.render(self.stage('sealed', source_use=[
+            {'category': 'recording', 'collected_count': 3, 'model_eligible_count': 3}],
+            category_outcomes=[{'category': 'recording', 'state': 'fresh', 'candidate_count': 3, 'code': 'OK'},
+                {'category': 'movie', 'state': 'unavailable', 'candidate_count': 0, 'code': 'CAPABILITY_UNAVAILABLE'},
+                {'category': 'book', 'state': 'unavailable', 'candidate_count': 0, 'code': 'CAPABILITY_UNAVAILABLE'}]))
+        summary = doc.marked('data-enhance-source-use').text()
+        self.assertIn('Recordings', summary)
+        self.assertIn('3 collected; 3 eligible for model use', summary)
+        outcomes = doc.marked('data-enhance-outcomes')
+        self.assertEqual([n.text() for n in outcomes.nodes() if n.tag == 'strong'],
+                         ['recording', 'movie', 'book'])
+        self.assertEqual(outcomes.text().count('Not available with the current connections or integration.'), 2)
+        self.assertIn('your current picks have not changed', doc.root.text(visible=True))
+        self.assertEqual(doc.tagged('form'), [])
+
+    def test_artist_undo_binds_only_effective_event_and_does_not_replay_response(self):
+        entries = [{'entry_ref': 'fictional-entry', 'title': 'Fictional <img> artist', 'signals': [
+            {'signal': 'interest', 'revision': 3, 'value': 'maybe', 'event_ref': 'fictional-event',
+             'can_undo': True, 'undo_mutation_id': 'fictional-undo'},
+            {'signal': 'enjoyment', 'revision': 4, 'value': None, 'event_ref': '',
+             'can_undo': False, 'undo_mutation_id': 'not-current'}]}]
+        html, doc = self.cabinet(artist_input=True, profile_ref='fictional-profile',
+            artist_entries=entries, csrf_token='s' * 64)
+        forms = [f for f in doc.tagged('form') if 'data-artist-undo' in f.attrs]
+        self.assertEqual(len(forms), 1)
+        form = forms[0]
+        fields = {n.attrs.get('name'): n.attrs.get('value') for n in form.nodes() if n.tag == 'input'}
+        self.assertEqual(fields, {'csrfmiddlewaretoken': 's' * 64,
+            'profile_ref': 'fictional-profile', 'entry_ref': 'fictional-entry',
+            'mutation_id': 'fictional-undo', 'base_revision': '3', 'operation': 'reverse',
+            'signal': 'interest', 'reverses_id': 'fictional-event'})
+        self.assertEqual(form.attrs['action'], '/cabinet/taste/artist')
+        button = next(n for n in form.nodes() if n.tag == 'button')
+        self.assertEqual(button.attrs['aria-label'], 'Undo interest for Fictional <img> artist')
+        self.assertIn('Interest: maybe', doc.root.text())
+        self.assertIn('Enjoyment: No current response', doc.root.text())
+        self.assertIn('Fictional &lt;img&gt; artist', html)
+        self.assertEqual(doc.tagged('img'), [])
+        self.assertNotIn('not-current', html)

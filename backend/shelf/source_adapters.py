@@ -31,6 +31,9 @@ class SourceSpec:
 
 
 SOURCES = (
+    SourceSpec('musicbrainz_recording', 'https://musicbrainz.org', ('recording',),
+               ('recordings_by_artist_name',), 'musicbrainz', False,
+               ttl_seconds=3600, response_bytes=131072, search=True),
     SourceSpec('tmdb_movie', 'https://api.themoviedb.org', ('movie',),
                ('search_movie',), 'tmdb', True, ttl_seconds=3600, response_bytes=262144, search=True),
     SourceSpec('tmdb_tv', 'https://api.themoviedb.org', ('tv',),
@@ -231,6 +234,22 @@ def _normalize(spec, request, reply, *, now):
         for index, card in enumerate(projected):
             cards.append(SourceCard(card.key, card.title, medium, provider,
                 str(card.source_id), card.url, f'normalized-source-row:{index}'))
+    elif spec.parser == 'musicbrainz':
+        require(request.category == 'recording' and request.operation == 'recordings_by_artist_name')
+        document = source.strict_json(reply.body)
+        require(type(document) is dict and type(document.get('recordings')) is list
+                and len(document['recordings']) <= 9)
+        projected = source.parse_musicbrainz(document, 'recording', stamp)
+        # The existing parser's rank is upstream response order, not CC0 core
+        # identity data. Discard it, along with scores/tags/statistics. A stable
+        # title tie-break makes duplicate-ID projection independent of response
+        # order too; these local ordinals do not claim a provider ranking.
+        unique = {}
+        for row in sorted(projected, key=lambda row: (row.key, row.title)):
+            unique.setdefault(row.key, row)
+        for index, row in enumerate(unique.values()):
+            cards.append(SourceCard(row.key, row.title, 'recording', 'musicbrainz',
+                row.key.rsplit(':', 1)[-1], row.url, f'normalized-core-recording:{index}'))
     elif spec.parser == 'apple':
         from .podcast_sources import parse_results
         for index, row in enumerate(parse_results(source.strict_json(reply.body), stamp)):
@@ -353,6 +372,18 @@ class SourceAuthorityIssuer(ABC):
 
     @abstractmethod
     def model_context_current(self, permit, operation, *, now): ...
+
+    def policy_context(self, permit, operation, *, now):
+        """Compatibility path: a generic issuer still proves processor rights.
+
+        Concrete issuers may validate both results together. The default retains
+        independent checks and never infers processor permission from a policy.
+        """
+        policy = self.policy(permit, operation, now=now)
+        require(type(policy) is FieldPolicy, 'AUTHORITY_DENIED')
+        model_current = (self.model_context_current(permit, operation, now=now) is True
+                         if any('model_context' in uses for _, uses in policy.permissions) else False)
+        return policy, model_current
 
 
 @dataclass
@@ -516,12 +547,12 @@ class MediaBackend(SourceBackend):
     def policy(self, permit, *, now):
         context = self._context(permit)
         require(self.revalidate(permit, context.request, context.plan, now=now), 'PREVIEW_STALE')
-        policy = self.issuer.policy(permit, context.operation, now=now)
+        policy, model_current = self.issuer.policy_context(permit, context.operation, now=now)
         require(type(policy) is FieldPolicy and policy.current(now)
                 and policy.ref == permit.policy_ref and policy.revision == permit.policy_revision
                 and policy.allows('*', 'fetch'), 'AUTHORITY_DENIED')
         require(not any('model_context' in uses for _, uses in policy.permissions)
-                or self.issuer.model_context_current(permit, context.operation, now=now) is True,
+                or model_current is True,
                 'AUTHORITY_DENIED')
         return policy
 

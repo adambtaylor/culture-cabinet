@@ -27,6 +27,7 @@ from shelf.feedback import FeedbackError, Busy, Conflict, canonical, uid, SIGNAL
 
 _CURRENT = ContextVar('feedback_recovery', default=None)
 _BARRIER_STACK = ContextVar('feedback_barrier_stack', default=())
+_NATIVE_FIRST_STARTS = weakref.WeakKeyDictionary()
 CODES = {'erase_feedback': 'erase', 'deny_view': 'revoke', 'deny_select': 'revoke',
          'deny_mutate': 'revoke', 'deny_export': 'revoke', 'disable_profile': 'revoke',
          'disable_actor': 'revoke', 'deny_source_content': 'source_restrict'}
@@ -49,6 +50,71 @@ def using_recovery(coordinator):
     token = _CURRENT.set(coordinator)
     try: yield coordinator
     finally: _CURRENT.reset(token)
+
+
+def native_first_start_matches(coordinator, boundary):
+    """Identity check only; the enclosing barrier still verifies the witness."""
+    if type(coordinator) is not CurrentRecoveryCoordinator:
+        return False
+    issued = _NATIVE_FIRST_STARTS.get(coordinator)
+    return (issued is not None and issued[0] is boundary
+            and not coordinator.closed and not coordinator.blocked and boundary.active)
+
+
+def _verify_native_first_start(coordinator):
+    boundary, raw, paths, fds, identities = _NATIVE_FIRST_STARTS[coordinator]
+    _trusted_boundary(boundary)
+    for index, path in enumerate(paths):
+        if _store_identity(path, fds[index], directory=index != 0, private=index != 2) != identities[index]:
+            raise RecoveryBlocked()
+    if (coordinator.bound_db is not raw or raw_store(raw) != coordinator.store_id
+            or raw.execute('SELECT 1').fetchone() != (1,) or not coordinator.matches_connection(raw)):
+        raise RecoveryBlocked()
+
+
+@contextmanager
+def native_first_start(boundary):
+    """Retain continuity from exclusive fresh creation; never reopen old history."""
+    from cabinet import portable_runtime
+    if installed_coordinator() is not None:
+        raise RecoveryBlocked()
+    root = _trusted_boundary(boundary)
+    # The launcher issues this one-use proof only after O_EXCL database creation.
+    # Neither an empty restriction table nor a request flag can recreate it.
+    root_identity, database_identity = portable_runtime._consume_native_first_start(boundary)
+    portable_runtime.validate_existing(boundary)
+    paths = (Path(boundary.database_name), root, root.parent)
+    fds, raw, coordinator = {}, None, None
+    try:
+        for index, path in enumerate(paths):
+            fds[index] = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | (os.O_DIRECTORY if index else 0))
+        identities = tuple(_store_identity(path, fds[index], directory=index != 0, private=index != 2)
+                           for index, path in enumerate(paths))
+        if (identities[1], identities[0]) != (root_identity, database_identity):
+            raise RecoveryBlocked()
+        raw = sqlite3.connect(paths[0].as_uri() + '?mode=rw', uri=True, isolation_level=None, timeout=0.05)
+        _closed_sql_guards(raw)
+        raw.execute('PRAGMA foreign_keys=ON')
+        raw.execute('PRAGMA synchronous=FULL')
+        _effective_guards(raw)
+        journal = root.parent / ('.native-recovery-' + boundary.installation_id.hex
+                                 + '-' + boundary.process_generation.hex)
+        coordinator = CurrentRecoveryCoordinator.provision_empty(store_id=raw_store(raw),
+            journal_directory=journal, trusted_empty_db=raw)
+        _NATIVE_FIRST_STARTS[coordinator] = (boundary, raw, paths, fds, identities)
+        coordinator.verify_current()
+        # This same ContextVar scope encloses service construction and requests.
+        # Close journal/control handles before the launcher closes the BoundRoot.
+        with using_recovery(coordinator):
+            yield coordinator
+    finally:
+        if coordinator is not None:
+            _NATIVE_FIRST_STARTS.pop(coordinator, None)
+            coordinator.close()
+        if raw is not None:
+            raw.close()
+        for fd in fds.values():
+            os.close(fd)
 
 
 
@@ -190,6 +256,8 @@ class CurrentRecoveryCoordinator:
     def verify_current(self):
         if self.blocked or self.closed: raise RecoveryBlocked()
         try:
+            if self in _NATIVE_FIRST_STARTS:
+                _verify_native_first_start(self)
             if getattr(self, '_trusted_restart_seal', None) is _TRUSTED_RESTART_SEAL:
                 _trusted_boundary(self.trusted_boundary)
                 _trusted_journal_binding(self.trusted_boundary, self.bound_db, self.store_fds, self)

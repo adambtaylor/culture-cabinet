@@ -197,7 +197,7 @@ class PortableEnhanceHTTPTests(SimpleTestCase):
         for expected in ('Published <img', '<script>source text only</script>', 'Synthetic source',
                          '2026-01-01T00:00:00Z', '2026-01-02T00:00:00Z',
                          'Explicit taste', 'Source evidence', 'Inferred connection',
-                         'within the collection limits', 'Unsupported by the current source connections',
+                         'within the collection limits', 'Not available with the current connections or integration.',
                          'not an empty result', 'Collection cancelled', 'Older picks retained'):
             self.assertIn(expected, text)
         self.assertNotIn('DO-NOT-PROJECT-THIS', response.content.decode())

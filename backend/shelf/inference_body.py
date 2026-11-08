@@ -1,7 +1,7 @@
 """One canonical personal body codec; deliberately has no transport/send path.
 
-The registered adapter remains neutral-only and 16 KiB. These bounded personal
-bytes are for dormant preview/reconstruction and isolated capture, not dispatch.
+The neutral adapter stays probe-only. Ordinary personal bytes require a current
+authority view and authenticated source seal; the transport still caps16 KiB.
 """
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -28,15 +28,27 @@ class EncodedBody:
 
 
 @sensitive_variables()
-def serialize(snapshot, grants, context, collection, *, now):
+def serialize(snapshot, grants, context, collection, *, now, producer=None, plan=None,
+              registry=None, source_plans=None, authority_view=None):
     """Wrap only the admitted projection; no authority or source assertions from JSON."""
     require = disclosure._require
     from .enhance_contract import CollectionSeal
     require(type(collection) in (CollectionView, CollectionSeal), 'CAPABILITY_UNAVAILABLE')
-    # There is no production collection producer in this tranche. Even a valid
-    # fixture seal cannot promote fixture input into a normal personal send path.
-    require(type(context) is dict and context.get('isolated_fixture') is True,
+    # Ordinary input needs the retained concrete source producer and actual
+    # current authority view; fixture data cannot promote itself by a JSON flag.
+    require(type(context) is dict, 'CAPABILITY_UNAVAILABLE')
+    if context.get('isolated_fixture') is not True:
+        from . import grant_authority as ga
+        from .source_collection import SourceCollection
+        require(type(producer) is SourceCollection and not producer.isolated_fixture
+            and type(collection) is CollectionSeal and type(authority_view) is ga.AuthorityView,
             'CAPABILITY_UNAVAILABLE')
+        ga.assert_current(authority_view)
+        require(authority_view.context == context and authority_view.grants == grants, 'AUTHORITY_DENIED')
+        # A serialized seal or caller flag cannot create a normal capability:
+        # only this producer's retained original permits authenticate the pool.
+        require(producer.revalidate_collection(collection, plan, registry, source_plans=source_plans),
+                'PREVIEW_STALE')
     require(context.get('purpose') == 'inference'
         and context.get('adapter_id') == 'openai_responses'
         and context.get('adapter_version') == BUILD

@@ -5,7 +5,8 @@ from unittest import TestCase
 
 from shelf.category_registry import registry_view
 from shelf.disclosure import canonical_bytes, read_json
-from shelf.enhance_contract import CataloguePlan, CollectionBudget, EnhanceBindings, EnhanceFault, digest
+from shelf.enhance_contract import (CataloguePlan, CategoryOutcome, CollectionBudget,
+                                   EnhanceBindings, EnhanceFault, digest)
 from shelf.source_adapters import SourceBackend, SourcePermit, SourceReply, registered_source
 from shelf.source_collection import SourceCollection
 from shelf.tests.test_source_evidence import NOW, policy
@@ -66,6 +67,121 @@ class Backend(SourceBackend):
 
 
 class SourceCollectionTests(TestCase):
+    def test_local_collection_keeps_all_category_progress_without_model_keys(self):
+        from shelf.category_registry import KEYS
+        registry, query = plan(KEYS)
+        clock = Clock()
+        backend = Backend('tmdb_movie', clock, [(200, {'results': [
+            {'id': 81001, 'title': 'Synthetic movie'}]}, ())])
+        backend.rights = replace(backend.rights, permissions=tuple(
+            (target, tuple(use for use in uses if use != 'model_context'))
+            for target, uses in backend.rights.permissions))
+        collector = SourceCollection((('movie', ('tmdb_movie',)),), {'tmdb_movie': backend},
+            clock=clock, isolated_fixture=True)
+        result = collector.collect(query, registry, CollectionBudget())
+        outcomes = {row.category: row for row in result.outcomes}
+        self.assertEqual(set(outcomes), set(KEYS))
+        self.assertEqual((outcomes['movie'].state, outcomes['movie'].candidate_count), ('fresh', 1))
+        self.assertTrue(all(row.state == 'unavailable' for key, row in outcomes.items() if key != 'movie'))
+        self.assertEqual(collector.model_eligible_keys(result, query, registry), frozenset())
+        self.assertEqual(len(backend.sent), 1)
+        self.assertEqual(len(result.records), 1)  # Eligibility never rewrites the local seal.
+        original = backend.rights
+        backend.rights = replace(original, permissions=tuple(
+            (target, uses if target == '*' else uses + ('model_context',))
+            for target, uses in original.permissions))
+        # Even a new host decision with the same revision cannot upgrade the
+        # old local-only pool. Revalidation compares the complete policy.
+        with self.assertRaises(EnhanceFault):
+            collector.model_eligible_keys(result, query, registry)
+        backend.rights = original
+        forged = read_json(result._material)
+        for binding in forged['records'][0]['fields']:
+            binding['rights']['disposition'] = 'allowed'
+        with self.assertRaises(EnhanceFault):
+            collector.model_eligible_keys(replace(result, _material=canonical_bytes(forged)), query, registry)
+
+    def test_mixed_local_pools_return_only_complete_model_eligible_identities(self):
+        registry, query = plan(('movie', 'book'))
+        clock = Clock()
+        movie = Backend('tmdb_movie', clock, [(200, {'results': [
+            {'id': 81001, 'title': 'Synthetic movie'}]}, ())])
+        book = Backend('hardcover', clock, [
+            (200, {'data': {'search': {'ids': [81002], 'error': None}}}, ()),
+            (200, {'data': {'books': [{'id': 81002, 'title': 'Synthetic book', 'slug': 'synthetic-book'}]}}, ())])
+        book.rights = replace(book.rights, permissions=tuple(
+            (target, tuple(use for use in uses if not (target == 'title' and use == 'model_context')))
+            for target, uses in book.rights.permissions))
+        collector = SourceCollection((('movie', ('tmdb_movie',)), ('book', ('hardcover',))),
+            {'tmdb_movie': movie, 'hardcover': book}, clock=clock, isolated_fixture=True)
+        result = collector.collect(query, registry, CollectionBudget())
+        self.assertEqual({row.category: (row.state, row.candidate_count) for row in result.outcomes},
+                         {'movie': ('fresh', 1), 'book': ('fresh', 1)})
+        self.assertEqual(collector.model_eligible_keys(result, query, registry), frozenset({'tmdb:movie:81001'}))
+        self.assertEqual((len(movie.sent), len(book.sent)), (1, 2))
+
+    def test_model_eligibility_rejects_foreign_changed_revoked_and_expired_seals(self):
+        registry, query = plan(('movie',))
+        clock = Clock()
+        backend = Backend('tmdb_movie', clock, [(200, {'results': [
+            {'id': 81001, 'title': 'Synthetic movie'}]}, ())])
+        collector = SourceCollection((('movie', ('tmdb_movie',)),), {'tmdb_movie': backend},
+            clock=clock, isolated_fixture=True)
+        result = collector.collect(query, registry, CollectionBudget())
+        foreign = SourceCollection(clock=clock, isolated_fixture=True)
+        with self.assertRaises(EnhanceFault):
+            foreign.model_eligible_keys(result, query, registry)
+        material = read_json(result._material)
+        material['records'][0]['candidate']['title'] = 'Forged title'
+        with self.assertRaises(EnhanceFault):
+            collector.model_eligible_keys(replace(result, _material=canonical_bytes(material)), query, registry)
+        original = backend.rights
+        backend.rights = replace(original, revision=original.revision + 1)
+        with self.assertRaises(EnhanceFault):
+            collector.model_eligible_keys(result, query, registry)
+        backend.rights = original
+        backend.revoked = True
+        with self.assertRaises(EnhanceFault):
+            collector.model_eligible_keys(result, query, registry)
+        backend.revoked = False
+        clock.elapsed = 601
+        with self.assertRaises(EnhanceFault):
+            collector.model_eligible_keys(result, query, registry)
+        self.assertEqual(len(backend.sent), 1)
+
+    def test_optional_model_denied_fact_keeps_identity_eligible(self):
+        from shelf.source_evidence import SourceCard, build_evidence
+        registry, query = plan(('movie',))
+        clock = Clock()
+        rights = policy(facts=('genre',))
+        rights = replace(rights, permissions=tuple(
+            (target, tuple(use for use in uses if not (target == 'genre' and use == 'model_context')))
+            for target, uses in rights.permissions))
+        card = SourceCard('tmdb:movie:81001', 'Synthetic movie', 'movie', 'tmdb', '81001',
+            'https://www.themoviedb.org/movie/81001', 'row:0', (('genre', 'Synthetic genre'),))
+        batch = build_evidence((card,), category='movie', observation_ref='synthetic-observation',
+            source_revision=1, response_digest='a' * 64, observed_at=NOW,
+            expires_at=NOW + timedelta(seconds=300), parents=(), policy=rights, now=NOW, fixture=True)
+        collector = SourceCollection(clock=clock, isolated_fixture=True)
+        result = collector._seal(query, registry, (CategoryOutcome('movie', 'fresh', 1),),
+            (batch,), {}, batch.expires_at, CollectionBudget())
+        self.assertEqual(collector.model_eligible_keys(result, query, registry), frozenset({card.key}))
+
+    def test_local_retention_denial_is_unavailable_not_empty_inventory(self):
+        registry, query = plan(('movie',))
+        clock = Clock()
+        backend = Backend('tmdb_movie', clock, [(200, {'results': [
+            {'id': 81001, 'title': 'Synthetic movie'}]}, ())])
+        backend.rights = replace(backend.rights, permissions=tuple(
+            (target, tuple(use for use in uses if not (target == 'title' and use == 'retain')))
+            for target, uses in backend.rights.permissions))
+        collector = SourceCollection((('movie', ('tmdb_movie',)),), {'tmdb_movie': backend},
+            clock=clock, isolated_fixture=True)
+        result = collector.collect(query, registry, CollectionBudget())
+        self.assertEqual((result.outcomes[0].state, result.outcomes[0].code,
+                          result.outcomes[0].candidate_count), ('unavailable', 'AUTHORITY_DENIED', 0))
+        self.assertEqual(collector.model_eligible_keys(result, query, registry), frozenset())
+
     def test_permitted_detail_resume_preserves_search_observation_without_resend(self):
         registry, query = plan(('book',)); clock = Clock()
         backend = Backend('hardcover', clock, [

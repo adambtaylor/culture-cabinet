@@ -94,7 +94,13 @@ class SourceEvidenceTests(TestCase):
         args = dict(category='event', observation_ref='synthetic-moshtix', source_revision=1,
             response_digest='a' * 64, observed_at=NOW, expires_at=NOW + timedelta(hours=1),
             parents=(), now=NOW)
-        self.assertEqual(read_json(build_evidence((card,), policy=without_model, **args).material)['records'], [])
+        local = read_json(build_evidence((card,), policy=without_model, **args).material)
+        self.assertEqual(len(local['records']), 1)
+        self.assertTrue(all(binding['rights']['disposition'] == 'unknown'
+                            for binding in local['records'][0]['fields']))
+        projected, _, _ = _sources(local['records'], lambda _: True,
+            {'isolated_fixture': True}, local['observations'], local['policies'], NOW)
+        self.assertEqual(projected, ())
         batch = build_evidence((card,), policy=rights, **args)
         self.assertEqual(batch.expires_at, NOW + timedelta(minutes=15))
         material = read_json(batch.material)
@@ -102,6 +108,53 @@ class SourceEvidenceTests(TestCase):
         for binding in material['records'][0]['fields']:
             self.assertEqual(binding['observation']['observed_at'], '2026-01-01T00:00:00Z')
             self.assertEqual(binding['observation']['expires_at'], '2026-01-01T00:15:00Z')
+
+    def test_local_collection_keeps_evidence_but_cannot_enter_model_projection(self):
+        original_policy = policy()
+        local_policy = replace(original_policy, permissions=tuple(
+            (target, tuple(use for use in uses if use != 'model_context'))
+            for target, uses in original_policy.permissions))
+        batch = evidence(rights=local_policy)
+        material = read_json(batch.material)
+        self.assertEqual(len(material['records']), 1)
+        self.assertEqual(material['observations']['synthetic-observation']['digest'], 'a' * 64)
+        self.assertTrue(batch.cacheable)  # Cache is separately, explicitly allowed.
+        self.assertTrue(all(binding['rights']['disposition'] == 'unknown'
+                            for binding in material['records'][0]['fields']))
+        projected, _, _ = _sources(material['records'], lambda _: True,
+            {'isolated_fixture': True}, material['observations'], material['policies'], NOW)
+        self.assertEqual(projected, ())
+        reused = cached_evidence(batch)
+        self.assertEqual(reused.expires_at, batch.expires_at)
+        self.assertEqual(read_json(reused.material)['records'][0]['candidate']['observed_at'],
+                         material['records'][0]['candidate']['observed_at'])
+        no_cache = replace(local_policy, permissions=tuple(
+            (target, tuple(use for use in uses if use != 'cache'))
+            for target, uses in local_policy.permissions))
+        self.assertFalse(evidence(rights=no_cache).cacheable)
+
+    def test_each_required_local_use_still_controls_whole_identity(self):
+        for missing in ('fetch', 'display', 'retain'):
+            original = policy()
+            narrowed = replace(original, permissions=tuple(
+                (target, tuple(use for use in uses if not (target == 'title' and use == missing)))
+                for target, uses in original.permissions))
+            with self.subTest(missing=missing):
+                self.assertEqual(read_json(evidence(rights=narrowed).material)['records'], [])
+
+    def test_optional_fact_model_denial_is_local_only_and_not_identity_denial(self):
+        original = policy(facts=('genre',))
+        local_fact = replace(original, permissions=tuple(
+            (target, tuple(use for use in uses if not (target == 'genre' and use == 'model_context')))
+            for target, uses in original.permissions))
+        material = read_json(evidence(rights=local_fact, facts=(('genre', 'Synthetic genre'),)).material)
+        self.assertEqual(len(material['records'][0]['candidate']['facts']), 1)
+        binding = next(row for row in material['records'][0]['fields'] if row['target'] == 'fact')
+        self.assertEqual(binding['rights']['disposition'], 'unknown')
+        projected, _, _ = _sources(material['records'], lambda _: True,
+            {'isolated_fixture': True}, material['observations'], material['policies'], NOW)
+        self.assertEqual(len(projected), 1)
+        self.assertEqual(projected[0]['facts'], [])
 
     def test_moshtix_earlier_rights_expiry_excluded_facts_and_export_deny(self):
         from types import SimpleNamespace

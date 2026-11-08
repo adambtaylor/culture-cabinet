@@ -221,3 +221,28 @@ class TransportTests(unittest.TestCase):
                     if thread.name == 'cabinet-probe-resolver':
                         thread.join(timeout=1)
                         self.assertFalse(thread.is_alive())
+
+
+class PersonalPermitTests(unittest.TestCase):
+    def test_personal_permit_is_distinct_single_use_and_expiring(self):
+        from contextlib import contextmanager
+        from datetime import datetime, timedelta, timezone
+        import hashlib
+        from shelf.inference_transport import PersonalPermit, personal_permit, ProbePermit, TransportFault
+        now = datetime(2026, 1, 1, tzinfo=timezone.utc)
+        body = b'personal'; closed = []
+        @contextmanager
+        def credential():
+            try: yield bytearray(b'SYNTHETIC')
+            finally: closed.append(True)
+        permit = personal_permit(hashlib.sha256(body).hexdigest(), credential, now+timedelta(seconds=5), lambda:now)
+        self.assertIs(type(permit), PersonalPermit)
+        self.assertNotIsInstance(permit, ProbePermit)
+        with permit.authorize(body) as secret:
+            self.assertEqual(secret, 'SYNTHETIC')
+        self.assertEqual(closed, [True])
+        with self.assertRaises(TransportFault):
+            with permit.authorize(body): pass
+        expired = personal_permit(hashlib.sha256(body).hexdigest(), credential, now, lambda:now)
+        with self.assertRaises(TransportFault): expired.remaining_seconds()
+        with self.assertRaises(TransportFault): PersonalPermit('x', credential, now, lambda:now)
