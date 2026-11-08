@@ -60,8 +60,10 @@ def selected_library_target(context, job, destination, series_evidence, *, libra
     """
     from . import jellyfin_native as jf
     from .obtain_native_context import NativeJobContext
-    from .obtain_tv_flow import tv_content_identity_digest
-    if type(context) is not NativeJobContext or context.operation != 'verify_library':
+    from .obtain_tv_flow import tv_content_identity_digest, SelectedJobBinding
+    from .jellyfin_tv_import import DestinationFileReceipt
+    if (type(context) is not NativeJobContext or context.operation != 'verify_library'
+            or type(job) is not SelectedJobBinding or type(destination) is not DestinationFileReceipt):
         raise Blocked('Current native library context required')
     context.revalidate()
     if (type(library) is not jf.ServiceBinding or context._access.authority.now() >= library.expires_at
