@@ -129,10 +129,29 @@ class NativeFeedbackTests(RecoveryCase):
         self.assertNotEqual(snapshot['profile_revision_digest'], later['profile_revision_digest'])
         self.assertEqual(denied, still_denied)
         self.consent(self.profile_ref, action='revoke', revision=1, classes=['canonical_seed'])
-        self.consent(self.profile_ref, action='regrant', revision=2, classes=['raw_notes', 'free_text_entry'])
+        self.consent(self.profile_ref, action='regrant', revision=2, classes=['raw_notes'])
+        self.assertNotIn('raw_notes', projected()[1])
+        self.consent(self.profile_ref, action='revoke', revision=3, classes=['raw_notes'])
+        self.consent(self.profile_ref, action='regrant', revision=4, classes=['raw_notes', 'free_text_entry'])
+        self.assertEqual(self.post('/cabinet/taste', {**fields, 'base_revision': '2',
+            'mutation_id': str(uuid.uuid4())}).status_code, 303)
         _, allowed = projected()
-        self.assertEqual(allowed['raw_notes'][0]['text'], 'DIFFERENT DENIED NOTE')
+        self.assertEqual(allowed['raw_notes'][0]['text'], text)
         self.assertEqual(allowed['signals'], [])
+        from shelf import inference_body, portable_disclosure as pd
+        from .test_inference_body import InferenceBodyTests
+        record = InferenceBodyTests.record(self)
+        collection = self.disclosure.fixture_collection([record],
+            {'observation:1': {'revision': 7, 'digest': 'c' * 64}},
+            {'policy:1': {'revision': 3}}, expires_at=self.expires)
+        view = self.view(self.profile_ref)
+        encoded = inference_body.serialize(profile_snapshot.capture(view), view.grants,
+            view.context, collection, now=self.clock.wall)
+        self.assertEqual(json.loads(json.loads(encoded.body)['input'])['profile']['raw_notes'][0]['text'], text)
+        preview = pd.preview(self.authority, self.ref, profile_ref=self.profile_ref,
+            connection_ref=str(self.config.pk), collection_ref=collection.ref)
+        self.assertEqual(preview['body'], encoded.body)
+        self.assertEqual(pd.isolated_capture(preview['preview_ref'], self.authority, self.ref), encoded.body)
         # A separately scoped synthetic catalogue grant tests only the codec,
         # not a source permission or a real network operation.
         self.consent(self.profile_ref, purpose='catalogue_lookup', classes=['raw_notes', 'free_text_entry'])
@@ -179,3 +198,17 @@ class NativeFeedbackTests(RecoveryCase):
         self.prepare_restriction(self.coordinator)
         self.assertEqual(self.post('/cabinet/taste', self.fields()).status_code, 503)
         self.assertFalse(FeedbackEvent.objects.exists())
+
+    def test_combined_bound_includes_legacy_artist_entries_without_overwrite(self):
+        from unittest.mock import patch
+        from shelf.models import FeedbackTarget
+        with patch('shelf.portable_taste_inputs.MAX_ENTRIES', 2):
+            artist = dict(profile_ref=self.profile_ref, entry_ref=str(uuid.uuid4()),
+                mutation_id=str(uuid.uuid4()), base_revision='0', operation='set',
+                signal='interest', title='Fictional Artist', value='yes')
+            self.assertEqual(self.post('/cabinet/taste/artist', artist).status_code, 303)
+            self.assertEqual(self.post('/cabinet/taste', self.fields()).status_code, 303)
+            self.assertEqual(self.post('/cabinet/taste', self.note_fields()).status_code, 503)
+            self.assertEqual(FeedbackTarget.objects.count(), 2)
+        read = PortableTasteInputs(self.authority).read(self.ref, self.profile_ref)
+        self.assertEqual((read[0]['title'], read[0]['signals'][0]['value']), ('Fictional Artist', 'yes'))

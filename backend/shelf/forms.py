@@ -30,7 +30,7 @@ class FeedbackForm(forms.Form):
             if signal=='enjoyment': self.fields['rating']=forms.TypedChoiceField(label=LABELS[signal],choices=[(i,str(i)) for i in range(1,6)],coerce=int)
             elif signal in CHOICES: self.fields['choice']=forms.ChoiceField(label=LABELS[signal],choices=[(x,x.replace('_',' ').capitalize()) for x in CHOICES[signal]])
             elif signal in ('saved','skipped','opened'): self.fields['checked']=forms.TypedChoiceField(label=LABELS[signal],choices=[('true','Yes'),('false','No')] if signal!='opened' else [('true','Record opened action')],coerce=lambda x:x=='true')
-            elif signal=='constraint': self.fields['text']=forms.CharField(label=LABELS[signal],max_length=500,required=False,strip=False,widget=forms.Textarea)
+            elif signal in ('constraint','note'): self.fields['text']=forms.CharField(label=LABELS[signal],max_length=500,required=False,strip=False,widget=forms.Textarea)
 
     def clean(self):
         data=super().clean()
@@ -46,6 +46,7 @@ class FeedbackForm(forms.Form):
             elif signal in CHOICES: body={'value':data['choice']}
             elif signal in ('saved','skipped','opened'): body={'value':data['checked']}
             elif signal=='constraint': body={'text':data['text']} if data['text'] else None
+            elif signal=='note': body={'text':data['text']}
         command=MutationCommand(**{k:(str(v) if isinstance(v,uuid.UUID) else v or None if k in ('context_event_id','corrects_id','reverses_id') else v) for k,v in data.items() if k in MutationCommand.__dataclass_fields__},target_id=self.target_id,value=body)
         try: validate_command(command)
         except FeedbackError: raise forms.ValidationError('Choose a valid feedback value.') from None
@@ -75,7 +76,7 @@ def forms_for(profile,target,rows):
         if signal=='enjoyment': initial['rating']=body.get('value')
         elif signal in CHOICES: initial['choice']=body.get('value')
         elif signal in ('saved','skipped','opened'): initial['checked']='true' if body.get('value') else 'false'
-        elif signal=='constraint': initial['text']=body.get('text','')
+        elif signal in ('constraint','note'): initial['text']=body.get('text','')
         forms.append(FeedbackForm(target_id=target.pk,initial=initial))
     for event in FeedbackEvent.objects.filter(profile=profile,target=target,operation='set',erased=False,reversals__isnull=True).order_by('-recorded_at'):
         row=rows[event.signal]
