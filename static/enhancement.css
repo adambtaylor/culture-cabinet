@@ -44,6 +44,21 @@
 .cabinet-no-reason { font-size: 1rem; margin-top: 1rem; }
 .cabinet-round-status { border-left: 3px solid var(--green); padding-left: .75rem; }
 .enhance-stage-link { font-size: 1rem; margin-bottom: .75rem; }
+
+/* Native feedback stays usable without script: one signal per form, a visible
+   saved value, and an explicit Undo. Exact notes keep authored whitespace. */
+.cabinet-taste { max-width: 52rem; overflow-wrap: anywhere; }
+.cabinet-taste form, .cabinet-card-feedback form { margin-block: 1rem; }
+.cabinet-taste label:not(.cabinet-check), .cabinet-card-feedback label:not(.cabinet-check) { display: block; margin-block: .65rem .3rem; }
+.cabinet-taste input[type="text"], .cabinet-taste select, .cabinet-taste textarea,
+.cabinet-card-feedback select, .cabinet-card-feedback textarea { width: 100%; max-width: 34rem; box-sizing: border-box; font: inherit; }
+.cabinet-taste textarea, .cabinet-card-feedback textarea { min-height: 7rem; resize: vertical; }
+.cabinet-taste-entry, .cabinet-feedback-signal { margin-block: 1.5rem; }
+.cabinet-taste-entry details summary, .cabinet-card-feedback summary { cursor: pointer; padding-block: .5rem; }
+.cabinet-card-feedback { border-top: 1px solid var(--line); margin-top: 1rem; }
+.cabinet-exact-note { white-space: pre-wrap; overflow-wrap: anywhere; }
+.cabinet-feedback-status { border-left: 3px solid var(--green); padding-left: .75rem; }
+.cabinet-preferences-link { font-weight: bold; }
 @media (max-width: 48rem) {
   .cabinet-workflow { gap: .5rem; }
   .cabinet-workflow > div { flex-basis: 100%; }

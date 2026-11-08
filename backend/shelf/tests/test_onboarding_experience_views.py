@@ -129,7 +129,7 @@ class OnboardingExperienceTests(SimpleTestCase):
                 for phrase in ('recording titles, artist credits and recording identifiers',
                                'CC0 core data', 'no audio rights are implied',
                                'matches names, not a verified artist identity',
-                               'supports recordings only',
+                               'separate configuration and source permission',
                                'TMDB and Hardcover are unavailable'):
                     self.assertIn(phrase, html)
                 self.assertTrue(any(tag == 'a' and attrs.get('href') ==

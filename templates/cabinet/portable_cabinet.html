@@ -1,27 +1,118 @@
 {% extends enhancement_base %}
 {% block content %}
-{% if source_setup %}
+{% if taste_input %}
+<section class="paper-panel cabinet-taste" aria-labelledby="taste-heading">
+  <p class="eyebrow">Preferences · {{ profile_label }}</p>
+  <h1 id="taste-heading">What do you enjoy?</h1>
+  <p>Add things you know, rate work you have experienced, or leave a preference note. Saving a response does not run Enhance or send it to a source or model.</p>
+  <form method="get" action="/cabinet/taste" data-taste-category>
+    <input type="hidden" name="profile_ref" value="{{ profile_ref }}">
+    <label for="taste-category">Category</label>
+    <select id="taste-category" name="category" required>{% for choice in taste_categories %}<option value="{{ choice.key }}"{% if choice.key == taste_category %} selected{% endif %}>{{ choice.label }}</option>{% endfor %}</select>
+    <button type="submit">Open category</button>
+  </form>
+  <p>Preferences can be recorded in every category. Available discovery sources vary; Enhance reports unavailable categories separately from an empty search.</p>
+  {% if feedback_error_code %}
+  <section id="taste-feedback-error" class="error-summary" role="alert" tabindex="-1" autofocus>
+    <h2>Your response was not saved</h2>
+    {% if feedback_error_code == 'REVISION_CONFLICT' or feedback_error_code == 'IDEMPOTENCY_CONFLICT' or feedback_error_code == 'PREVIEW_STALE' %}<p>This response or its card has changed. Review the current saved values and use the current form before trying again.</p>
+    {% elif feedback_error_code == 'CONTRACT_INVALID' %}<p>Check the name, chosen response and note length. Enjoyment also needs your confirmation that you have experienced the work.</p>
+    {% else %}<p>This action is unavailable with the current session or permissions. Review your cabinet and owner setup before trying again.</p>{% endif %}
+    <p>Nothing is retried automatically. Unsaved input has not replaced the values shown below.</p>
+  </section>
+  {% endif %}
+  {% if feedback_notice %}<p class="cabinet-feedback-status" role="status">{{ feedback_notice }}</p>{% endif %}
+  {% comment %}Each form posts one typed signal with its own server-issued mutation/revision. No combined submit, inferred rating, before-image, actor or source identity is taken from the browser.{% endcomment %}
+  {% for group in taste_groups %}
+  <section class="cabinet-taste-entry" aria-labelledby="taste-entry-{{ forloop.counter }}">
+    <h2 id="taste-entry-{{ forloop.counter }}">{% if group.is_new %}{% if group.entry_kind == 'category_note' %}A note about this category{% else %}Add something you know{% endif %}{% else %}{{ group.title }}{% endif %}</h2>
+    {% for response in group.signals %}
+    <div class="cabinet-feedback-signal">
+      {% if not group.is_new %}
+      {% if response.signal == 'note' %}<p><strong>Saved note</strong></p>{% if response.cleared %}<p>This note was cleared.</p>{% elif response.value != None %}<p class="cabinet-exact-note">{{ response.value }}</p>{% if response.value == '' %}<p>Saved note is empty.</p>{% endif %}{% else %}<p>No current note.</p>{% endif %}
+      {% elif response.signal == 'interest' %}<p><strong>Interest:</strong> {% if response.cleared %}Cleared{% elif response.value != None %}{{ response.value }}{% else %}No current response{% endif %}</p>
+      {% elif response.signal == 'enjoyment' %}<p><strong>Experienced enjoyment:</strong> {% if response.cleared %}Cleared{% elif response.value != None %}{{ response.value }} / 5{% else %}No current response{% endif %}</p>{% endif %}
+      {% endif %}
+      <details{% if group.entry_kind == 'category_note' and group.is_new %} open{% endif %}>
+        <summary>{% if response.signal == 'interest' %}Interest in exploring this{% elif response.signal == 'enjoyment' %}Enjoyment of work you have experienced{% else %}{% if group.is_new %}Write a preference note{% else %}Edit your note{% endif %}{% endif %}</summary>
+        <form method="post" action="/cabinet/taste" data-taste-set>
+          {% csrf_token %}
+          <input type="hidden" name="profile_ref" value="{{ profile_ref }}">
+          <input type="hidden" name="entry_ref" value="{{ group.entry_ref }}">
+          <input type="hidden" name="entry_kind" value="{{ group.entry_kind }}">
+          <input type="hidden" name="category" value="{{ taste_category }}">
+          <input type="hidden" name="mutation_id" value="{{ response.mutation_id }}">
+          <input type="hidden" name="base_revision" value="{{ response.revision }}">
+          <input type="hidden" name="operation" value="set">
+          <input type="hidden" name="signal" value="{{ response.signal }}">
+          {% if group.entry_kind == 'item' %}
+          {% if group.is_new %}
+          <label for="taste-title-{{ forloop.parentloop.counter }}-{{ forloop.counter }}">Name or title</label>
+          <input id="taste-title-{{ forloop.parentloop.counter }}-{{ forloop.counter }}" type="text" name="title" maxlength="200" required>
+          {% else %}<input type="hidden" name="title" value="{{ group.title }}">{% endif %}
+          {% endif %}
+          {% if response.signal == 'interest' %}
+          <label for="taste-value-{{ forloop.parentloop.counter }}-{{ forloop.counter }}">Would you like to explore this?</label>
+          <select id="taste-value-{{ forloop.parentloop.counter }}-{{ forloop.counter }}" name="value" required><option value="">Choose explicitly</option><option value="no">No</option><option value="maybe">Maybe</option><option value="yes">Yes</option></select>
+          <button type="submit">Save interest</button>
+          {% elif response.signal == 'enjoyment' %}
+          <label for="taste-value-{{ forloop.parentloop.counter }}-{{ forloop.counter }}">How much did you enjoy it?</label>
+          <select id="taste-value-{{ forloop.parentloop.counter }}-{{ forloop.counter }}" name="value" required><option value="">Choose explicitly</option><option value="1">1 — least enjoyed</option><option value="2">2</option><option value="3">3</option><option value="4">4</option><option value="5">5 — most enjoyed</option></select>
+          <label class="cabinet-check"><input type="checkbox" name="experienced_ack" value="yes" required autocomplete="off"> I have experienced this work.</label>
+          <button type="submit">Save enjoyment</button>
+          {% elif response.signal == 'note' %}
+          <label for="taste-note-{{ forloop.parentloop.counter }}-{{ forloop.counter }}">Preference note</label>
+          {% comment %}The first newline after textarea is deliberately consumed by HTML parsing. Any authored leading newline, spacing or Unicode after it stays exact; never strip or normalize note text.{% endcomment %}
+          <textarea id="taste-note-{{ forloop.parentloop.counter }}-{{ forloop.counter }}" name="text" maxlength="500" rows="4" aria-describedby="taste-note-help">
+{{ response.value|default_if_none:'' }}</textarea>
+          <button type="submit">Save note</button>
+          {% endif %}
+        </form>
+      </details>
+      {% if response.can_undo %}
+      <form method="post" action="/cabinet/taste" data-taste-undo>
+        {% csrf_token %}
+        <input type="hidden" name="profile_ref" value="{{ profile_ref }}">
+        <input type="hidden" name="entry_ref" value="{{ group.entry_ref }}">
+        <input type="hidden" name="mutation_id" value="{{ response.undo_mutation_id }}">
+        <input type="hidden" name="base_revision" value="{{ response.revision }}">
+        <input type="hidden" name="operation" value="reverse">
+        <input type="hidden" name="signal" value="{{ response.signal }}">
+        <input type="hidden" name="reverses_id" value="{{ response.event_ref }}">
+        <button type="submit">Undo {% if response.signal == 'note' %}note{% elif response.signal == 'interest' %}interest{% else %}enjoyment{% endif %}</button>
+      </form>
+      {% endif %}
+    </div>
+    {% endfor %}
+  </section>
+  {% endfor %}
+  <p id="taste-note-help" class="fine-print">A preference note is not a hard rule or a source fact. Notes stay local by default. Sharing an exact note requires separate permission and a request preview; saving alone sends nothing.</p>
+  <p><a href="/cabinet/taste/artist?profile_ref={{ profile_ref|urlencode }}">Use the existing artist form</a></p>
+  <p><a href="{{ cabinet_url }}">Return to your cabinet</a></p>
+</section>
+{% elif source_setup %}
 <section class="paper-panel cabinet-source-setup" aria-labelledby="musicbrainz-heading">
-  <h1 id="musicbrainz-heading">MusicBrainz recordings</h1>
+  <h1 id="musicbrainz-heading">{{ source_label|default:"MusicBrainz recordings" }}</h1>
   <p>{{ profile_label }}</p>
-  <p>Find recording identities by an artist name you have chosen to share. MusicBrainz needs no API key. Configuration, source permission and each actual API request are separate choices.</p>
-  <p>Only the selected artist title is used for this search, not raw notes. A name match does not verify an exact artist identity. Core recording titles, artist credits and identifiers come from <a href="https://musicbrainz.org" rel="noreferrer noopener">MusicBrainz</a> under <a href="https://musicbrainz.org/doc/About/Data_License" rel="noreferrer noopener">CC0</a>; this grants no audio rights.</p>
-  <p>This source supports recordings. Films, books and other categories still need their own available permitted sources. Their outcomes remain visible when Enhance runs.</p>
+  <p>{% if source_category == 'artist' %}Find artist identities{% else %}Find recording identities{% endif %} by an artist name you have chosen to share. MusicBrainz needs no API key. Configuration, source permission and each actual API request are separate choices.</p>
+  <p>Only the selected artist title is used for this search, not raw notes. A name match does not verify an exact artist identity. {% if source_category == 'artist' %}Artist names and artist identifiers{% else %}Core recording titles, artist credits and identifiers{% endif %} come from <a href="https://musicbrainz.org" rel="noreferrer noopener">MusicBrainz</a> under <a href="https://musicbrainz.org/doc/About/Data_License" rel="noreferrer noopener">CC0</a>; this grants no audio rights.</p>
+  {% if source_category == 'artist' %}<p>This source finds artists, not recordings. The recording source has its own configuration and permission.</p>{% else %}<p>This source supports recordings, not artist results. The artist source has its own configuration and permission.</p>{% endif %}
+  <p>Films, books and other categories still need their own available permitted sources. Missing configuration or permission is not an empty search. Category outcomes remain visible when Enhance runs.</p>
   {% comment %}Configuration never grants catalogue access. These current-owner projections expose only the appropriate native action; GET changes no authority. A saved expired grant must be revoked before regranting.{% endcomment %}
   {% if not source_configured %}
   <h2>1. Configure this source</h2>
-  <form method="post" action="/cabinet/source/musicbrainz/configure" data-source-configure>{% csrf_token %}
+  <form method="post" action="{{ source_configure_action|default:'/cabinet/source/musicbrainz/configure' }}" data-source-configure>{% csrf_token %}
     <input type="hidden" name="profile_ref" value="{{ profile_ref }}"><input type="hidden" name="expected_revision" value="{{ source_revision }}">
-    <label class="cabinet-check"><input type="checkbox" name="confirmed" value="yes" required autocomplete="off"> Configure MusicBrainz recordings for this cabinet.</label>
-    <button type="submit">Configure MusicBrainz</button>
+    <label class="cabinet-check"><input type="checkbox" name="confirmed" value="yes" required autocomplete="off"> Configure {{ source_label|default:"MusicBrainz recordings" }} for this cabinet.</label>
+    <button type="submit">Configure {{ source_label|default:"MusicBrainz recordings" }}</button>
   </form>
   {% else %}
-  <p role="status">MusicBrainz is configured. Configuration alone does not grant source permission.</p>
+  <p role="status">{{ source_label|default:"MusicBrainz recordings" }} is configured. Configuration alone does not grant source permission.</p>
   <h2>2. Review source permission</h2>
   <p>Source permission is separate from inference permission. It does not send a request or approve model use. You will review the exact API request before collection, then the separate inference body before any model send.</p>
   {% if source_consent_active %}<p role="status">Current source permission is active until {{ source_consent_expires }}.</p>{% elif source_consent_record_active %}<p role="status">The saved source permission has expired or no longer matches. Revoke it before explicitly granting new permission.</p>{% else %}<p role="status">No current source permission is active.</p>{% endif %}
   {% if source_consent_groups %}<p>Previously selected groups:</p><ul>{% for group in source_consent_groups %}<li>{{ group }}</li>{% endfor %}</ul>{% endif %}
-  <form method="post" action="/cabinet/source/musicbrainz/consent" data-source-consent>{% csrf_token %}
+  <form method="post" action="{{ source_consent_action_url|default:'/cabinet/source/musicbrainz/consent' }}" data-source-consent>{% csrf_token %}
     <input type="hidden" name="profile_ref" value="{{ profile_ref }}"><input type="hidden" name="source_connection_ref" value="{{ source_connection_ref }}"><input type="hidden" name="expected_revision" value="{{ source_consent_revision }}">
     {% if source_consent_record_active %}
     <input type="hidden" name="action" value="revoke">
@@ -32,11 +123,12 @@
     <input type="hidden" name="action" value="{{ source_consent_action }}">
     <fieldset><legend>Choose the artist signal groups for source lookup</legend>{% for choice in source_choices %}<label class="cabinet-check"><input type="checkbox" name="allow_{{ choice.code }}" value="yes" autocomplete="off"> {{ choice.label }}</label>{% endfor %}</fieldset>
     <p>Only permitted artist signals can supply the search name. No notes or inference permission are included here. Permission lasts up to five minutes or the current owner session’s end, whichever comes first.</p>
-    <label class="cabinet-check"><input type="checkbox" name="confirmed" value="yes" required autocomplete="off"> Allow only the selected groups for MusicBrainz catalogue lookup during this permission window.</label>
+    <label class="cabinet-check"><input type="checkbox" name="confirmed" value="yes" required autocomplete="off"> Allow only the selected groups for {{ source_label|default:"MusicBrainz recordings" }} catalogue lookup during this permission window.</label>
     <button type="submit">Grant source permission</button>
     {% endif %}
   </form>
   {% endif %}
+  <p><a href="/cabinet/source/musicbrainz?profile_ref={{ profile_ref|urlencode }}">Recording source and permission</a> · <a href="/cabinet/source/musicbrainz/artist?profile_ref={{ profile_ref|urlencode }}">Artist source and permission</a></p>
   <p><a href="/cabinet/taste/artist?profile_ref={{ profile_ref|urlencode }}">Add an artist you know</a></p>
   <p><a href="{{ cabinet_url }}">Return to your cabinet</a></p>
 </section>
@@ -101,6 +193,7 @@
     {% else %}
     <input type="hidden" name="action" value="{{ consent_action }}">
     <fieldset><legend>Choose data groups explicitly</legend>{% for choice in inference_choices %}<label class="cabinet-check"><input type="checkbox" name="allow_{{ choice.code }}" value="yes" autocomplete="off"> {{ choice.label }}</label>{% endfor %}</fieldset>
+    <p>To share typed preference notes, explicitly choose both Exact notes and Free text you entered. Leaving either unchecked keeps those notes out of the request.</p>
     <p>Notes and inferred traits start unchecked. A trait also needs permission for its original inputs; allowing a trait cannot bypass a denied note. Unsupported or unattributed history remains excluded, not a no-history cold start.</p>
     <p>Permission lasts up to five minutes or the current owner session’s end, whichever comes first. Exact body review remains separate.</p>
     <label class="cabinet-check"><input type="checkbox" name="confirmed" value="yes" required autocomplete="off"> Allow only the selected groups for this connection and time window.</label>
@@ -138,6 +231,14 @@
   {% else %}<p>No authorized bound cabinet is available. Existing profiles will not be adopted or recreated automatically. Review the current owner and permissions.</p>{% endif %}
 </section>
 {% else %}
+{% if feedback_outcome_message %}
+{% comment %}The consumed receipt acknowledges a completed action only. Keep the publication refusal below independent; never imply that preferences exposes an unavailable card's response.{% endcomment %}
+<section id="cabinet-feedback-outcome" class="paper-panel" role="status" tabindex="-1" autofocus>
+  <h2>{{ feedback_outcome_message }}</h2>
+  <p>This confirms your completed response action. Current picks and permissions are checked separately below.</p>
+  <p><a href="/cabinet/taste?profile_ref={{ profile_ref|urlencode }}">Preferences and notes</a></p>
+</section>
+{% endif %}
 <header class="cabinet-header" aria-labelledby="cabinet-title">
   <div class="cabinet-workflow">
     <div><p class="eyebrow">Your current picks</p><h1 id="cabinet-title">{{ profile_label }}</h1></div>
@@ -148,13 +249,14 @@
       {% elif enhance_url %}
         <p><a class="cabinet-action" href="{{ enhance_url }}">Enhance this cabinet</a></p>
         <p>Collect API candidates first, then review inference. Every enabled category participates, whichever tab you view.</p>
-      {% else %}<p>Choose a model connection in cabinet options before considering Enhance. Sources, consent and working inference must also be available.</p>{% endif %}
+      {% else %}<p><a href="/setup/cabinet?profile_ref={{ profile_ref|urlencode }}">Choose a model connection</a> before considering Enhance. Sources, consent and working inference must also be available.</p>{% endif %}
     </div>
   </div>
+  {% if feedback_available %}<p><a class="cabinet-preferences-link" href="{{ feedback_url }}">Preferences and notes</a> · Add or change your responses before another Enhance round.</p>{% endif %}
   {% if round_url and not round_blocks_start %}<p class="cabinet-round-status" role="status"><a href="{{ round_url }}">Review this round’s recorded status</a>{% if round_pending %}. Pending, failed or uncertain work does not replace the publication shown below.{% endif %}</p>{% endif %}
   <details class="cabinet-options"><summary>Cabinet options and permissions</summary>
     <p><a href="/setup/cabinet">Choose a cabinet or connection</a></p>
-    {% if profile_ref %}<p><a href="/cabinet/source/musicbrainz?profile_ref={{ profile_ref|urlencode }}">Configure MusicBrainz and review source permission</a></p><p><a href="/cabinet/taste/artist?profile_ref={{ profile_ref|urlencode }}">Add an artist you know</a></p>{% endif %}
+    {% if profile_ref %}<p><a href="/cabinet/source/musicbrainz?profile_ref={{ profile_ref|urlencode }}">Configure MusicBrainz recordings and review source permission</a></p><p><a href="/cabinet/source/musicbrainz/artist?profile_ref={{ profile_ref|urlencode }}">Configure MusicBrainz artists and review source permission</a></p><p><a href="/cabinet/taste/artist?profile_ref={{ profile_ref|urlencode }}">Add an artist you know</a></p>{% endif %}
     {% if inference_consent_url %}<p><a href="{{ inference_consent_url }}">Review inference permission</a>. Source collection permission remains separate.</p>{% endif %}
   </details>
   {% if selection_token %}
@@ -196,6 +298,62 @@
       {% if card.facts %}<dl class="cabinet-facts">{% for fact in card.facts %}<div><dt>{{ fact.name }}</dt><dd>{{ fact.value }}</dd></div>{% endfor %}</dl>{% endif %}
       </details>
       {% if card.reasons %}<h4>For you</h4>{% for reason in card.reasons %}<p><strong>{{ reason.label }}:</strong> {{ reason.text }} <span class="cabinet-evidence">{% if reason.evidence_count %}{{ reason.evidence_count }} evidence reference{{ reason.evidence_count|pluralize }}.{% else %}No evidence references supplied.{% endif %}</span></p>{% endfor %}{% else %}<p class="cabinet-no-reason">No current For You explanation is available.</p>{% endif %}
+      {% if card.feedback.signals %}
+      <details class="cabinet-card-feedback">
+        <summary>Your response to this pick</summary>
+        {% comment %}Only the current backend feedback projection supplies target and per-signal revisions. No model/card prose becomes a mutation identity or a before-image.{% endcomment %}
+        {% for response in card.feedback.signals %}
+        <div class="cabinet-feedback-signal">
+          <h4>{% if response.signal == 'interest' %}Interest{% elif response.signal == 'enjoyment' %}Experienced enjoyment{% else %}Preference note{% endif %}</h4>
+          {% if response.cleared %}<p>This response was cleared.</p>
+          {% elif response.value != None %}
+            {% if response.signal == 'note' %}<p class="cabinet-exact-note">{{ response.value }}</p>{% if response.value == '' %}<p>Saved note is empty.</p>{% endif %}
+            {% else %}<p>Saved: {{ response.value }}{% if response.signal == 'enjoyment' %} / 5{% endif %}</p>{% endif %}
+          {% else %}<p>No current response.</p>{% endif %}
+          {% if response.can_set %}
+          <form method="post" action="/cabinet/feedback" data-card-feedback>
+            {% csrf_token %}
+            <input type="hidden" name="profile_ref" value="{{ profile_ref }}">
+            <input type="hidden" name="target_ref" value="{{ card.feedback.target_ref }}">
+            <input type="hidden" name="mutation_id" value="{{ response.mutation_id }}">
+            <input type="hidden" name="base_revision" value="{{ response.revision }}">
+            <input type="hidden" name="operation" value="set">
+            <input type="hidden" name="signal" value="{{ response.signal }}">
+            {% if response.signal == 'interest' %}
+            <label for="card-interest-{{ card.feedback.target_ref }}">Would you like to explore this?</label>
+            <select id="card-interest-{{ card.feedback.target_ref }}" name="value" required><option value="">Choose explicitly</option><option value="no">No</option><option value="maybe">Maybe</option><option value="yes">Yes</option></select>
+            <button type="submit">Save interest</button>
+            {% elif response.signal == 'enjoyment' %}
+            <label for="card-enjoyment-{{ card.feedback.target_ref }}">How much did you enjoy it?</label>
+            <select id="card-enjoyment-{{ card.feedback.target_ref }}" name="value" required><option value="">Choose explicitly</option><option value="1">1 — least enjoyed</option><option value="2">2</option><option value="3">3</option><option value="4">4</option><option value="5">5 — most enjoyed</option></select>
+            <label class="cabinet-check"><input type="checkbox" name="experienced_ack" value="yes" required autocomplete="off"> I have experienced this work.</label>
+            <button type="submit">Save enjoyment</button>
+            {% elif response.signal == 'note' %}
+            <label for="card-note-{{ card.feedback.target_ref }}">Preference note · up to 500 characters</label>
+            <textarea id="card-note-{{ card.feedback.target_ref }}" name="text" maxlength="500" rows="4">
+{{ response.value|default_if_none:'' }}</textarea>
+            <p>Notes stay local by default. This is a preference, not a hard rule. Saving does not share a note or send inference.</p>
+            <button type="submit">Save note</button>
+            {% endif %}
+          </form>
+          {% endif %}
+          {% if response.can_undo %}
+          <form method="post" action="/cabinet/feedback" data-card-undo>
+            {% csrf_token %}
+            <input type="hidden" name="profile_ref" value="{{ profile_ref }}">
+            <input type="hidden" name="target_ref" value="{{ card.feedback.target_ref }}">
+            <input type="hidden" name="mutation_id" value="{{ response.undo_mutation_id }}">
+            <input type="hidden" name="base_revision" value="{{ response.revision }}">
+            <input type="hidden" name="operation" value="reverse">
+            <input type="hidden" name="signal" value="{{ response.signal }}">
+            <input type="hidden" name="reverses_id" value="{{ response.event_ref }}">
+            <button type="submit">Undo {% if response.signal == 'note' %}note{% elif response.signal == 'interest' %}interest{% else %}enjoyment{% endif %}</button>
+          </form>
+          {% endif %}
+        </div>
+        {% endfor %}
+      </details>
+      {% endif %}
       {% if card.save_list_kind %}
         {% if save_unavailable_reason %}<p role="status">{{ save_unavailable_reason }}</p>
         {% elif selection_token %}
@@ -214,6 +372,6 @@
 </section>
 {% endif %}{% endfor %}
 {% endif %}
-<p class="fine-print">Ratings and reactions are not connected on this native page yet. No response, Save, Obtain or provider action is inferred from viewing a card.</p>
+{% if feedback_available %}<p class="fine-print">Your responses and notes are saved separately from Enhance. A changed response needs a fresh request preview; no collection or inference is sent automatically.</p>{% else %}<p class="fine-print">Ratings and reactions are not connected on this native page yet. No response, Save, Obtain or provider action is inferred from viewing a card.</p>{% endif %}
 {% endif %}
 {% endblock %}

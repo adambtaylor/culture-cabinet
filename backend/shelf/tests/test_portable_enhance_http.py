@@ -54,6 +54,12 @@ class PortableEnhanceHTTPTests(SimpleTestCase):
             current=Mock(return_value={'schema': 'cabinet-current/v1', 'published': False,
                                       'publication_revision': None, 'manifest': None, 'code': 'OK'}))
         self.lookup = self.enterContext(patch('shelf.portable_enhance_service.get_service', return_value=self.service))
+        # Existing HTTP tests isolate the display read, not backend authority.
+        # Real handler/PA1/event proofs stay in Taste's native fixture suite.
+        self.feedback_read = self.enterContext(patch('shelf.portable_feedback_views.card_feedback_context',
+            side_effect=lambda authority, session_ref, profile_ref, *, target_ref: {
+                'profile_ref': profile_ref, 'target_ref': target_ref, 'signals': [],
+                'actions': [], 'feedback_action': '/cabinet/feedback'}))
 
     def request(self, method='GET', payload=None, *, native=False, csrf=True, query=None):
         if method == 'GET':
@@ -206,7 +212,7 @@ class PortableEnhanceHTTPTests(SimpleTestCase):
         self.assertEqual([node.attrs['href'] for node in sources], ['https://source.invalid/work?x=1&y=2'])
         category_nav = next(node for node in doc.tagged('nav') if node.attrs.get('aria-label') == 'Cabinet categories')
         labels = [node.text() for node in category_nav.nodes() if node.tag == 'a']
-        self.assertEqual(labels, ['All categories', 'Books', 'Films', 'TV', 'Music', 'Events', 'Outings'])
+        self.assertEqual(labels, ['All categories', 'Books', 'Films', 'TV series', 'Music artists', 'Events', 'Outings'])
         self.service.current.assert_called_once_with('isolated-session', profile_ref=PROFILE)
         self.service.start.assert_not_called()
         self.service.status.assert_not_called()
@@ -270,3 +276,69 @@ class PortableEnhanceHTTPTests(SimpleTestCase):
             self.assertEqual(set(request.session), {'portable_session'})
             self.service.start.assert_not_called()
             self.service.confirm.assert_not_called()
+
+    def test_workflow_feedback_binding_is_fresh_read_only_and_refusal_does_not_revive_cards(self):
+        self.service.current.return_value = self.publication()
+        with patch.object(portable_setup_views, 'cabinet_choices', return_value=self.cabinet_choices()):
+            response = views.portable_cabinet(self.cabinet_request())
+            self.assertEqual(response.status_code, 200)
+            self.feedback_read.assert_called_once()
+            args, kwargs = self.feedback_read.call_args
+            self.assertEqual(args, (self.authority, 'isolated-session', PROFILE))
+            self.assertEqual(set(kwargs), {'target_ref'})
+            self.feedback_read.side_effect = AuthorityFault('PREVIEW_STALE', 409)
+            response = views.portable_cabinet(self.cabinet_request())
+        self.assertEqual(response.status_code, 409)
+        self.assertNotIn('Published &lt;img', response.content.decode())
+        self.assertNotIn('name="target_ref"', response.content.decode())
+        self.service.start.assert_not_called();self.service.confirm.assert_not_called()
+
+    def test_workflow_html_progress_labels_all_domains_without_changing_source_receipt(self):
+        from copy import deepcopy
+        from shelf.category_registry import CATEGORIES
+        value = {**self.status, 'category_outcomes': [
+            {'category': r.key, 'state': 'unavailable', 'candidate_count': 0,
+             'code': 'CAPABILITY_UNAVAILABLE'} for r in CATEGORIES]}
+        before = deepcopy(value)
+        response = views._portable_html(self.request(native=True), value,
+            selection={'profile_ref': PROFILE, 'connection_ref': CONNECTION})
+        doc = Document(response.content.decode())
+        outcomes = doc.marked('data-enhance-outcomes')
+        self.assertEqual([n.text() for n in outcomes.nodes() if n.tag == 'strong'],
+                         [r.label for r in CATEGORIES])
+        self.assertEqual(value, before)
+        self.assertTrue(any(n.attrs.get('href') == '/cabinet/taste?profile_ref=' + PROFILE
+                            for n in doc.tagged('a')))
+        self.service.start.assert_not_called();self.service.confirm.assert_not_called()
+
+    def test_review_fresh_authority_refusal_discards_all_cards_even_after_an_earlier_read(self):
+        from copy import deepcopy
+        from uuid import uuid4
+        publication = self.publication()
+        first = publication['manifest']['categories'][0]['cards'][0]
+        first['title'] = 'PRIVATE-FIRST-CARD'
+        second = {**deepcopy(first), 'key': 'candidate-two', 'title': 'PRIVATE-SECOND-CARD'}
+        publication['manifest']['categories'][0]['cards'].append(second)
+        note = 'PRIVATE-LOCAL-NOTE-MUST-NOT-SURVIVE-REFUSAL'
+        for status, code in ((503, 'CAPABILITY_UNAVAILABLE'), (403, 'AUTHORITY_DENIED'), (409, 'PREVIEW_STALE')):
+            for fail_after in (0, 1):
+                with self.subTest(status=status, fail_after=fail_after):
+                    self.service.current.return_value = deepcopy(publication)
+                    calls = []
+                    def current_read(authority, session_ref, profile_ref, *, target_ref):
+                        if len(calls) == fail_after:
+                            raise AuthorityFault(code, status)
+                        calls.append(target_ref)
+                        return {'profile_ref': profile_ref, 'target_ref': target_ref,
+                            'feedback_action': '/cabinet/feedback', 'actions': ['note'],
+                            'signals': [{'signal': 'note', 'value': None, 'text': note,
+                                'revision': 1, 'event_ref': str(uuid4()), 'can_undo': True,
+                                'mutation_id': str(uuid4()), 'undo_mutation_id': str(uuid4())}]}
+                    self.feedback_read.side_effect = current_read
+                    with patch.object(portable_setup_views, 'cabinet_choices', return_value=self.cabinet_choices()):
+                        response = views.portable_cabinet(self.cabinet_request())
+                    self.assertEqual(response.status_code, status)
+                    for private in ('PRIVATE-FIRST-CARD', 'PRIVATE-SECOND-CARD', note, 'name="target_ref"'):
+                        self.assertNotIn(private, response.content.decode())
+                    self.assertEqual(len(calls), fail_after)
+        self.service.start.assert_not_called(); self.service.confirm.assert_not_called()
