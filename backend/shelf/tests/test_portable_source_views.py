@@ -167,12 +167,10 @@ class NativeArtistSourceTests(NativeFeedbackCase):
             {'profile_ref': self.profile_ref}, **self.headers).status_code, 200)
 
     def test_normal_artist_recording_collection_shares_limiter_keeps_categories_and_excludes_notes(self):
-        from types import SimpleNamespace
         from unittest.mock import patch
         from shelf.category_registry import KEYS
         from shelf.disclosure import canonical_bytes, read_json
         from shelf.models import SynthesisRun
-        from shelf.portable_enhance_service import EnhanceService
         from shelf.source_authority import MUSICBRAINZ_ARTIST
         artist, recording = self.configure(), self.configure(False)
         self.assertEqual(self.grant(artist).status_code, 303)
@@ -184,7 +182,6 @@ class NativeArtistSourceTests(NativeFeedbackCase):
         self.assertEqual(self.post('/cabinet/taste', self.note_fields(category='artist',
             text='NOTE_IS_NOT_A_QUERY')).status_code, 303)
         self.consent(self.profile_ref, classes=['anticipated_reactions'])
-        clock = SimpleNamespace(now=self.authority.now, monotonic=lambda: self.clock.tick, sleep=self.clock.advance)
         service = self.enhance
         _, collector = service._normal_context(self.ref, self.profile_ref)
         self.assertIs(collector.backends[MUSICBRAINZ].limiter, collector.backends[MUSICBRAINZ_ARTIST].limiter)
