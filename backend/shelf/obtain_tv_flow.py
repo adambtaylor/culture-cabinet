@@ -132,6 +132,50 @@ class TVServiceProvider(ABC):
         """Current selected service ports for this one native job."""
 
 
+@dataclass(frozen=True)
+class SelectedTVServices:
+    """Current custodian-owned ports; no credential or authority is serialized."""
+    delivery: DeliveryBinding
+    observer: object
+    destination: object
+    library: object
+    library_current: object
+    library_credential_scope: object
+    library_clock: object
+    target_for: object
+    stop_owned_children: object
+
+    def generations(self, context):
+        from uuid import UUID
+        from .obtain_native_context import NativeJobContext
+        from .sab_selected import SelectedSabPorts
+        from .jellyfin_tv_import import DestinationImportPorts
+        from .jellyfin_native import ServiceBinding, _digest
+        if (type(context) is not NativeJobContext or type(self.delivery) is not DeliveryBinding
+                or type(self.observer) is not SelectedSabPorts or type(self.destination) is not DestinationImportPorts
+                or type(self.observer.generation) is not ServiceGeneration
+                or type(self.destination.generation) is not ServiceGeneration
+                or type(self.library) is not ServiceBinding
+                or not all(callable(value) for value in (self.library_current, self.library_credential_scope,
+                    self.target_for, self.stop_owned_children, self.destination.authority_deadline,
+                    getattr(self.library_clock, 'now', None), getattr(self.library_clock, 'monotonic', None)))):
+            raise ContractError('Complete current selected TV ports required')
+        context.revalidate(); self.library.validate()
+        if ((self.library.actor_id, self.library.profile_id, self.library.installation_id) !=
+                (context.actor_id, context.profile_id, UUID(context._access.identity.installation_ref).hex)
+                or self.library.tv_root != self.delivery.destination.root
+                or self.library_current() != self.library
+                or context._access.authority.now() >= self.library.expires_at
+                or self.observer.generation.service != 'sab_history'
+                or self.destination.generation != self.delivery.destination.service_generation
+                or self.observer.revalidate() != self.observer.generation
+                or self.destination.revalidate() != self.destination.generation):
+            raise ContractError('Selected TV service binding changed')
+        library = ServiceGeneration('jellyfin', _digest(self.library.material()),
+            self.library.configuration_generation, self.library.credential_generation)
+        return tuple(sorted((self.observer.generation, self.destination.generation, library), key=lambda item: item.service))
+
+
 def delivery_binding_material(binding):
     """The one pre-submit wire/digest producer; O1 keeps its full-path digest."""
     if type(binding) is not DeliveryBinding:
@@ -179,6 +223,119 @@ def require_confirmed_delivery_plan(delivery, plan):
             or '/'.join(parts[:-1]) != delivery.relative_parent or plan.create_parent is not delivery.create_parent):
         raise ContractError('Copy plan changed the confirmed destination folder')
     return plan
+
+
+def validate_native_progress(value, *, binding, job_id, verification=None, provider_job=None):
+    try:
+        return _validate_native_progress(value, binding=binding, job_id=job_id,
+                                         verification=verification, provider_job=provider_job)
+    except (ValueError, TypeError, KeyError, AttributeError, OverflowError):
+        raise ContractError('Closed native operational receipt required') from None
+
+
+def _validate_native_progress(value, *, binding, job_id, verification=None, provider_job=None):
+    """Closed operational history; decoding never creates a live green proof."""
+    from uuid import UUID
+    import re
+    from . import completion_registry as registry
+    from .obtain_native_context import operational_digest
+    from .jellyfin_tv_import import DestinationFileReceipt, destination_binding_digest
+    def require(condition):
+        if not condition:
+            raise ContractError('Closed native operational receipt required')
+    def sha(raw):
+        require(type(raw) is str and re.fullmatch('[0-9a-f]{64}', raw) is not None)
+    def stamp(raw):
+        require(type(raw) is str)
+        moment = datetime.fromisoformat(raw.replace('Z', '+00:00'))
+        require(moment.utcoffset() is not None)
+        return moment
+    def ref(raw):
+        require(type(raw) is str and str(UUID(raw)) == raw and UUID(raw).int != 0)
+    if value == {}:
+        # Historical receipts remain readable without adopting today's mapping.
+        require(verification is None)
+        return
+    allowed = {'schema', 'stage', 'reason', 'service_generations', 'intent', 'completion',
+               'copy_intent', 'destination', 'series_ref', 'observed_at'}
+    stages = {'submitted', 'observing', 'awaiting_completion', 'download_failed', 'copying', 'copy_pending',
+        'copy_unknown', 'copy_conflict', 'verifying_library', 'awaiting_library_index',
+        'verification_unavailable', 'verification_mismatch', 'verified'}
+    require(type(value) is dict and set(value) <= allowed and value.get('schema') == 'obtain-tv-progress/v1'
+        and value.get('stage') in stages and type(value.get('reason')) is str
+        and re.fullmatch('[a-z0-9_]{0,64}', value['reason']) is not None
+        and len(canonical_bytes(value)) <= 65536)
+    generations = value.get('service_generations')
+    require(type(generations) is list and len(generations) == 3)
+    names = []
+    for generation in generations:
+        require(type(generation) is dict and set(generation) == set(ServiceGeneration.__dataclass_fields__))
+        names.append(generation['service']); sha(generation['binding_digest'])
+        for key in ('configuration_generation', 'credential_generation'):
+            require(type(generation[key]) is str and 0 < len(generation[key]) <= 200
+                    and all(ord(c) >= 32 and ord(c) != 127 for c in generation[key]))
+    require(names == ['destination_file', 'jellyfin', 'sab_history'])
+    if 'intent' in value:
+        intent = value['intent']
+        require(type(intent) is dict and set(intent) == {'id', 'stage', 'revision'})
+        ref(intent['id'])
+        require(intent['stage'] in ('observe', 'import', 'verify_library')
+                and type(intent['revision']) is int and 0 < intent['revision'] < 2**53)
+    if 'copy_intent' in value:
+        ref(value['copy_intent'])
+    if value.get('series_ref') is not None:
+        require(type(value['series_ref']) is str and re.fullmatch('[0-9a-f]{32}', value['series_ref']) is not None
+                and value['series_ref'] != '0' * 32)
+    if 'observed_at' in value:
+        stamp(value['observed_at'])
+    if 'completion' in value:
+        completed = value['completion']
+        require(type(completed) is dict and set(completed) == {'files', 'source_manifest_digest', 'history_digest',
+            'hook_digest', 'repair', 'unpack', 'observed_at'} and type(completed['files']) is list
+            and len(completed['files']) == 1)
+        for key in ('source_manifest_digest', 'history_digest', 'hook_digest'):
+            sha(completed[key])
+        require(completed['repair'] in ('performed_successfully', 'not_needed', 'unobserved')
+                and completed['unpack'] in ('performed_successfully', 'not_needed', 'unobserved'))
+        stamp(completed['observed_at'])
+        file = completed['files'][0]
+        require(type(file) is dict and set(file) == set(VerifiedSourceFile.__dataclass_fields__))
+        registry.path_parts(file['relative_path']); sha(file['sha256'])
+        require(type(file['size']) is int and 0 < file['size'] <= binding['max_bytes'])
+    if 'destination' in value:
+        destination = value['destination']
+        require(type(destination) is dict and set(destination) == set(DestinationFileReceipt.__dataclass_fields__)
+                and 'completion' in value and 'copy_intent' in value and 'delivery_binding' in binding)
+        delivery = read_delivery_binding(binding['delivery_binding'])
+        parts = registry.path_parts(destination['relative_path'])
+        require(destination['request_id'] == binding['request_id'] and destination['job_id'] == job_id
+                and type(destination['job_id']) is int and type(destination['size']) is int
+                and destination['nzo_id'] == provider_job
+                and destination['binding_digest'] == operational_digest(binding)
+                and destination['content_identity_digest'] == binding['content_identity_digest']
+                and destination['source_manifest_digest'] == value['completion']['source_manifest_digest']
+                and destination['intent'] == value['copy_intent']
+                and (destination['host_id'], destination['root']) == (delivery.destination.host, delivery.destination.root)
+                and '/'.join(parts[:-1]) == delivery.relative_parent
+                and type(destination['test_only']) is bool and destination['test_only'] == binding['test_only']
+                and destination['size'] == value['completion']['files'][0]['size']
+                and destination['sha256'] == value['completion']['files'][0]['sha256']
+                and destination['destination_binding_digest'] == destination_binding_digest(
+                    delivery.destination, destination['relative_path'], delivery.create_parent)
+                and stamp(value['completion']['observed_at']) <= stamp(destination['observed_at']))
+        registry.nzo_id(destination['nzo_id'])
+    if verification is not None:
+        require(type(verification) is dict and set(verification) == set(LibraryVerification.__dataclass_fields__)
+                and 'destination' in value and value['stage'] == 'verified'
+                and verification['request_id'] == binding['request_id']
+                and verification['binding_digest'] == operational_digest(binding)
+                and verification['content_identity_digest'] == binding['content_identity_digest'])
+        for key in ('completion_digest', 'destination_digest', 'resolution_digest', 'observation_digest'):
+            sha(verification[key])
+        for key in ('server_ref', 'user_ref', 'library_ref', 'item_ref'):
+            require(type(verification[key]) is str and re.fullmatch('[0-9a-f]{32}', verification[key]) is not None
+                    and verification[key] != '0' * 32)
+        require(stamp(value['destination']['observed_at']) <= stamp(verification['observed_at']) < stamp(verification['valid_until']))
 
 
 @dataclass(frozen=True)

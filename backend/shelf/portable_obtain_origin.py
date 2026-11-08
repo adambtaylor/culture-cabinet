@@ -74,15 +74,20 @@ def validate_obtain_history(raw):
                 or any(row[index] != row[index + 1] for index in (2, 4, 6, 8)):
             raise ValueError('Restored Obtain selection mismatch')
     from .obtain_acquisition import validate_origin_submission
-    query = '''SELECT t.binding,j.publication_origin,j.request_id,t.result_guid,t.nzb_sha256
+    from .obtain_tv_flow import validate_native_progress
+    query = '''SELECT t.binding,j.publication_origin,j.request_id,t.result_guid,t.nzb_sha256,
+        t.native_progress,t.library_verification,j.id,t.provider_job
         FROM shelf_obtaintransfer t JOIN shelf_acquisitionjob j ON j.id=t.job_id
         WHERE j.publication_origin IS NOT NULL'''
-    for raw_binding, raw_origin, request_id, guid, nzb_sha in raw.execute(query):
+    for raw_binding, raw_origin, request_id, guid, nzb_sha, raw_progress, raw_verification, job_id, provider_job in raw.execute(query):
         binding = validate_origin_submission(read_json(raw_binding.encode()))
         if (binding['publication_origin'] != read_json(raw_origin.encode())
                 or binding['request_id'].replace('-', '') != request_id
                 or binding['exact']['guid'] != guid or binding['nzb_sha256'] != nzb_sha):
             raise ValueError('Restored source command receipt mismatch')
+        validate_native_progress(read_json(raw_progress.encode()), binding=binding, job_id=job_id,
+            verification=read_json(raw_verification.encode()) if raw_verification is not None else None,
+            provider_job=provider_job)
 
 
 def _validate_origin_values(value, *, refs, digests):

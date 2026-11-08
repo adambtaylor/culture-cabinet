@@ -559,7 +559,9 @@ def _submit_origin(*, actor, profile_id, job, context, token, retriever, backend
             if fresh_job.status != 'blocked_configuration' or fresh_job.publication_origin != exact.publication_origin:
                 raise Blocked('Source choice cancelled or changed')
             transfer, created = ObtainTransfer.objects.get_or_create(job=fresh_job, defaults={
-                'binding': binding, 'result_guid': exact.guid, 'nzb_sha256': binding['nzb_sha256']})
+                'binding': binding, 'result_guid': exact.guid, 'nzb_sha256': binding['nzb_sha256'],
+                'native_progress': {'schema': 'obtain-tv-progress/v1', 'stage': 'submitted', 'reason': '',
+                    'service_generations': [asdict(value) for value in context.service_generations]}})
             if not created:
                 if transfer.binding != binding:
                     raise ContractError('Concurrent source submission conflict')
