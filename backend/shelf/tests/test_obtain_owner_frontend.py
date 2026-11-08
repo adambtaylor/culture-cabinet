@@ -13,8 +13,9 @@ from django.utils.html import format_html, format_html_join
 
 
 class Field:
-    def __init__(self, name, value='', kind='text'):
+    def __init__(self, name, value='', kind='text', label=None):
         self.html_name, self._value, self.kind = name, value, kind
+        self.label = label or name
         self.errors = ''
 
     def value(self):
@@ -26,10 +27,12 @@ class Field:
 
     @property
     def label_tag(self):
-        return format_html('<label for="id_{}">{}</label>', self.html_name, self.html_name)
+        return format_html('<label for="id_{}">{}</label>', self.html_name, self.label)
 
     @property
     def widget(self):
+        if self.kind == 'checkbox':
+            return format_html('<input type="checkbox" id="id_{}" name="{}" required>', self.html_name, self.html_name)
         return format_html('<input type="{}" id="id_{}" name="{}" value="{}">', self.kind, self.html_name, self.html_name, self._value)
 
     def __str__(self):
@@ -40,8 +43,8 @@ class Field:
 
 
 class Form:
-    def __init__(self, values, hidden=()):
-        self.fields = {name: Field(name, value, 'hidden' if name in hidden else 'text') for name, value in values.items()}
+    def __init__(self, values, hidden=(), *, checkboxes=(), labels=None):
+        self.fields = {name: Field(name, value, 'hidden' if name in hidden else 'checkbox' if name in checkboxes else 'text', (labels or {}).get(name)) for name, value in values.items()}
         self.non_field_errors = ''
 
     def __getattr__(self, key):
@@ -68,7 +71,7 @@ class Page(HTMLParser):
         if tag == 'script':
             self.scripts.append(attrs)
         if tag == 'form':
-            self.current = {'action': attrs.get('action'), 'fields': []}
+            self.current = {'action': attrs.get('action'), 'method': attrs.get('method', 'get').lower(), 'fields': []}
             self.forms.append(self.current)
         elif tag in {'input', 'select', 'textarea'} and self.current is not None and attrs.get('name'):
             self.current['fields'].append(attrs)
@@ -149,12 +152,65 @@ class OwnerTVFrontendTests(unittest.TestCase):
 
     def test_options_emit_exactly_one_selector_variant(self):
         common = {'csrfmiddlewaretoken', 'profile_ref', 'selection_token'}
-        options = {'title': 'Fixture series', 'scope': 'episode_s02e01', 'search_enabled': True, 'search_url': '/cabinet/obtain/search/'}
+        options = {'title': 'Fixture series', 'scope': 'episode_s02e01', 'search_enabled': True, 'search_url': '/cabinet/obtain/search/', 'review_url': '/cabinet/obtain/options/', 'query': 'Fixture series 2024 S02E01', 'destination': 'http://hydra.invalid:5076'}
         for owner in [True, False]:
             values = {'owner_selection_ref': 'opaque-owner'} if owner else {'publication_revision': '2', 'candidate_key': 'tv:fixture', 'season': '2', 'episode': '1'}
-            _, page = self.render('portable_obtain_options.html', obtain_options=options, obtain_options_form=Form(values))
-            self.assertEqual(len(page.forms), 1)
-            self.assertEqual(self.names(page.forms[0]), common | set(values))
+            values.update(search_review_ref='11111111-1111-4111-8111-111111111112', search_confirmed='')
+            _, page = self.render('portable_obtain_options.html', obtain_options=options, obtain_options_form=Form(values, {'search_review_ref'}, checkboxes={'search_confirmed'}))
+            self.assertEqual(len(page.forms), 1 if owner else 2)
+            search = next(form for form in page.forms if form['method'] == 'post')
+            self.assertEqual(self.names(search), common | set(values))
+            self.assertEqual(search['action'], '/cabinet/obtain/search/')
+            self.assertEqual(len(page.ids), len(set(page.ids)))
+            if not owner:
+                review = next(form for form in page.forms if form['method'] == 'get')
+                self.assertEqual(review['action'], '/cabinet/obtain/options/')
+                self.assertEqual(self.names(review), {'profile_ref', 'publication_revision', 'candidate_key', 'season', 'episode'})
+                for name in ['season', 'episode']:
+                    self.assertEqual(next(field for field in review['fields'] if field['name'] == name)['type'], 'text')
+                    frozen = next(field for field in search['fields'] if field['name'] == name)
+                    self.assertEqual(frozen['type'], 'hidden')
+                    self.assertEqual(frozen['value'], values[name])
+
+    def test_publication_default_episode_review_omits_secrets_and_freezes_only_present_pair(self):
+        options = {'title': 'Fixture series', 'scope': 'series_s01e01', 'search_enabled': True, 'search_url': '/cabinet/obtain/search/', 'review_url': '/cabinet/obtain/options/', 'query': 'Fixture series 2024 S01E01', 'destination': 'http://hydra.invalid:5076'}
+        values = {'publication_revision': '2', 'candidate_key': 'tv:fixture', 'season': None, 'episode': None, 'search_review_ref': '11111111-1111-4111-8111-111111111112', 'search_confirmed': ''}
+        html, page = self.render('portable_obtain_options.html', obtain_options=options, obtain_options_form=Form(values, {'search_review_ref'}, checkboxes={'search_confirmed'}), profile_ref=None)
+        self.assertIn('Reviewed episode: S01E01.', html)
+        review = next(form for form in page.forms if form['method'] == 'get')
+        search = next(form for form in page.forms if form['method'] == 'post')
+        self.assertEqual(self.names(review), {'publication_revision', 'candidate_key', 'season', 'episode'})
+        self.assertEqual(self.names(search), {'csrfmiddlewaretoken', 'profile_ref', 'selection_token', 'publication_revision', 'candidate_key', 'search_review_ref', 'search_confirmed'})
+
+    def test_options_display_exact_escaped_review_before_unchecked_required_confirmation(self):
+        query = 'Different canonical title 2024 S02E01 <script>unsafe</script>'
+        destination = 'http://hydra.invalid:5076/?label=<unsafe>'
+        label = 'I approve this exact query and Hydra destination.'
+        form = Form({'owner_selection_ref': 'opaque-owner', 'search_review_ref': '11111111-1111-4111-8111-111111111112', 'search_confirmed': ''}, {'search_review_ref'}, checkboxes={'search_confirmed'}, labels={'search_confirmed': label})
+        form.search_confirmed.errors = 'Approval is required.'
+        html, page = self.render('portable_obtain_options.html', obtain_options={'title': 'Display title must not build the query', 'scope': 'episode_s02e01', 'search_enabled': True, 'search_url': '/cabinet/obtain/search/', 'query': query, 'destination': destination, 'expires_at': '2030-01-01T00:00:00Z'}, obtain_options_form=form)
+        self.assertIn('Different canonical title 2024 S02E01 &lt;script&gt;unsafe&lt;/script&gt;', html)
+        self.assertIn('http://hydra.invalid:5076/?label=&lt;unsafe&gt;', html)
+        self.assertLess(html.index('Different canonical title'), html.index('data-obtain-search'))
+        self.assertIn(label, html)
+        self.assertIn('Approval is required.', html)
+        self.assertIn('2030-01-01T00:00:00Z', html)
+        confirmation = next(field for field in page.forms[0]['fields'] if field['name'] == 'search_confirmed')
+        self.assertEqual(confirmation['type'], 'checkbox')
+        self.assertIn('required', confirmation)
+        self.assertNotIn('checked', confirmation)
+        self.assertEqual(page.scripts, [])
+        self.assertTrue({'query', 'destination'}.isdisjoint(self.names(page.forms[0])))
+
+    def test_options_without_complete_issued_review_offer_no_search(self):
+        complete = {'title': 'Fixture series', 'search_enabled': True, 'search_url': '/cabinet/obtain/search/', 'query': 'Fixture series 2024 S02E01', 'destination': 'http://hydra.invalid:5076'}
+        for missing in ['query', 'destination', 'search_review_ref']:
+            options = {key: value for key, value in complete.items() if key != missing}
+            fields = {'owner_selection_ref': 'opaque-owner', 'search_confirmed': ''}
+            if missing != 'search_review_ref':
+                fields['search_review_ref'] = '11111111-1111-4111-8111-111111111112'
+            _, page = self.render('portable_obtain_options.html', obtain_options=options, obtain_options_form=Form(fields))
+            self.assertEqual(page.forms, [])
 
     def test_known_submission_tags_share_safe_release_fields_unknown_has_no_send(self):
         exact = IndependentRelease(result_id='hydra-result', guid='hydra-guid', size=123)
