@@ -315,6 +315,8 @@ class SourceCollection:
         require(reply.observed_at <= now, 'CONTRACT_INVALID')
         ttl = min(spec.ttl_seconds, 900 if request.category in
             ('event', 'gallery', 'art_fair', 'community', 'regional_day_trip', 'outing', 'dining') else 86400)
+        if request.source == 'apple_podcast':
+            ttl = min(ttl, 900)
         cache_control = dict(reply.headers).get('cache-control', '').lower()
         for directive in cache_control.split(','):
             if directive.strip().startswith('max-age='):
@@ -322,7 +324,10 @@ class SourceCollection:
                 require(value.isdigit() and len(value) <= 10)
                 ttl = min(ttl, int(value))
         source_end = reply.observed_at + timedelta(seconds=ttl)
-        if request.source == 'moshtix':
+        if request.source in ('moshtix', 'apple_podcast'):
+            # Apple's upstream cache age shortens the same bounded HTTP clock
+            # as Moshtix. Keep received observation time and headers intact;
+            # neither a future Date nor an app reload can renew old evidence.
             source_end = moshtix_response_expiry(reply, ttl=ttl)
             require(now < source_end, 'SOURCE_UNAVAILABLE')
         end = min(source_end, permit.expires_at,

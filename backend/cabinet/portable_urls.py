@@ -74,6 +74,11 @@ urlpatterns += [
 ]
 
 # Fixed URL kwargs, never a browser-posted adapter or action URL.
+for suffix, handler in (('', sources.source_page), ('/configure', sources.source_configure),
+                        ('/consent', sources.source_consent)):
+    urlpatterns.append(path('cabinet/source/apple/podcasts' + suffix, handler,
+                            {'adapter': 'apple_podcast'}))
+
 for adapter, page in (('hardcover', 'hardcover'), ('tmdb_movie', 'tmdb/movie'), ('tmdb_tv', 'tmdb/tv')):
     for suffix, handler in (('', sources.source_page), ('/configure', sources.source_configure),
                             ('/credential', sources.source_credential), ('/consent', sources.source_consent)):
