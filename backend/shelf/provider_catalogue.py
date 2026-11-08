@@ -24,6 +24,7 @@ BOOK_NEIGHBORS = 'query Neighbors($id:Int!){books_by_pk(id:$id){cached_similar_b
 BOOK_SEARCH = 'query Search($q:String!){search(query:$q,per_page:9,page:1){ids error}}'
 BOOK_DETAILS = ('query Details($ids:[Int!]!){books(where:{id:{_in:$ids}},limit:9){'
                 + BOOK_FIELDS + '}}')
+BOOK_DETAILS_MINIMAL = 'query Details($ids:[Int!]!){books(where:{id:{_in:$ids}},limit:9){id title slug}}'
 BOOK_DECK = ('query Deck{books(limit:6,order_by:[{users_count:desc}]){'
              + BOOK_FIELDS + '}}')
 BOOK_CATEGORY = ('query GraphicNovels($offset:Int!){books('
@@ -147,18 +148,23 @@ class MediaOperation:
     operation: str
     term: str = field(default='', repr=False)
     ids: tuple[int, ...] = field(default=(), repr=False)
+    projection: str = 'legacy'
 
     def __post_init__(self):
         allowed = {'tmdb_movie': ('search_movie',), 'tmdb_tv': ('search_tv',),
                    'hardcover': ('book_search', 'book_details')}
         if (type(self.source) is not str or self.operation not in allowed.get(self.source, ())
-                or type(self.ids) is not tuple or len(self.ids) > 9):
+                or type(self.ids) is not tuple or len(self.ids) > 9
+                or type(self.projection) is not str or self.projection not in ('legacy', 'native_minimal')
+                or self.projection == 'native_minimal' and self.source != 'hardcover'):
             raise CatalogueError(Status.INVALID)
         if self.operation == 'book_details':
             if self.term != '':
                 raise CatalogueError(Status.INVALID)
             for value in self.ids:
                 _id(value)
+            if self.projection == 'native_minimal' and (not self.ids or len(set(self.ids)) != len(self.ids)):
+                raise CatalogueError(Status.INVALID)
         elif self.ids or validate_query(self.term) != self.term:
             raise CatalogueError(Status.INVALID)
 
@@ -188,9 +194,12 @@ class MediaOperation:
         if self.provider != 'hardcover':
             return b''
         document = BOOK_DETAILS if self.operation == 'book_details' else BOOK_SEARCH
+        if self.operation == 'book_details' and self.projection == 'native_minimal':
+            document = BOOK_DETAILS_MINIMAL
         variables = {'ids': list(self.ids)} if self.operation == 'book_details' else {'q': self.term}
-        # Preserve the existing GraphQL documents and JSON bytes. Both legacy
-        # and authorized sends consume these same bytes, never a second builder.
+        # Legacy catalogue callers keep their wider document and exact bytes.
+        # Native Enhance selects the closed minimal document here: its preview
+        # digest and authorized send use this SAME serializer and selected bytes.
         return json.dumps({'query': document, 'variables': variables}, ensure_ascii=True).encode('ascii')
 
     @property
@@ -209,10 +218,11 @@ def media_operation(request):
     if type(request) is not SourceRequest:
         raise CatalogueError(Status.INVALID)
     if request.operation == 'book_details':
-        return MediaOperation(request.source, request.operation, ids=request.ids)
+        return MediaOperation(request.source, request.operation, ids=request.ids, projection='native_minimal')
     if len(request.terms) != 1:
         raise CatalogueError(Status.INVALID)
-    return MediaOperation(request.source, request.operation, validate_query(request.terms[0]))
+    return MediaOperation(request.source, request.operation, validate_query(request.terms[0]),
+        projection='native_minimal' if request.source == 'hardcover' else 'legacy')
 
 
 def _media_arguments(operation):
