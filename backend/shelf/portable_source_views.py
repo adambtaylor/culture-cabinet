@@ -151,15 +151,29 @@ def source_credential(request, *, adapter):
     value = _form(request, {'profile_ref', 'connection_ref', 'revision', 'secret'})
     profile_ref = str(ga._uuid(value['profile_ref']))
     authority, ref = request.portable_authority, request.session.get('portable_session')
-    with ga.recovery_guard(authority, ref, profile_ref=profile_ref) as checkpoint, authority._lock, ga._checked_transaction(checkpoint):
-        ga._bound(authority, ref, profile_ref, sensitive=True)
-        row, _, _ = _connection_metadata(authority, ref, value['connection_ref'])
-        ga._require(row.adapter == adapter, 'AUTHORITY_DENIED', 403)
-        ga._require(row.config_revision == _revision(value['revision']), 'REVISION_CONFLICT', 409)
-        # Reuse the authority-owned RAM vault; neither rendering nor this form
-        # validates against the provider, imports another store, or grants use.
-        authority._source_vault.replace(ref, row.pk, row.config_revision, value['secret'].encode('utf-8'))
-    return _redirect(profile_ref, source_adapter=adapter)
+    transferred = vault = row = None
+    complete = False
+    try:
+        with ga.recovery_guard(authority, ref, profile_ref=profile_ref) as checkpoint, authority._lock, ga._checked_transaction(checkpoint):
+            ga._bound(authority, ref, profile_ref, sensitive=True)
+            row, _, _ = _connection_metadata(authority, ref, value['connection_ref'])
+            ga._require(row.adapter == adapter, 'AUTHORITY_DENIED', 403)
+            ga._require(row.config_revision == _revision(value['revision']), 'REVISION_CONFLICT', 409)
+            # Reuse the authority-owned RAM vault; storing a token neither
+            # validates it against the provider nor grants source or model use.
+            vault = authority._source_vault
+            vault.replace(ref, row.pk, row.config_revision, value['secret'].encode('utf-8'))
+            transferred = vault._leases.get(row.pk)
+        complete = True
+        return _redirect(profile_ref, source_adapter=adapter)
+    finally:
+        # RAM is outside SQL rollback. Success includes BOTH final context exits;
+        # on failure remove only this installed object, never a later replacement.
+        if not complete and transferred is not None:
+            with vault._lock:
+                if vault._leases.get(row.pk) is transferred:
+                    vault._revoke_connection(row.pk)
+
 
 
 musicbrainz = source_page
