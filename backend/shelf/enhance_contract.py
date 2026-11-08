@@ -124,8 +124,22 @@ class CataloguePlan:
         require(digest(self.body) == self.body_digest)
         utc(self.expires_at)
         value = read_json(self.body)
-        require(type(value) is dict and set(value) == {'schema', 'categories', 'queries', 'profile'})
-        require(value['schema'] == 'catalogue-query/v1' and value['categories'] == list(self.categories))
+        require(type(value) is dict)
+        if value.get('schema') == 'catalogue-owner-query/v1':
+            from uuid import UUID
+            require(set(value) == {'schema', 'categories', 'queries', 'intent_ref', 'intent_digest'}
+                    and self.categories == ('tv',) and value['intent_ref'] == self.plan_ref)
+            try:
+                require(str(UUID(value['intent_ref'])) == value['intent_ref']
+                        and UUID(value['intent_ref']).int != 0)
+            except (ValueError, TypeError, AttributeError):
+                raise EnhanceFault() from None
+            require(type(value['intent_digest']) is str and len(value['intent_digest']) == 64
+                    and all(c in '0123456789abcdef' for c in value['intent_digest']))
+        else:
+            require(set(value) == {'schema', 'categories', 'queries', 'profile'}
+                    and value['schema'] == 'catalogue-query/v1')
+        require(value['categories'] == list(self.categories))
         require(type(value['queries']) is list and len(value['queries']) == len(self.categories))
         for category, query in zip(self.categories, value['queries']):
             require(type(query) is dict and set(query) == {'category', 'terms'} and query['category'] == category)
@@ -133,6 +147,8 @@ class CataloguePlan:
             for term in query['terms']:
                 text(term)
             require(len(set(query['terms'])) == len(query['terms']))
+        if value['schema'] == 'catalogue-owner-query/v1':
+            require(len(value['queries'][0]['terms']) == 1)
 
 
 @dataclass(frozen=True)

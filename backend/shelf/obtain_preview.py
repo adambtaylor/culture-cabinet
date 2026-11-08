@@ -9,7 +9,7 @@ from django.http import Http404
 from django.utils import timezone
 
 from shelf import credential_store as store, saved
-from shelf.portable_saved_authority import effect_for
+from shelf.portable_saved_authority import effect_for, write_for
 from shelf.acquisition_backend import Backend, PrivateSearch
 from shelf.acquisition_contract import Blocked, ContractError
 from shelf.models import AcquisitionJob, ObtainPreview, ObtainResult, ObtainSelection
@@ -101,6 +101,14 @@ def identity(item, scope=None):
 
 
 def current_item(actor, profile_id, preview):
+    if preview.publication_origin is not None:
+        from .portable_saved_authority import active_portable_access
+        from .portable_obtain_origin import resolve_obtain_origin_again
+        access = active_portable_access()
+        if access is None or (preview.actor_id, preview.profile_id) != (actor.pk, profile_id):
+            raise saved.SavedError('Current native source selection required.', 409)
+        access.require(actor_id=actor.pk, profile_id=profile_id, action='view')
+        return resolve_obtain_origin_again(access, preview.publication_origin, preview.scope, access.authority.now())
     if preview.provider == 'album_request':
         from shelf.album_acquisition import current_request
         return current_request(actor, profile_id, preview)
@@ -109,6 +117,76 @@ def current_item(actor, profile_id, preview):
     if expected != {k: getattr(preview, k) for k in expected}:
         raise saved.SavedError('Saved identity changed. Start a fresh preview.', 409)
     return item
+
+
+def release_title(target):
+    """One title/year value drives query construction and every release check."""
+    year = getattr(target, 'series_year', None)
+    return plain(target.title + (' ' + str(year) if year is not None else ''))
+
+
+def receipt_now(receipt):
+    if receipt.publication_origin is not None:
+        from .portable_saved_authority import active_portable_access
+        access = active_portable_access()
+        if access is None:
+            raise saved.SavedError('Current native source selection required.', 409)
+        return access.authority.now()
+    return timezone.now()
+
+
+def search_origin(*, access, origin, scope, factory=None):
+    from .portable_obtain_origin import resolve_obtain_origin_again
+    from .obtain_runtime import existing_grant
+    actor, profile_id = access.actor, access.identity.profile_id
+    require_available()
+    def current():
+        access.require(actor_id=actor.pk, profile_id=profile_id, action='export')
+        target = resolve_obtain_origin_again(access, origin, scope, access.authority.now())
+        target.require_title_export()
+        return target
+    with access.effect_window(action='export'):
+        target = current(); title = release_title(target)
+        now = access.authority.now()
+        with write_for(actor, profile_id):
+            receipt = ObtainPreview.objects.create(actor=actor, profile_id=profile_id,
+                provider=None, medium=None, source_id=None, title=None, saved_identity=None,
+                scope=scope, publication_origin=origin, created_at=now,
+                expires_at=min(now + timedelta(minutes=15), target.valid_until))
+        private = None; rows = []; state = 'failed'
+        try:
+            backend = (factory or search_backend)(actor=actor, profile_id=profile_id)
+            destination = backend._grants['hydra']
+            def fence():
+                fresh = current()
+                if release_title(fresh) != title or existing_grant('hydra', actor, profile_id) != destination:
+                    raise Blocked('Current source or indexer destination changed')
+            fence()
+            caps = backend.caps(actor_id=actor.pk, profile_id=profile_id)
+            fence()
+            private = backend.search(caps, title + ' ' + episode_code(scope), 'episode',
+                                     actor_id=actor.pk, profile_id=profile_id)
+            fence()
+            if type(private) is not PrivateSearch:
+                raise ContractError('Invalid private search')
+            rows, omitted = parse(private._payload, title=title, scope=scope)
+            state = 'partial' if omitted else ('results' if rows else 'empty')
+        except SearchUnavailable as fault:
+            state = fault.state
+        except (Blocked, ContractError):
+            state = 'failed'
+        finally:
+            if type(private) is PrivateSearch:
+                private.close()
+        # The source target is still live here; only independently obtained
+        # Hydra release metadata enters SQL. Catalogue facts remain NULL.
+        current()
+        with write_for(actor, profile_id):
+            ObtainResult.objects.bulk_create([ObtainResult(preview=receipt, guid=row['guid'],
+                metadata=row, digest=digest(row)) for row in rows])
+            receipt.state = state
+            receipt.save(update_fields=['state'])
+        return receipt
 
 
 def search(*, actor, profile_id, item_id, factory=None, season=None, episode=None):
@@ -120,7 +198,7 @@ def search(*, actor, profile_id, item_id, factory=None, season=None, episode=Non
     except ContractError:
         raise saved.SavedError('Saved title cannot be searched safely.', 409) from None
     now = timezone.now()
-    with effect_for(actor, profile_id):
+    with write_for(actor, profile_id):
         preview = ObtainPreview.objects.create(actor=actor, profile_id=profile_id,
             **identity(item, scope), created_at=now, expires_at=now + timedelta(minutes=15))
     state, rows = 'failed', []
@@ -152,7 +230,7 @@ def search(*, actor, profile_id, item_id, factory=None, season=None, episode=Non
         if type(private) is PrivateSearch:
             private.close()
     # No private payload or upstream exception is persisted, even on failure.
-    with effect_for(actor, profile_id), transaction.atomic():
+    with write_for(actor, profile_id):
         current_item(actor, profile_id, preview)
         if preview.expires_at <= timezone.now():
             rows, state = [], 'expired'
@@ -204,17 +282,21 @@ class SelectionForm(saved.ConfirmationForm):
 
 def review(*, actor, profile_id, preview_id, result_id):
     preview, result = owned_result(actor, profile_id, preview_id, result_id)
-    current_item(actor, profile_id, preview)
-    if preview.expires_at <= timezone.now() or preview.state not in ('results', 'partial'):
+    target = current_item(actor, profile_id, preview)
+    if preview.expires_at <= receipt_now(preview) or preview.state not in ('results', 'partial'):
         raise saved.SavedError('Preview expired or unavailable. Search again.', 409)
     if (not result.metadata['selectable'] or digest(result.metadata) != result.digest
-            or listing_reason(result.metadata, preview.title, preview.scope)):
+            or listing_reason(result.metadata, release_title(target), preview.scope)):
         raise saved.SavedError('Listing cannot be selected.', 409)
     return preview, result
 
 
 def confirm(*, actor, profile_id, preview_id, result_id, data):
-    with effect_for(actor, profile_id), transaction.atomic():
+    receipt = owned_preview(actor, profile_id, preview_id)
+    if receipt.publication_origin is not None:
+        return _confirm_origin(actor=actor, profile_id=profile_id, preview_id=preview_id,
+                               result_id=result_id, data=data)
+    with write_for(actor, profile_id):
         preview, result = review(actor=actor, profile_id=profile_id,
                                  preview_id=preview_id, result_id=result_id)
         item = current_item(actor, profile_id, preview)
@@ -251,10 +333,53 @@ def confirm(*, actor, profile_id, preview_id, result_id, data):
         return job, created
 
 
+def _confirm_origin(*, actor, profile_id, preview_id, result_id, data):
+    from .portable_saved_authority import active_portable_access
+    access = active_portable_access()
+    if access is None:
+        raise saved.SavedError('Current native selection required.', 409)
+    with access.effect_window(action='mutate'):
+        receipt, result = review(actor=actor, profile_id=profile_id, preview_id=preview_id, result_id=result_id)
+        target = current_item(actor, profile_id, receipt)
+        form = SelectionForm(data)
+        try:
+            token = signing.loads(data.get('review_token', ''), salt=SALT, max_age=900)
+            expected = signing.loads(review_token(receipt, result), salt=SALT)
+        except signing.BadSignature:
+            raise saved.SavedError('Review expired or invalid.', 409) from None
+        if token != expected or not form.is_valid():
+            raise saved.SavedError('Review conflict or invalid confirmation.', 409)
+        clean = form.cleaned_data
+        if clean['scope'] != receipt.scope or clean['edition'] != result.metadata['title']:
+            raise saved.SavedError('Exact release and episode required.', 409)
+        active = saved.active_identity_key(actor.pk, profile_id, target.provider, target.medium,
+                                            str(target.source_id), receipt.scope)
+        values = {key: None for key in ('provider', 'medium', 'source_id', 'title')}
+        values.update(publication_origin=receipt.publication_origin, scope=receipt.scope)
+        values.update({key: clean[key] for key in ('edition', 'storage', 'authorized_content', 'storage_check')})
+        with write_for(actor, profile_id):
+            try:
+                with transaction.atomic():
+                    job, created = AcquisitionJob.objects.get_or_create(actor=actor, profile_id=profile_id,
+                        request_id=receipt.pk, defaults={**values, 'saved_item': None, 'active_key': active,
+                            'status': 'blocked_configuration', 'reason': DISABLED})
+                    if created:
+                        ObtainSelection.objects.create(job=job, result=result)
+            except IntegrityError:
+                job = AcquisitionJob.objects.filter(actor=actor, profile_id=profile_id, active_key=active).first()
+                created = False
+            if (job is None or job.request_id != receipt.pk or job.status != 'blocked_configuration'
+                    or not ObtainSelection.objects.filter(job=job, result=result).exists()
+                    or any(getattr(job, key) != value for key, value in values.items())):
+                raise saved.SavedError('An existing choice conflicts; read its retained status.', 409)
+        current_item(actor, profile_id, receipt)
+        return job, created
+
+
 def context(preview):
     base = f'/profiles/{preview.profile_id}/saved/previews/{preview.pk}/'
-    return {'id': str(preview.pk), 'title': preview.title,
-        'state': 'expired' if preview.expires_at <= timezone.now() else preview.state,
+    return {'id': str(preview.pk), 'title': preview.title or 'Selected TV episode',
+        'state': 'expired' if preview.expires_at <= receipt_now(preview) else preview.state,
         'scope': preview.scope, 'episode_code': episode_code(preview.scope), 'expires_at': preview.expires_at.isoformat(),
         'submission_enabled': False, 'message': DISABLED,
         'results': [{**r.metadata, 'id': str(r.pk), 'digest': r.digest,

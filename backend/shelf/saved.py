@@ -173,7 +173,11 @@ def remove(*, actor, profile_id, item_id):
 
 
 def active_key(item, scope=None):
-    value = f'{item.actor_id}:{item.profile_id}:{item.provider}:{item.medium}:{item.source_id}'
+    return active_identity_key(item.actor_id, item.profile_id, item.provider, item.medium, item.source_id, scope)
+
+
+def active_identity_key(actor_id, profile_id, provider, medium, source_id, scope=None):
+    value = f'{actor_id}:{profile_id}:{provider}:{medium}:{source_id}'
     # Explicit pilot choices share the original key, preserving old active jobs.
     if scope is not None and scope.startswith('episode_') and episode_code(scope) != 'S01E01':
         value += ':' + scope
@@ -220,6 +224,7 @@ def review_token(item):
 
 
 def confirm(*, actor, profile_id, item_id, data):
+    from .portable_saved_authority import write_for
     item = owned_item(actor, profile_id, item_id)
     try:
         token = signing.loads(data['review_token'], salt=SALT, max_age=3600)
@@ -238,7 +243,7 @@ def confirm(*, actor, profile_id, item_id, data):
     configuration = UnconfiguredAcquisition.configuration()
     key = active_key(item)
     try:
-        with transaction.atomic():
+        with write_for(actor, profile_id):
             job, created = AcquisitionJob.objects.get_or_create(
                 actor=actor, profile_id=profile_id, request_id=request_id,
                 defaults={**values, 'saved_item': item, 'active_key': key,
@@ -255,9 +260,10 @@ def confirm(*, actor, profile_id, item_id, data):
 
 
 def cancel(*, actor, profile_id, job_id):
+    from .portable_saved_authority import write_for
     authority(actor, profile_id)
     require_available()
-    with transaction.atomic():
+    with write_for(actor, profile_id):
         jobs = AcquisitionJob.objects.filter(pk=job_id, actor=actor, profile_id=profile_id)
         if not jobs.update(reason=F('reason')):
             raise Http404

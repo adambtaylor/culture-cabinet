@@ -17,6 +17,8 @@ from django.views.decorators.http import require_GET, require_POST
 from . import grant_authority as ga, saved, obtain_preview as preview, obtain_acquisition as acquire, obtain_runtime
 from .models import AcquisitionJob, ProfileCabinetState, SavedItem, ObtainTransfer, ObtainLocalFile
 from .portable_authority import AuthorityFault
+from .enhance_contract import EnhanceFault
+from .disclosure import DisclosureError
 from .portable_saved_authority import (portable_saved_scope, select_portable_profile,
                                        selected_context)
 
@@ -73,6 +75,11 @@ def _guard(function):
             return HttpResponse('Obtain unavailable or exact review changed. Reload the persisted receipt; do not retry an uncertain enqueue.\n', status=409, content_type='text/plain')
         except (IntegrityError, OperationalError):
             return HttpResponse('Saved/Obtain storage conflict. Read the retained request; do not resend an uncertain enqueue.\n', status=503, content_type='text/plain')
+        except preview.SearchUnavailable:
+            return HttpResponse('Indexer unavailable. No automatic retry.\n', status=503, content_type='text/plain')
+        except (EnhanceFault, DisclosureError) as fault:
+            return HttpResponse(getattr(fault, 'code', 'CONTRACT_INVALID') + '. Review the current form and source permission.\n',
+                                status=409, content_type='text/plain')
     return view
 
 
@@ -121,7 +128,7 @@ def _job(access, job):
     transfer = ObtainTransfer.objects.filter(job=job).first()
     local = ObtainLocalFile.objects.filter(transfer=transfer).first() if transfer else None
     root = BASE + f'jobs/{job.pk}/'
-    return {'id': job.pk, 'title': job.title, 'edition': job.edition, 'scope': job.scope,
+    return {'id': job.pk, 'title': job.title or 'Selected TV episode', 'edition': job.edition, 'scope': job.scope,
         'storage': job.storage, 'status': transfer.state if transfer else job.status,
         'reason': transfer.reason if transfer else job.reason, 'has_transfer': transfer is not None,
         'provider_job': transfer.provider_job if transfer else '',
@@ -164,11 +171,15 @@ def _render(request, access, template, **extra):
 @csrf_protect
 @_guard
 def select(request):
-    data = _fields(request, {'profile_ref'})
-    ga._require(set(data) == {'profile_ref'}, 'CONTRACT_INVALID', 422)
+    data = _fields(request, {'profile_ref', 'return_to'})
+    ga._require('profile_ref' in data and ('return_to' not in data or data['return_to'] == 'owner_tv'),
+                'CONTRACT_INVALID', 422)
     selection = select_portable_profile(request.portable_authority, request.session.get('portable_session'), profile_ref=data['profile_ref'])
     request.session['portable_saved_selection'] = selection
-    return HttpResponseRedirect(BASE)
+    response = HttpResponseRedirect('/cabinet/obtain/tv/' if data.get('return_to') == 'owner_tv' else BASE)
+    if data.get('return_to') == 'owner_tv':
+        response.status_code = 303
+    return response
 
 
 @require_GET
@@ -176,6 +187,130 @@ def select(request):
 def index(request):
     with _scope(request) as access:
         return _render(request, access, 'cabinet/portable_saved_items.html')
+
+
+def _tv_context():
+    from . import portable_owner_tv as owner
+    return {'obtain_tv_entry_url': owner.ENTRY_URL, 'obtain_tv_preview_url': owner.PREVIEW_URL,
+        'obtain_tv_lookup_url': owner.LOOKUP_URL, 'obtain_tv_select_url': owner.SELECT_URL,
+        'obtain_tv_source_url': '/cabinet/source/tmdb/tv', 'obtain_tv_form': owner.OwnerTVForm()}
+
+
+@require_GET
+@_guard
+def owner_tv_entry(request):
+    from .enhancement_views import render_portable_saved
+    ga._require(set(request.GET) <= {'profile_ref'} and all(len(request.GET.getlist(k)) == 1 for k in request.GET),
+                'CONTRACT_INVALID', 422)
+    selection = request.session.get('portable_saved_selection')
+    profile_ref = request.GET.get('profile_ref') or (selection or {}).get('profile_ref')
+    if not profile_ref:
+        return render_portable_saved(request, template='cabinet/portable_obtain_tv.html',
+            context={**_tv_context(), 'obtain_tv_needs_selection': True, 'cabinet_url': '/setup/cabinet'})
+    authority = request.portable_authority; session_ref = request.session.get('portable_session')
+    with ga.recovery_guard(authority, session_ref, profile_ref=profile_ref), authority._lock:
+        state, _ = ga._bound(authority, session_ref, profile_ref)
+        if type(selection) is dict and selection.get('profile_ref') == str(state.profile_ref):
+            with _scope(request) as access:
+                return _render(request, access, 'cabinet/portable_obtain_tv.html', **_tv_context())
+        return render_portable_saved(request, template='cabinet/portable_obtain_tv.html', context={
+            **_tv_context(), 'profile_ref': str(state.profile_ref), 'profile_label': state.profile.label,
+            'cabinet_url': '/setup/cabinet?profile_ref=' + str(state.profile_ref),
+            'obtain_tv_needs_selection': True, 'obtain_tv_select_profile_url': BASE + 'select/'})
+
+
+@require_POST
+@csrf_protect
+@_guard
+def owner_tv_preview(request):
+    from . import portable_owner_tv as owner
+    data = _fields(request, {'profile_ref', 'selection_token'} | set(owner.OwnerTVForm.base_fields))
+    form = owner.OwnerTVForm({key: value for key, value in data.items() if key in owner.OwnerTVForm.base_fields})
+    with _scope(request, data, mutate=True) as access:
+        if not form.is_valid():
+            return _render(request, access, 'cabinet/portable_obtain_tv.html', **{**_tv_context(),
+                'obtain_tv_form': form, 'error_message': 'Review the title, first-air year and one episode.'})
+        with access.effect_window(action='mutate'):
+            value = owner.get_owner_tv(access).preview(**form.cleaned_data)
+        initial = {key: value[key] for key in owner.OwnerLookupForm.base_fields if key != 'confirmed'}
+        return _render(request, access, 'cabinet/portable_obtain_tv.html', **_tv_context(),
+            obtain_tv_preview=value, obtain_tv_lookup_form=owner.OwnerLookupForm(initial=initial))
+
+
+@require_POST
+@csrf_protect
+@_guard
+def owner_tv_lookup(request):
+    from . import portable_owner_tv as owner
+    data = _fields(request, {'profile_ref', 'selection_token'} | set(owner.OwnerLookupForm.base_fields))
+    values = {key: value for key, value in data.items() if key in owner.OwnerLookupForm.base_fields}
+    with _scope(request, data, mutate=True) as access:
+        matches = owner.get_owner_tv(access).lookup(values, owner.owner_backend(access))
+        return _render(request, access, 'cabinet/portable_obtain_tv.html', **_tv_context(), obtain_tv_matches=matches)
+
+
+@require_POST
+@csrf_protect
+@_guard
+def owner_tv_select(request):
+    from . import portable_owner_tv as owner
+    data = _fields(request, {'profile_ref', 'selection_token'} | set(owner.OwnerMatchForm.base_fields))
+    with _scope(request, data, mutate=True) as access:
+        with access.effect_window(action='mutate'):
+            ref = owner.get_owner_tv(access).select({key: value for key, value in data.items()
+                                                    if key in owner.OwnerMatchForm.base_fields})
+        return HttpResponseRedirect('/cabinet/obtain/options/?' + urlencode({'owner_selection_ref': ref}))
+
+
+def _origin_choice(access, data):
+    from .portable_owner_tv import ObtainOriginSelectorForm
+    from .portable_obtain_origin import resolve_current_origin, resolve_owner_selection_origin
+    form = ObtainOriginSelectorForm(data)
+    ga._require(form.is_valid(), 'CONTRACT_INVALID', 422)
+    value = form.cleaned_data
+    if value.get('owner_selection_ref'):
+        return resolve_owner_selection_origin(access, selection_ref=value['owner_selection_ref'], now=access.authority.now())
+    return resolve_current_origin(access, publication_revision=value['publication_revision'],
+        candidate_key=value['candidate_key'], scope='series_s01e01', now=access.authority.now())
+
+
+@require_GET
+@_guard
+def options(request):
+    from .portable_owner_tv import ObtainOptionsForm, ObtainOriginSelectorForm
+    ga._require(set(request.GET) <= set(ObtainOriginSelectorForm.base_fields) | {'profile_ref'}
+        and all(len(request.GET.getlist(key)) == 1 for key in request.GET), 'CONTRACT_INVALID', 422)
+    with _scope(request) as access:
+        ga._require('profile_ref' not in request.GET or request.GET['profile_ref'] == access.profile_ref)
+        selector = {key: value for key, value in request.GET.items() if key != 'profile_ref'}
+        origin, target = _origin_choice(access, selector)
+        return _render(request, access, 'cabinet/portable_obtain_options.html',
+            obtain_options={'title': target.title, 'scope': target.scope, 'provider_label': 'TMDB',
+                'search_enabled': True, 'search_url': '/cabinet/obtain/search/',
+                'expires_at': origin['valid_until'], 'cancel_url': '/cabinet/obtain/tv/'},
+            obtain_options_form=ObtainOptionsForm(initial=selector))
+
+
+@require_POST
+@csrf_protect
+@_guard
+def origin_search(request):
+    from .portable_owner_tv import ObtainOptionsForm, ObtainOriginSelectorForm
+    data = _fields(request, {'profile_ref', 'selection_token'} | set(ObtainOptionsForm.base_fields))
+    values = {key: value for key, value in data.items() if key in ObtainOptionsForm.base_fields}
+    form = ObtainOptionsForm(values)
+    ga._require(form.is_valid(), 'CONTRACT_INVALID', 422)
+    with _scope(request, data, mutate=True) as access:
+        selector = {key: value for key, value in values.items() if key in ObtainOriginSelectorForm.base_fields}
+        origin, target = _origin_choice(access, selector)
+        if origin['schema'] == 'obtain-publication-origin/v1' and form.cleaned_data.get('season') is not None:
+            from .episode_scope import make_scope
+            from .portable_obtain_origin import resolve_current_origin
+            origin, target = resolve_current_origin(access, publication_revision=form.cleaned_data['publication_revision'],
+                candidate_key=form.cleaned_data['candidate_key'],
+                scope=make_scope(form.cleaned_data['season'], form.cleaned_data['episode']), now=access.authority.now())
+        receipt = preview.search_origin(access=access, origin=origin, scope=target.scope)
+        return HttpResponseRedirect(BASE + f'previews/{receipt.pk}/')
 
 
 @require_POST

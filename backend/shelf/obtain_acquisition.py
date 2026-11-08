@@ -14,7 +14,7 @@ from django.utils import timezone
 
 from shelf import obtain_preview as preview, saved
 from shelf import completion_registry as registry
-from shelf.portable_saved_authority import effect_for
+from shelf.portable_saved_authority import effect_for, write_for, active_portable_access
 from shelf.acquisition_contract import Blocked, ContractError, MAX_NZB_BYTES
 from shelf.acquisition_pipeline import (Checkpoint, Completion, Evidence, Pipeline,
                                         ProviderJob, Snapshot, StagedFile, verify_staging)
@@ -200,7 +200,7 @@ class DjangoCheckpoints:
     def save(self, checkpoint):
         if checkpoint.snapshot != self.snapshot:
             raise ContractError('Checkpoint identity mismatch')
-        with transaction.atomic(durable=True):
+        with write_for(self.transfer.job.actor, self.transfer.job.profile_id, durable=True):
             updated = ObtainTransfer.objects.filter(pk=self.transfer.pk, revision=self.revision).update(
                 state=checkpoint.state, reason=checkpoint.reason,
                 provider_job=checkpoint.job.job_id if checkpoint.job else '', revision=F('revision') + 1)
@@ -249,7 +249,7 @@ def submit(*, actor, profile_id, job_id, context, token, confirmed, retriever=No
         raise ContractError('Reviewed NZB changed')
     # Serialize with saved.cancel and competing submitters using the existing job.
     # No network operation occurs inside this durable transaction.
-    with effect_for(actor, profile_id), transaction.atomic(durable=True):
+    with write_for(actor, profile_id, durable=True):
         AcquisitionJob.objects.filter(pk=job.pk).update(reason=F('reason'))
         job = owned_job(actor, profile_id, job_id)
         current, current_receipt = exact_result(job, fresh=True)
@@ -350,7 +350,12 @@ def repair_registration(transfer):
         return
     job = transfer.job
     try:
-        context = OperatorContext(job.actor_id, job.profile_id, 'candidate_operator', True)
+        access = active_portable_access()
+        if access is None:
+            context = OperatorContext(job.actor_id, job.profile_id, 'candidate_operator', True)
+        else:
+            from .obtain_native_context import native_job_context
+            context = native_job_context(access, job_id=job.pk, operation='observe')
         entry = completion_registration(actor=job.actor, profile_id=job.profile_id,
                                         job_id=job.pk, context=context)
         registry.publish_registration(transfer.binding['completion_intent']['registry_path'], entry)
@@ -359,9 +364,10 @@ def repair_registration(transfer):
     else:
         reason = ''
     if transfer.reason != reason:
-        ObtainTransfer.objects.filter(pk=transfer.pk, state='queued',
-            revision=transfer.revision, local_cancelled_at__isnull=True).update(
-                reason=reason, revision=F('revision') + 1)
+        with write_for(job.actor, job.profile_id):
+            ObtainTransfer.objects.filter(pk=transfer.pk, state='queued',
+                revision=transfer.revision, local_cancelled_at__isnull=True).update(
+                    reason=reason, revision=F('revision') + 1)
         transfer.refresh_from_db()
 
 

@@ -655,6 +655,11 @@ def semantic_check(raw):
         columns={r[1] for r in raw.execute('PRAGMA table_info('+model._meta.db_table+')')}
         if columns != {f.column for f in model._meta.local_fields}: raise RecoveryBlocked('Unknown schema columns.')
     if raw.execute('PRAGMA integrity_check').fetchall()!=[('ok',)] or raw.execute('PRAGMA foreign_key_check').fetchall(): raise RecoveryBlocked('Database integrity failed.')
+    from .portable_obtain_origin import validate_obtain_history
+    try:
+        validate_obtain_history(raw)
+    except (ValueError, TypeError, KeyError):
+        raise RecoveryBlocked('Obtain origin semantics failed.') from None
     if not raw.execute("SELECT 1 FROM django_migrations WHERE app='shelf' AND name='0002_feedback'").fetchone(): raise RecoveryBlocked('Unknown schema.')
     events=rows(raw,'SELECT * FROM shelf_feedbackevent ORDER BY profile_id,target_id,signal,scope,revision')
     targets={r['id']:r for r in rows(raw,'SELECT * FROM shelf_feedbacktarget')}
@@ -859,7 +864,7 @@ def _fictional_target(target):
 def _effective_guards(raw):
     from importlib import import_module
     import re
-    current = import_module('shelf.migrations.0024_portable_saved_lineage')
+    current = import_module('shelf.migrations.0025_obtain_native_origin')
     try:
         definitions = current.effective_inventory(raw)
     except RuntimeError:

@@ -95,11 +95,22 @@ def serialize(snapshot, grants, context, collection, *, now, producer=None, plan
 
 
 @sensitive_variables()
-def serialize_catalogue(snapshot, grants, context, registry, *, now, plan_ref, bindings):
+def serialize_catalogue(snapshot, grants, context, registry, *, now, plan_ref, bindings, owner_intent=None):
     """The sole codec's catalogue-purpose port; no source transport or credentials."""
     from .enhance_contract import CataloguePlan, EnhanceBindings, RegistryView
     require = disclosure._require
     require(type(registry) is RegistryView and type(bindings) is EnhanceBindings)
+    if owner_intent is not None:
+        from .portable_owner_tv import OwnerTVIntent
+        require(snapshot is None and type(owner_intent) is OwnerTVIntent
+                and bindings == owner_intent.bindings and plan_ref == owner_intent.intent_ref,
+                'AUTHORITY_DENIED')
+        body, _ = disclosure.catalogue_input(None, grants, context, registry.categories,
+                                            now=now, owner_intent=owner_intent)
+        expires = min(owner_intent.expires_at, disclosure._time(context['session_expires_at']))
+        require(now < expires, 'PREVIEW_STALE')
+        return CataloguePlan(plan_ref, bindings, registry.categories, body,
+                             hashlib.sha256(body).hexdigest(), expires)
     require((bindings.installation_id, bindings.actor_ref, bindings.profile_ref,
              bindings.snapshot_revision, bindings.policy_epoch, bindings.restriction_watermark,
              bindings.registry_revision, bindings.config_revision, bindings.grants_digest) ==

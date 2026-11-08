@@ -640,7 +640,7 @@ def portable_input(preparation):
     return value
 
 
-def catalogue_input(snapshot, grants, context, categories, *, now):
+def catalogue_input(snapshot, grants, context, categories, *, now, owner_intent=None):
     """Derive exact catalogue terms only AFTER the existing permission traversal.
 
     No complete-state digest, denied note or private node reference can seed a
@@ -652,6 +652,14 @@ def catalogue_input(snapshot, grants, context, categories, *, now):
     for category in categories:
         _text(category, 80)
     _require('all' not in categories and len(set(categories)) == len(categories))
+    if owner_intent is not None:
+        from .portable_owner_tv import OwnerTVIntent
+        _require(snapshot is None and type(owner_intent) is OwnerTVIntent, 'AUTHORITY_DENIED')
+        # Live issuer membership, not a caller-supplied JSON tag, authenticates
+        # human search input. Existing source consent still gates its use.
+        value = owner_intent.query_input(grants, context, categories, now=now)
+        _require(bool(_grant_permissions(grants, context, now)), 'AUTHORITY_DENIED')
+        return canonical_bytes(value), ()
     prepared = prepare(snapshot, grants, context, [], {}, {}, now=now)
     _require(prepared.ok, prepared.code)
     profile = read_json(prepared.profile_bytes)['profile']

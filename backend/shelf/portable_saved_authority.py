@@ -11,7 +11,7 @@ import secrets
 
 from django.core import signing
 from django.contrib.auth import get_user_model
-from django.db import connection
+from django.db import connection, transaction
 
 from . import grant_authority as ga
 from .portable_authority import AuthorityFault, PortableAuthority
@@ -152,3 +152,19 @@ def effect_for(actor, profile_id, *, action='select'):
         return nullcontext()
     access.require(actor_id=actor.pk, profile_id=profile_id, action=action)
     return access.effect_window(action=action)
+
+
+@contextmanager
+def write_for(actor, profile_id, *, durable=False):
+    """Scope an Obtain-only write without putting external work in its SQL span."""
+    access = active_portable_access()
+    if access is None:
+        with transaction.atomic(durable=durable):
+            yield
+        return
+    access.require(actor_id=actor.pk, profile_id=profile_id, action='mutate')
+    # Existing native lock/writer ordering is unchanged. Operational acquisition
+    # receipts use this same writer, without raising preference/publication floors.
+    with ga.current_writer(access.authority, access.session_ref, access.profile_ref):
+        with transaction.atomic(durable=durable), ga.writer_window(actor, profile_id):
+            yield
