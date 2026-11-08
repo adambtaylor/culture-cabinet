@@ -29,9 +29,9 @@
     {% for response in group.signals %}
     <div class="cabinet-feedback-signal">
       {% if not group.is_new %}
-      {% if response.signal == 'note' %}<p><strong>Saved note</strong></p>{% if response.value != None %}<p class="cabinet-exact-note">{{ response.value }}</p>{% else %}<p>No current note.</p>{% endif %}
-      {% elif response.signal == 'interest' %}<p><strong>Interest:</strong> {% if response.value != None %}{{ response.value }}{% else %}No current response{% endif %}</p>
-      {% elif response.signal == 'enjoyment' %}<p><strong>Experienced enjoyment:</strong> {% if response.value != None %}{{ response.value }} / 5{% else %}No current response{% endif %}</p>{% endif %}
+      {% if response.signal == 'note' %}<p><strong>Saved note</strong></p>{% if response.cleared %}<p>This note was cleared.</p>{% elif response.value != None %}<p class="cabinet-exact-note">{{ response.value }}</p>{% if response.value == '' %}<p>Saved note is empty.</p>{% endif %}{% else %}<p>No current note.</p>{% endif %}
+      {% elif response.signal == 'interest' %}<p><strong>Interest:</strong> {% if response.cleared %}Cleared{% elif response.value != None %}{{ response.value }}{% else %}No current response{% endif %}</p>
+      {% elif response.signal == 'enjoyment' %}<p><strong>Experienced enjoyment:</strong> {% if response.cleared %}Cleared{% elif response.value != None %}{{ response.value }} / 5{% else %}No current response{% endif %}</p>{% endif %}
       {% endif %}
       <details{% if group.entry_kind == 'category_note' and group.is_new %} open{% endif %}>
         <summary>{% if response.signal == 'interest' %}Interest in exploring this{% elif response.signal == 'enjoyment' %}Enjoyment of work you have experienced{% else %}{% if group.is_new %}Write a preference note{% else %}Edit your note{% endif %}{% endif %}</summary>
@@ -63,7 +63,7 @@
           {% elif response.signal == 'note' %}
           <label for="taste-note-{{ forloop.parentloop.counter }}-{{ forloop.counter }}">Preference note</label>
           {% comment %}The first newline after textarea is deliberately consumed by HTML parsing. Any authored leading newline, spacing or Unicode after it stays exact; never strip or normalize note text.{% endcomment %}
-          <textarea id="taste-note-{{ forloop.parentloop.counter }}-{{ forloop.counter }}" name="text" maxlength="500" required rows="4" aria-describedby="taste-note-help">
+          <textarea id="taste-note-{{ forloop.parentloop.counter }}-{{ forloop.counter }}" name="text" maxlength="500" rows="4" aria-describedby="taste-note-help">
 {{ response.value|default_if_none:'' }}</textarea>
           <button type="submit">Save note</button>
           {% endif %}
@@ -288,7 +288,6 @@
       {% if card.facts %}<dl class="cabinet-facts">{% for fact in card.facts %}<div><dt>{{ fact.name }}</dt><dd>{{ fact.value }}</dd></div>{% endfor %}</dl>{% endif %}
       </details>
       {% if card.reasons %}<h4>For you</h4>{% for reason in card.reasons %}<p><strong>{{ reason.label }}:</strong> {{ reason.text }} <span class="cabinet-evidence">{% if reason.evidence_count %}{{ reason.evidence_count }} evidence reference{{ reason.evidence_count|pluralize }}.{% else %}No evidence references supplied.{% endif %}</span></p>{% endfor %}{% else %}<p class="cabinet-no-reason">No current For You explanation is available.</p>{% endif %}
-      {% if card.feedback_unavailable %}<p role="status">Responses are unavailable with the current session or permissions. <a href="/setup">Review owner setup</a>, then retry your intended response explicitly.</p>{% endif %}
       {% if card.feedback.signals %}
       <details class="cabinet-card-feedback">
         <summary>Your response to this pick</summary>
@@ -296,8 +295,9 @@
         {% for response in card.feedback.signals %}
         <div class="cabinet-feedback-signal">
           <h4>{% if response.signal == 'interest' %}Interest{% elif response.signal == 'enjoyment' %}Experienced enjoyment{% else %}Preference note{% endif %}</h4>
-          {% if response.value != None %}
-            {% if response.signal == 'note' %}<p class="cabinet-exact-note">{{ response.value }}</p>
+          {% if response.cleared %}<p>This response was cleared.</p>
+          {% elif response.value != None %}
+            {% if response.signal == 'note' %}<p class="cabinet-exact-note">{{ response.value }}</p>{% if response.value == '' %}<p>Saved note is empty.</p>{% endif %}
             {% else %}<p>Saved: {{ response.value }}{% if response.signal == 'enjoyment' %} / 5{% endif %}</p>{% endif %}
           {% else %}<p>No current response.</p>{% endif %}
           {% if response.can_set %}
@@ -320,7 +320,7 @@
             <button type="submit">Save enjoyment</button>
             {% elif response.signal == 'note' %}
             <label for="card-note-{{ card.feedback.target_ref }}">Preference note · up to 500 characters</label>
-            <textarea id="card-note-{{ card.feedback.target_ref }}" name="text" maxlength="500" required rows="4">
+            <textarea id="card-note-{{ card.feedback.target_ref }}" name="text" maxlength="500" rows="4">
 {{ response.value|default_if_none:'' }}</textarea>
             <p>Notes stay local by default. This is a preference, not a hard rule. Saving does not share a note or send inference.</p>
             <button type="submit">Save note</button>

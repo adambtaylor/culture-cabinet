@@ -310,3 +310,35 @@ class PortableEnhanceHTTPTests(SimpleTestCase):
         self.assertTrue(any(n.attrs.get('href') == '/cabinet/taste?profile_ref=' + PROFILE
                             for n in doc.tagged('a')))
         self.service.start.assert_not_called();self.service.confirm.assert_not_called()
+
+    def test_review_fresh_authority_refusal_discards_all_cards_even_after_an_earlier_read(self):
+        from copy import deepcopy
+        from uuid import uuid4
+        publication = self.publication()
+        first = publication['manifest']['categories'][0]['cards'][0]
+        first['title'] = 'PRIVATE-FIRST-CARD'
+        second = {**deepcopy(first), 'key': 'candidate-two', 'title': 'PRIVATE-SECOND-CARD'}
+        publication['manifest']['categories'][0]['cards'].append(second)
+        note = 'PRIVATE-LOCAL-NOTE-MUST-NOT-SURVIVE-REFUSAL'
+        for status, code in ((503, 'CAPABILITY_UNAVAILABLE'), (403, 'AUTHORITY_DENIED'), (409, 'PREVIEW_STALE')):
+            for fail_after in (0, 1):
+                with self.subTest(status=status, fail_after=fail_after):
+                    self.service.current.return_value = deepcopy(publication)
+                    calls = []
+                    def current_read(authority, session_ref, profile_ref, *, target_ref):
+                        if len(calls) == fail_after:
+                            raise AuthorityFault(code, status)
+                        calls.append(target_ref)
+                        return {'profile_ref': profile_ref, 'target_ref': target_ref,
+                            'feedback_action': '/cabinet/feedback', 'actions': ['note'],
+                            'signals': [{'signal': 'note', 'value': None, 'text': note,
+                                'revision': 1, 'event_ref': str(uuid4()), 'can_undo': True,
+                                'mutation_id': str(uuid4()), 'undo_mutation_id': str(uuid4())}]}
+                    self.feedback_read.side_effect = current_read
+                    with patch.object(portable_setup_views, 'cabinet_choices', return_value=self.cabinet_choices()):
+                        response = views.portable_cabinet(self.cabinet_request())
+                    self.assertEqual(response.status_code, status)
+                    for private in ('PRIVATE-FIRST-CARD', 'PRIVATE-SECOND-CARD', note, 'name="target_ref"'):
+                        self.assertNotIn(private, response.content.decode())
+                    self.assertEqual(len(calls), fail_after)
+        self.service.start.assert_not_called(); self.service.confirm.assert_not_called()

@@ -713,3 +713,40 @@ class EnhancePresentationTests(SimpleTestCase):
         self.assertIn('allow_free_text_entry', checks)
         self.assertFalse(any('checked' in n.attrs for n in checks.values()))
         self.assertIn('Leaving either unchecked keeps those notes out of the request', doc.root.text())
+
+    def test_review_empty_notes_are_submittable_without_relaxing_other_fields(self):
+        _, intake = self.cabinet(taste_input=True, taste_category='book', taste_groups=self.taste_groups())
+        self.assertTrue(intake.tagged('textarea'))
+        for field in intake.tagged('textarea'):
+            self.assertNotIn('required', field.attrs)
+            self.assertEqual(field.attrs['maxlength'], '500')
+        self.assertTrue(all('required' in n.attrs for n in intake.tagged('input')
+                            if n.attrs.get('type') == 'text'))
+        checks = [n for n in intake.tagged('input') if n.attrs.get('name') == 'experienced_ack']
+        self.assertTrue(checks and all('required' in n.attrs for n in checks))
+        responses = [{**r, 'can_set': True} for r in self.taste_groups()[0]['signals']]
+        _, cards = self.cabinet(categories=[{'category': 'book', 'visible': True, 'cards': [
+            {'title': 'Fiction card', 'feedback': {'target_ref': 'target', 'signals': responses}}]}])
+        self.assertEqual(len(cards.tagged('textarea')), 1)
+        self.assertNotIn('required', cards.tagged('textarea')[0].attrs)
+        self.assertEqual(cards.tagged('textarea')[0].attrs['maxlength'], '500')
+        self.assertTrue(all('required' in n.attrs for n in cards.tagged('input')
+                            if n.attrs.get('name') == 'experienced_ack'))
+
+    def test_review_null_clear_and_authored_empty_note_remain_distinct_with_event_undo(self):
+        from django.test import RequestFactory
+        from shelf import enhancement_views as views
+        for cleared in (False, True):
+            with self.subTest(cleared=cleared):
+                value = self.backend_feedback_fixture(note='')
+                raw = value['feedback_entries'][0]['signals'][2]
+                raw['cleared'] = cleared
+                display = views._feedback_signals([raw])[0]
+                self.assertEqual(display['value'], None if cleared else '')
+                self.assertEqual(display['event_ref'], raw['event_ref'])
+                self.assertEqual(display['can_undo'], True)
+                response = views._native_cabinet_html(RequestFactory().get('/cabinet/taste'), value)
+                doc = Document(response.content.decode())
+                self.assertIn('This note was cleared.' if cleared else 'Saved note is empty.', doc.root.text())
+                self.assertNotIn('Saved note is empty.' if cleared else 'This note was cleared.', doc.root.text())
+                self.assertTrue(any('data-taste-undo' in n.attrs for n in doc.tagged('form')))

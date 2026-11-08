@@ -620,6 +620,10 @@ def _feedback_signals(rows, *, actions=()):
         require(signal in ('interest', 'enjoyment', 'note') and signal not in seen)
         seen.add(signal)
         revision, undo = row.get('revision', 0), row.get('can_undo', False)
+        # A shared null-clear keeps its event/Undo; authored text='' is still
+        # a real empty note. Do not infer clear from a falsy value.
+        cleared = row.get('cleared', False)
+        require(type(cleared) is bool)
         require(type(revision) is int and 0 <= revision <= 2**53 - 1 and type(undo) is bool)
         event = row.get('event_ref', '')
         require(type(event) is str)
@@ -630,14 +634,14 @@ def _feedback_signals(rows, *, actions=()):
         if signal == 'note':
             text = _display_text(row.get('text', ''), 500)
             require('\x00' not in text)
-            value = text if event else None
+            value = text if event and not cleared else None
         elif signal == 'interest':
             require(value is None or type(value) is str and value in ('no', 'maybe', 'yes'))
         else:
             require(value is None or type(value) is int and 1 <= value <= 5)
         item = {'signal': signal, 'value': value, 'revision': revision, 'event_ref': event,
                 'mutation_id': str(_uuid(row.get('mutation_id'))), 'can_undo': undo,
-                'can_set': signal in actions}
+                'can_set': signal in actions, 'cleared': cleared}
         item['undo_mutation_id'] = str(_uuid(row.get('undo_mutation_id'))) if undo else ''
         result.append(item)
     return result
@@ -816,23 +820,17 @@ def portable_cabinet(request):
     context['feedback_available'] = True
     context['feedback_url'] = '/cabinet/taste?' + urlencode({'profile_ref': profile_ref,
         **({'category': category} if category else {})})
-    # Only missing feedback capability may leave a filtered card readable with
-    # controls withheld. Fresh authority/currentness refusals propagate: never
-    # render an earlier private card or cached binding after that refusal.
+    # Every fresh feedback-read refusal propagates, including recovery mapped
+    # to 503. Status/code alone cannot identify optional missing UI capability.
+    # Even a later-card failure must discard all earlier cards and bindings.
     for row in context['categories']:
         if not row['visible']:
             continue
         for card in row['cards']:
             target = feedback_target_ref(profile_ref, card['candidate_key'])
-            try:
-                feedback = card_feedback_context(request.portable_authority, session_ref,
-                    profile_ref, target_ref=target)
-            except AuthorityFault as fault:
-                if fault.status != 503:
-                    raise
-                card['feedback_unavailable'] = True
-            else:
-                card['feedback'] = _card_feedback_display(feedback, profile_ref=profile_ref, target_ref=target)
+            feedback = card_feedback_context(request.portable_authority, session_ref,
+                profile_ref, target_ref=target)
+            card['feedback'] = _card_feedback_display(feedback, profile_ref=profile_ref, target_ref=target)
     return _native_cabinet_html(request, context, status=status)
 
 
