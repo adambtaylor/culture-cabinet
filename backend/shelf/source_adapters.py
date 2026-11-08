@@ -32,6 +32,9 @@ class SourceSpec:
 
 
 SOURCES = (
+    SourceSpec('musicbrainz_artist', 'https://musicbrainz.org', ('artist',),
+               ('artists_by_name',), 'musicbrainz', False,
+               ttl_seconds=3600, response_bytes=131072, search=True, kind='api'),
     SourceSpec('musicbrainz_recording', 'https://musicbrainz.org', ('recording',),
                ('recordings_by_artist_name',), 'musicbrainz', False,
                ttl_seconds=3600, response_bytes=131072, search=True, kind='api'),
@@ -236,11 +239,14 @@ def _normalize(spec, request, reply, *, now):
             cards.append(SourceCard(card.key, card.title, medium, provider,
                 str(card.source_id), card.url, f'normalized-source-row:{index}'))
     elif spec.parser == 'musicbrainz':
-        require(request.category == 'recording' and request.operation == 'recordings_by_artist_name')
+        category = request.category
+        require((request.source, category, request.operation) in (
+            ('musicbrainz_recording', 'recording', 'recordings_by_artist_name'),
+            ('musicbrainz_artist', 'artist', 'artists_by_name')))
         document = source.strict_json(reply.body)
-        require(type(document) is dict and type(document.get('recordings')) is list
-                and len(document['recordings']) <= 9)
-        projected = source.parse_musicbrainz(document, 'recording', stamp)
+        rows = document.get('artists' if category == 'artist' else 'recordings') if type(document) is dict else None
+        require(type(rows) is list and len(rows) <= 9)
+        projected = source.parse_musicbrainz(document, category, stamp)
         # The existing parser's rank is upstream response order, not CC0 core
         # identity data. Discard it, along with scores/tags/statistics. A stable
         # title tie-break makes duplicate-ID projection independent of response
@@ -249,8 +255,8 @@ def _normalize(spec, request, reply, *, now):
         for row in sorted(projected, key=lambda row: (row.key, row.title)):
             unique.setdefault(row.key, row)
         for index, row in enumerate(unique.values()):
-            cards.append(SourceCard(row.key, row.title, 'recording', 'musicbrainz',
-                row.key.rsplit(':', 1)[-1], row.url, f'normalized-core-recording:{index}'))
+            cards.append(SourceCard(row.key, row.title, category, 'musicbrainz',
+                row.key.rsplit(':', 1)[-1], row.url, f'normalized-core-{category}:{index}'))
     elif spec.parser == 'apple':
         from .podcast_sources import parse_results
         for index, row in enumerate(parse_results(source.strict_json(reply.body), stamp)):
