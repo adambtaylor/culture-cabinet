@@ -843,3 +843,171 @@ class EnhancePresentationTests(SimpleTestCase):
                       {'schema': 'feedback-action-outcome/v1', 'code': 'RESPONSE_SAVED', 'text': 'Injected'}):
             with self.subTest(value=value), self.assertRaises(AuthorityFault):
                 views._feedback_outcome_display(value)
+
+    def native_media_source_fixture(self, category, readiness='not_configured', **changes):
+        # Frozen f75 presentation shape only. Actual owner/source/token/grant
+        # guards and normal native callers are Taste's separate integration proof.
+        adapter, label, route, connection = {
+            'book': ('hardcover', 'Hardcover books', '/cabinet/source/hardcover', '11111111-1111-4111-8111-111111111111'),
+            'movie': ('tmdb_movie', 'TMDB movies', '/cabinet/source/tmdb/movie', '22222222-2222-4222-8222-222222222222'),
+            'tv': ('tmdb_tv', 'TMDB television', '/cabinet/source/tmdb/tv', '33333333-3333-4333-8333-333333333333'),
+        }[category]
+        profile = self.backend_feedback_fixture()['profile_ref']
+        return {'source_setup': True, 'source_adapter': adapter, 'source_category': category,
+            'source_label': label, 'profile_ref': profile, 'profile_label': 'Fictional cabinet',
+            'source_page_url': route + '?profile_ref=' + profile,
+            'source_configure_action': route + '/configure',
+            'source_credential_action': route + '/credential',
+            'source_consent_action_url': route + '/consent',
+            'source_configured': readiness != 'not_configured',
+            'source_revision': 0 if readiness == 'not_configured' else 1,
+            'source_connection_ref': connection, 'source_credential_required': True,
+            'source_credential_present': readiness in ('permission_required', 'ready'),
+            'source_readiness': readiness, 'source_consent_revision': 2,
+            'source_consent_active': readiness == 'ready',
+            'source_consent_record_active': readiness == 'ready',
+            'source_consent_expires': '2026-01-01T00:05:00Z',
+            'source_consent_action': 'grant', 'source_choices': [
+                {'code': code, 'label': category + ' ' + code.replace('_', ' ')} for code in
+                ('canonical_seed', 'explicit_favourites', 'anticipated_reactions', 'experienced_enjoyment')],
+            'csrf_token': 's' * 64, 'cabinet_url': '/cabinet?profile_ref=' + profile, **changes}
+
+    def test_native_media_configure_is_explicit_and_does_not_solicit_a_token_yet(self):
+        for category in ('book', 'movie', 'tv'):
+            with self.subTest(category=category):
+                context = self.native_media_source_fixture(category)
+                html, doc = self.cabinet(**context)
+                self.assertEqual(doc.tagged('h1')[0].text(), context['source_label'])
+                forms = doc.tagged('form')
+                self.assertEqual(len(forms), 1)
+                self.assertEqual(forms[0].attrs['action'], context['source_configure_action'])
+                fields = {n.attrs.get('name'): n for n in forms[0].nodes() if n.tag == 'input'}
+                self.assertEqual(set(fields), {'csrfmiddlewaretoken', 'profile_ref', 'expected_revision', 'confirmed'})
+                self.assertEqual(fields['expected_revision'].attrs['value'], '0')
+                self.assertEqual(fields['profile_ref'].attrs['value'], context['profile_ref'])
+                self.assertEqual(fields['csrfmiddlewaretoken'].attrs['value'], 's' * 64)
+                self.assertIn('required', fields['confirmed'].attrs)
+                self.assertNotIn('checked', fields['confirmed'].attrs)
+                self.assertNotIn('secret', fields)
+                self.assertEqual(doc.tagged('script'), [])
+                self.assertNotIn('SOURCE_ACTIVATION_HELD', html)
+                self.assertNotIn('dormant', doc.root.text())
+
+    def test_native_media_missing_token_uses_empty_protected_form_without_new_grant(self):
+        for category in ('book', 'movie', 'tv'):
+            with self.subTest(category=category):
+                context = self.native_media_source_fixture(category, 'credential_required',
+                    secret='DO_NOT_RENDER_PRIVATE_INPUT', source_secret='DO_NOT_RENDER_PRIVATE_INPUT')
+                html, doc = self.cabinet(**context)
+                forms = doc.tagged('form')
+                self.assertEqual(len(forms), 1)
+                self.assertIn('data-source-credential', forms[0].attrs)
+                self.assertEqual(forms[0].attrs['action'], context['source_credential_action'])
+                self.assertEqual(forms[0].attrs['method'], 'post')
+                self.assertEqual(forms[0].attrs['autocomplete'], 'off')
+                fields = {n.attrs.get('name'): n for n in forms[0].nodes() if n.tag == 'input'}
+                self.assertEqual(set(fields), {'csrfmiddlewaretoken', 'profile_ref', 'connection_ref', 'revision', 'secret'})
+                self.assertEqual(fields['connection_ref'].attrs['value'], context['source_connection_ref'])
+                self.assertEqual(fields['revision'].attrs['value'], '1')
+                self.assertEqual(fields['csrfmiddlewaretoken'].attrs['value'], 's' * 64)
+                secret = fields['secret']
+                self.assertEqual(secret.attrs['type'], 'password')
+                self.assertEqual(secret.attrs['autocomplete'], 'off')
+                self.assertIn('required', secret.attrs)
+                self.assertNotIn('value', secret.attrs)
+                self.assertTrue(any(n.attrs.get('for') == secret.attrs['id'] for n in doc.tagged('label')))
+                self.assertTrue(any(n.attrs.get('id') == secret.attrs['aria-describedby'] for n in doc.tagged('p')))
+                self.assertIn('open', doc.tagged('details')[0].attrs)
+                self.assertNotIn('DO_NOT_RENDER_PRIVATE_INPUT', html)
+                self.assertNotIn('Grant source permission', doc.root.text())
+                self.assertEqual(doc.tagged('fieldset'), [])
+                self.assertIn('Saving it does not test provider access', doc.root.text())
+
+    def test_native_media_permission_keeps_fixed_source_bindings_and_category_signals(self):
+        connections = []
+        for category, group_name in [('book', 'book'), ('movie', 'film'), ('tv', 'TV series')]:
+            with self.subTest(category=category):
+                context = self.native_media_source_fixture(category, 'permission_required')
+                _, doc = self.cabinet(**context)
+                connections.append(context['source_connection_ref'])
+                forms = doc.tagged('form')
+                self.assertEqual([n.attrs['action'] for n in forms],
+                                 [context['source_credential_action'], context['source_consent_action_url']])
+                self.assertNotIn('open', doc.tagged('details')[0].attrs)
+                grant = doc.marked('data-source-consent')
+                fields = {n.attrs.get('name'): n for n in grant.nodes() if n.tag == 'input'}
+                self.assertEqual(fields['source_connection_ref'].attrs['value'], context['source_connection_ref'])
+                self.assertEqual(fields['profile_ref'].attrs['value'], context['profile_ref'])
+                self.assertEqual(fields['expected_revision'].attrs['value'], '2')
+                self.assertEqual(fields['action'].attrs['value'], 'grant')
+                self.assertEqual(fields['csrfmiddlewaretoken'].attrs['value'], 's' * 64)
+                self.assertEqual({k for k in fields if k.startswith('allow_')}, {
+                    'allow_canonical_seed', 'allow_explicit_favourites',
+                    'allow_anticipated_reactions', 'allow_experienced_enjoyment'})
+                self.assertFalse({'secret', 'adapter', 'origin', 'purpose', 'allow_raw_notes', 'allow_free_text_entry'} & fields.keys())
+                self.assertFalse(any('checked' in n.attrs for n in grant.nodes()))
+                self.assertIn('required', fields['confirmed'].attrs)
+                self.assertIn('Choose the ' + group_name + ' signal groups', doc.tagged('legend')[0].text())
+                self.assertIn('No notes or inference permission are included', doc.root.text())
+                self.assertIn('does not send a request or approve model use', doc.root.text())
+        self.assertEqual(len(set(connections)), 3)
+
+    def test_native_media_ready_is_not_provider_success_and_missing_token_keeps_revoke(self):
+        for category in ('book', 'movie', 'tv'):
+            for missing in (False, True):
+                with self.subTest(category=category, missing=missing):
+                    context = self.native_media_source_fixture(category, 'ready', **(
+                        {'source_readiness': 'credential_required', 'source_credential_present': False,
+                         'source_consent_active': False} if missing else {}))
+                    _, doc = self.cabinet(**context)
+                    grant = doc.marked('data-source-consent')
+                    action = next(n.attrs['value'] for n in grant.nodes() if n.attrs.get('name') == 'action')
+                    self.assertEqual(action, 'revoke')
+                    self.assertIn('Revoke source permission', grant.text())
+                    self.assertNotIn('Grant source permission', doc.root.text())
+                    self.assertEqual(doc.tagged('fieldset'), [])
+                    if missing:
+                        self.assertIn('expired or no longer matches', doc.root.text())
+                        self.assertNotIn('This source is ready for a reviewed lookup', doc.root.text())
+                    else:
+                        self.assertIn('This source is ready for a reviewed lookup', doc.root.text())
+                        self.assertIn('Provider access has not been confirmed', doc.root.text())
+                        self.assertIn('inference still needs its own permission', doc.root.text())
+
+    def test_native_media_navigation_search_details_and_attribution_remain_distinct(self):
+        _, cabinet = self.cabinet(profile_ref='fictional-profile')
+        links = {n.attrs.get('href') for n in cabinet.tagged('a')}
+        for route in ('hardcover', 'tmdb/movie', 'tmdb/tv'):
+            self.assertIn('/cabinet/source/' + route + '?profile_ref=fictional-profile', links)
+        for category in ('book', 'movie', 'tv'):
+            with self.subTest(category=category):
+                context = self.native_media_source_fixture(category)
+                _, doc = self.cabinet(**context)
+                panel = next(n for n in doc.tagged('section') if 'cabinet-source-setup' in n.attrs.get('class', ''))
+                self.assertTrue(any(n.attrs.get('id') == panel.attrs['aria-labelledby'] for n in doc.tagged('h1')))
+                self.assertTrue(any(n.attrs.get('href') == context['source_page_url'] for n in doc.tagged('a')))
+                self.assertIn('Nothing is retried automatically', doc.root.text())
+                self.assertIn('Missing configuration or permission is not an empty search', doc.root.text())
+                if category == 'book':
+                    self.assertIn('title search first, then a separate details request', doc.root.text())
+                    self.assertIn('Search results alone are not new picks', doc.root.text())
+                else:
+                    self.assertIn('Movie and TV searches have separate connections and permissions', doc.root.text())
+                    self.assertIn('This product uses the TMDB API but is not endorsed or certified by TMDB.', doc.root.text())
+                    self.assertTrue(doc.tagged('svg'))
+                    self.assertTrue(any(n.attrs.get('href') == 'https://www.themoviedb.org' for n in doc.tagged('a')))
+
+    def test_native_setup_credits_use_source_readiness_copy_without_live_success_claim(self):
+        from shelf import onboarding_experience_views as views
+        expected = ('Movie and TV lookups use TMDB; book lookups use Hardcover. '
+                    'Each source needs its own connection and permission. '
+                    'Check its source page for current readiness.')
+        for state in ('claim', 'login'):
+            with self.subTest(state=state):
+                response = views.render_setup({'state': state, 'csrf_token': 's' * 64})
+                html = response.content.decode()
+                self.assertIn(expected, html)
+                self.assertNotIn('TMDB and Hardcover are unavailable', html)
+                self.assertIn('This product uses the TMDB API but is not endorsed or certified by TMDB.', html)
+                self.assertIn('recording titles, artist credits and recording identifiers', html)
+                self.assertIn('No source lookup or model send occurs merely by opening this page', html)
