@@ -130,24 +130,30 @@ def check_selected_evidence(job, entry, hook, history, *, observed_at):
 def observe_selected(context, job_binding, *, ports=None):
     """Current native fence plus separately legitimate exact-history capability."""
     require_native(context, job_binding, 'observe')
-    registry.require(type(ports) is SelectedSabPorts
-                     and type(ports.generation) is ServiceGeneration
-                     and ports.generation.service == 'sab_history'
-                     and ports.generation in job_binding.service_generations)
-    with context.effect_window():
-        # A local exact-job reader is not implied by the add-only SAB grant.
-        # Its custodian revalidates the actual independent observer binding.
-        def current():
-            require_native(context, job_binding, 'observe')
-            registry.require(ports.revalidate() == ports.generation)
-        current()
-        entry = ports.read_registration(job_binding.nzo_id)
-        current()
-        history = ports.read_history(job_binding.nzo_id)
-        current()
-        hook = ports.read_hook(job_binding.request_id)
-        current()
-        result = check_selected_evidence(job_binding, entry, hook, history,
-                                         observed_at=ports.clock())
-        current()
-        return result
+    try:
+        registry.require(type(ports) is SelectedSabPorts
+                         and type(ports.generation) is ServiceGeneration
+                         and ports.generation.service == 'sab_history'
+                         and ports.generation in job_binding.service_generations)
+        with context.effect_window():
+            # A local exact-job reader is not implied by the add-only SAB grant.
+            # Its custodian revalidates the actual independent observer binding.
+            def current():
+                require_native(context, job_binding, 'observe')
+                registry.require(ports.revalidate() == ports.generation)
+            current()
+            entry = ports.read_registration(job_binding.nzo_id)
+            current()
+            history = ports.read_history(job_binding.nzo_id)
+            current()
+            hook = ports.read_hook(job_binding.request_id)
+            current()
+            result = check_selected_evidence(job_binding, entry, hook, history,
+                                             observed_at=ports.clock())
+            current()
+            return result
+    except Exception:
+        context.revalidate()  # Revoked/stale native scope still aborts the caller.
+        from datetime import timezone
+        return _outcome(job_binding, 'unavailable', 'selected_observer_unavailable',
+                        datetime.now(timezone.utc))

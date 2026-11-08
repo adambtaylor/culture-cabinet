@@ -102,6 +102,12 @@ class NativeTVServicePortsTests(PortableObtainTests):
             ports.read_history.assert_called_once_with(fixture.job.nzo_id)
             ports.read_registration.assert_called_once_with(fixture.job.nzo_id)
             ports.read_hook.assert_called_once_with(fixture.job.request_id)
+            broken = replace(ports, read_history=Mock(side_effect=OSError('PRIVATE_FAILURE')),
+                             read_hook=Mock())
+            unavailable = sab.observe_selected(context, fixture.job, ports=broken)
+            self.assertEqual(unavailable.state, 'unavailable')
+            self.assertNotIn('PRIVATE_FAILURE', repr(unavailable))
+            broken.read_hook.assert_not_called()
             wrong = replace(fixture.job, profile_id=1)
             with self.assertRaises(ValueError):
                 sab.observe_selected(context, wrong, ports=ports)
@@ -113,8 +119,7 @@ class NativeTVServicePortsTests(PortableObtainTests):
             _, context, fixture = self.controlled_ack(access)
             ports = self.sab_ports(fixture)
             stale = replace(ports, revalidate=lambda: replace(ports.generation, credential_generation='0' * 32))
-            with self.assertRaises(ValueError):
-                sab.observe_selected(context, fixture.job, ports=stale)
+            self.assertEqual(sab.observe_selected(context, fixture.job, ports=stale).state, 'unavailable')
             ports.read_registration.assert_not_called()
             def registration(_):
                 Context().run(select_portable_profile, self.authority, self.ref, profile_ref=self.profile_ref)
