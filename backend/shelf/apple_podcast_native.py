@@ -6,7 +6,6 @@ source consent and processor eligibility belong to the supplied issuer.
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from hashlib import sha256
-import math
 import os
 import selectors
 import subprocess
@@ -87,7 +86,7 @@ def apple_podcast_template():
 
 
 def _seconds(value, ceiling):
-    return type(value) in (int, float) and math.isfinite(value) and 0 < value <= ceiling
+    return type(value) in (int, float) and 0 < value <= ceiling
 
 
 def apple_podcast_authorized(operation, *, revalidate, limiter,
