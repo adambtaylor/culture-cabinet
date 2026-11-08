@@ -7,7 +7,7 @@ Python is the security boundary: SQLite write windows protect ordinary raw/bulk 
 """
 from contextlib import contextmanager
 from contextvars import ContextVar
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timedelta, timezone
 import hashlib
 import json
@@ -17,7 +17,7 @@ from django.db import connection, transaction
 from django.views.decorators.debug import sensitive_variables
 
 from .connection_validation import ConnectionValidation
-from .disclosure import CLASSES, canonical_bytes, read_json
+from .disclosure import CLASSES, DisclosureError, _time, canonical_bytes, read_json
 from .inference_adapters import BUILD
 from .inference_transport import ORIGIN
 from .models import (AuthoredDiscoveryState, DiscoveryState, FeedbackEvent,
@@ -717,5 +717,19 @@ def assert_current(view):
     with recovery_guard(view._authority, view._session, profile_ref=view.profile_ref) as checkpoint:
         fresh = current_view(view._authority, view._session, profile_ref=view.profile_ref,
                              connection_ref=view.connection_ref, purpose=view.context['purpose'])
-        _require(fresh == view, 'PREVIEW_STALE', 409)
-        return fresh
+        captured, current = view.context, fresh.context
+        try:
+            original_end = _time(captured['session_expires_at'])
+            fresh_end = _time(current['session_expires_at'])
+        except (DisclosureError, KeyError):
+            raise AuthorityFault('PREVIEW_STALE', 409) from None
+        now = view._authority.now()
+        _require(now < view.expires_at and now < original_end and fresh_end >= original_end,
+                 'PREVIEW_STALE', 409)
+        # Ordinary activity may move the live idle cap forward. Compare against
+        # the still-valid original cap so approved bytes never renew authority;
+        # every other freshly reconstructed field must remain exactly equal.
+        comparison = replace(fresh, _context=canonical_bytes({**current,
+            'session_expires_at': captured['session_expires_at']}))
+        _require(comparison == view, 'PREVIEW_STALE', 409)
+        return comparison
