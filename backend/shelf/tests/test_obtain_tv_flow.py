@@ -4,10 +4,23 @@ from shelf.obtain_native_context import NativeJobContext, native_job_context
 from shelf.obtain_tv_flow import card_projection
 from shelf.portable_authority import AuthorityFault
 from shelf.portable_saved_authority import select_portable_profile
+from shelf import grant_authority as ga, saved
 from .test_portable_obtain import PortableObtainTests
 
 
 class NativeJobContextTests(PortableObtainTests):
+    def test_cancelled_unsubmitted_job_invalidates_effect_context_but_remains_readable(self):
+        with self.scope() as access:
+            job = self.choice()
+            context = native_job_context(access, job_id=job.pk, operation='submit')
+            with ga.current_writer(self.authority, self.ref, self.profile_ref):
+                saved.cancel(actor=self.actor, profile_id=self.state.profile_id, job_id=job.pk)
+            with self.assertRaises(Blocked):
+                context.revalidate()
+            with self.assertRaises(Blocked):
+                native_job_context(access, job_id=job.pk, operation='observe')
+            native_job_context(access, job_id=job.pk, operation='view').revalidate()
+
     def test_native_context_rechecks_selected_non_one_owner_and_closed_scope(self):
         with self.scope() as access:
             job = self.choice()
