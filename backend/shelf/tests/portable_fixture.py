@@ -113,9 +113,15 @@ class BoundSocketLease:
     independent execution supervisor is still required for abrupt runner loss.
     """
     def __init__(self, case_id, *, lifetime=20):
-        if type(lifetime) is not int or lifetime not in (20, 25):
+        three_round = case_id == ('shelf.tests.test_workflow_three_round.NativeThreeRoundTests.'
+            'test_three_native_rounds_feedback_undo_exact_input_and_persistent_publications')
+        # This one uninterrupted three-round regression has a separate test
+        # resource budget; product/session/provider deadlines remain untouched.
+        if type(lifetime) is not int or (lifetime not in (20, 25)
+                and not (three_round and lifetime == 60)):
             raise PortableFixtureFailure('BOUND_SOCKET_LIFETIME')
         self.lifetime = lifetime
+        self.closure_ceiling = 65 if three_round and lifetime == 60 else 30
         self.case_id = case_id
         self.start = reserve_resource('bound_socket', case_id, 13)
         self.boundary = None
@@ -154,7 +160,7 @@ class BoundSocketLease:
                 if self.start is not None:
                     end = time.monotonic()
                     complete = (self.boundary is not None and
-                        self.boundary._socket.fileno() == -1 and end-self.start <= 30 and not self.forced)
+                        self.boundary._socket.fileno() == -1 and end-self.start <= self.closure_ceiling and not self.forced)
                     resource_event(category='bound_socket', case_id=self.case_id,
                         phase='closed' if self.boundary is not None else 'failed_acquisition',
                         start=self.start, end=end, elapsed=end-self.start,

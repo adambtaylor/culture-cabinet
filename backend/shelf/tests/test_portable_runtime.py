@@ -593,3 +593,38 @@ class NormalEnhanceHostSourceTests(SimpleTestCase):
         self.assertEqual(len(calls), 1)
         self.assertIn('policy_provider', {arg.arg for arg in calls[0].keywords})
         self.assertNotIn('configure_source(', source)
+
+
+class ThreeRoundFixturePolicyTests(SimpleTestCase):
+    def test_extended_lease_is_exact_case_only_and_other_defaults_are_unchanged(self):
+        from .portable_fixture import BoundSocketLease, PortableFixtureFailure
+        exact = ('shelf.tests.test_workflow_three_round.NativeThreeRoundTests.'
+            'test_three_native_rounds_feedback_undo_exact_input_and_persistent_publications')
+        with patch('shelf.tests.portable_fixture.reserve_resource', return_value=None):
+            for case, lifetime in [(exact, 60), ('ordinary', 20), ('ordinary', 25), (exact, 25)]:
+                lease = BoundSocketLease(case, lifetime=lifetime)
+                self.assertEqual(lease.closure_ceiling, 65 if lifetime == 60 else 30)
+                lease.close()
+            for case, lifetime in [('ordinary', 60), (exact+'extra', 60), (exact, 65), (exact, True)]:
+                with self.assertRaises(PortableFixtureFailure):
+                    BoundSocketLease(case, lifetime=lifetime)
+
+    def test_extended_lease_still_rejects_forced_or_late_closure(self):
+        from types import SimpleNamespace
+        from .portable_fixture import BoundSocketLease, PortableFixtureFailure
+        exact = ('shelf.tests.test_workflow_three_round.NativeThreeRoundTests.'
+            'test_three_native_rounds_feedback_undo_exact_input_and_persistent_publications')
+        for elapsed, forced, accepted in [(64, False, True), (66, False, False), (1, True, False)]:
+            with self.subTest(elapsed=elapsed, forced=forced), patch(
+                    'shelf.tests.portable_fixture.reserve_resource', return_value=100), patch(
+                    'shelf.tests.portable_fixture.time.monotonic', return_value=100+elapsed), patch(
+                    'shelf.tests.portable_fixture.resource_event') as evidence:
+                lease = BoundSocketLease(exact, lifetime=60)
+                lease.boundary = SimpleNamespace(close=lambda: None, _socket=SimpleNamespace(fileno=lambda: -1))
+                lease.forced = forced
+                if accepted:
+                    lease.close()
+                else:
+                    with self.assertRaises(PortableFixtureFailure):
+                        lease.close()
+                self.assertEqual(evidence.call_args.kwargs['complete'], accepted)

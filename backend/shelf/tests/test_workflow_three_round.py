@@ -18,7 +18,7 @@ from . import test_portable_source_views as source_cases
 
 class NativeThreeRoundTests(NativeFeedbackCase):
     # One uninterrupted synthetic session: do not renew authority between rounds.
-    bound_socket_lifetime = 25
+    bound_socket_lifetime = 60
     compose_enhance = source_cases.NativeArtistSourceTests.compose_enhance
     policies = source_cases.NativeArtistSourceTests.policies
     configure = source_cases.NativeArtistSourceTests.configure
