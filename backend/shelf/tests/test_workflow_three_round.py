@@ -14,16 +14,16 @@ from shelf.portable_feedback_views import card_feedback_context, feedback_contex
 from shelf.source_authority import MUSICBRAINZ_ARTIST
 from .test_inference_adapters import response_document
 from .test_portable_feedback_views import NativeFeedbackCase
-from .test_portable_source_views import NativeArtistSourceTests
+from . import test_portable_source_views as source_cases
 
 
 class NativeThreeRoundTests(NativeFeedbackCase):
     # One uninterrupted synthetic session: do not renew authority between rounds.
     bound_socket_lifetime = 25
-    compose_enhance = NativeArtistSourceTests.compose_enhance
-    policies = NativeArtistSourceTests.policies
-    configure = NativeArtistSourceTests.configure
-    grant = NativeArtistSourceTests.grant
+    compose_enhance = source_cases.NativeArtistSourceTests.compose_enhance
+    policies = source_cases.NativeArtistSourceTests.policies
+    configure = source_cases.NativeArtistSourceTests.configure
+    grant = source_cases.NativeArtistSourceTests.grant
 
     def action(self, path, fields):
         response = self.http.post(path, urlencode({'csrfmiddlewaretoken': self.csrf(), **fields}),
