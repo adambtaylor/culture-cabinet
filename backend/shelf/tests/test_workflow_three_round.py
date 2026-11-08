@@ -1,7 +1,5 @@
 """Three native Enhance rounds; only external wire responses are synthetic."""
 import uuid
-import traceback
-from shelf.portable_enhance_service import _DurablePorts
 from urllib.parse import urlencode
 from unittest.mock import patch
 
@@ -46,7 +44,10 @@ class NativeThreeRoundTests(NativeFeedbackCase):
                 bodies.append(submitted)
                 trace.append('inference')
                 keys = [row['key'] for row in submitted['profile']['signals']]
-                result = dict(schema='cabinet-inference-result/v1', associations=None,
+                result = dict(schema='cabinet-inference-result/v1', associations={
+                    'basis': 'inferred_taste_association', 'clusters': [dict(
+                        label='Synthetic tentative association', members=keys,
+                        explanation='Synthetic hypothesis for handler validation.')], 'links': []},
                     candidate_assessments=[dict(candidate_key=row['key'], decision='retain',
                         signal_keys=keys, evidence_refs=row['source_roots'],
                         hypothesis='Synthetic association for handler validation.')
@@ -63,15 +64,7 @@ class NativeThreeRoundTests(NativeFeedbackCase):
                 {'recordings': [{**row, 'title': 'Synthetic discovered recording'}]})
             return 200, canonical_bytes(document), ()
 
-        original_dispatch = _DurablePorts.dispatch
-        def diagnose_dispatch(ports, *args, **kwargs):
-            try:
-                return original_dispatch(ports, *args, **kwargs)
-            except Exception as error:
-                traceback.print_tb(error.__traceback__)
-                raise
-
-        with patch.object(_DurablePorts, 'dispatch', diagnose_dispatch), patch.object(CheckedTransport, 'send', model_reply), patch(
+        with patch.object(CheckedTransport, 'send', model_reply), patch(
                 'shelf.discovery_transport.musicbrainz_authorized', side_effect=source_reply):
             # Validate the hosted adapter with its real permit, using only a fake
             # wire response. An isolated disclosure fixture cannot authorize it.
