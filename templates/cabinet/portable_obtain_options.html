@@ -1,0 +1,31 @@
+{% extends enhancement_base %}
+{% block content %}
+<header><p class="eyebrow">Obtain · {{ profile_label }}</p><h1>Choose an episode</h1>
+<p><a href="{{ cabinet_url }}">Return to your cabinet</a></p></header>
+{% if error_message %}<section class="obtain-notice" role="alert"><h2>These options need a fresh review</h2><p>{{ error_message }}</p><p>Open the current TV pick in your cabinet. Nothing has been submitted.</p></section>{% endif %}
+{% if obtain_options %}
+<section class="paper-panel obtain-options" aria-labelledby="obtain-options-title">
+  <h2 id="obtain-options-title">{{ obtain_options.title }}</h2>
+  {% if obtain_options.provider_label %}<p>Source: {{ obtain_options.provider_label }}</p>{% endif %}
+  <p>Choose one episode, then review the available listings and your exact selection. Saving this pick is optional.</p>
+  {% if obtain_options.search_enabled and obtain_options_form and selection_token %}
+  <form method="post" action="{{ obtain_options.search_url }}" data-obtain-search>{% csrf_token %}
+    <input type="hidden" name="profile_ref" value="{{ profile_ref }}"><input type="hidden" name="selection_token" value="{{ selection_token }}">
+    {{ obtain_options_form.non_field_errors }}
+    {{ obtain_options_form.publication_revision.as_hidden }}{{ obtain_options_form.candidate_key.as_hidden }}
+    <fieldset><legend>One TV episode</legend>
+      <p>Leave both fields blank for S01E01. Choose a season and episode for any other single episode.</p>
+      <p>{{ obtain_options_form.season.errors }}{{ obtain_options_form.season.label_tag }} {{ obtain_options_form.season }}</p>
+      <p>{{ obtain_options_form.episode.errors }}{{ obtain_options_form.episode.label_tag }} {{ obtain_options_form.episode }}</p>
+    </fieldset>
+    <button type="submit">Search listings for this episode</button>
+  </form>
+  <p>Search creates a listing preview. You will review the exact release before any download submission.</p>
+  {% else %}
+  <p role="status">{% if obtain_options.unavailable_reason %}{{ obtain_options.unavailable_reason }}{% else %}Current access is needed before searching. Open your selected cabinet and review this pick again.{% endif %}</p>
+  {% endif %}
+  {% if obtain_options.expires_at %}<p class="quiet-note">These source details are valid until {{ obtain_options.expires_at }}.</p>{% endif %}
+  <p><a href="{{ obtain_options.cancel_url|default:cabinet_url }}">Cancel options and return to your cabinet</a></p>
+</section>
+{% else %}<p role="status">Current options are unavailable. Open a current TV pick in your cabinet to review it.</p>{% endif %}
+{% endblock %}

@@ -86,3 +86,24 @@ main, dt, dd, .paper-panel, .error-summary { overflow-wrap: anywhere; }
 .enhance-outcomes { padding-left: 1.25rem; margin-bottom: 1rem; }
 .enhance-outcomes li { margin-block: .5rem; overflow-wrap: anywhere; }
 [data-enhance-message]:empty { display: none; }
+
+/* Status color follows the closed producer state; current verified styling also
+   requires the finite client-side expiry check. Text and icons carry meaning. */
+.obtain-status { margin-block: 1.25rem; padding: 1rem; border: 1px solid var(--line); border-left: .3rem solid var(--line); background: var(--cream); overflow-wrap: anywhere; }
+.obtain-status-line { display: flex; align-items: baseline; gap: .6rem; font-family: system-ui, sans-serif; }
+.obtain-status-icon { flex: 0 0 1.5rem; text-align: center; font-weight: 800; }
+.obtain-status[data-obtain-state="working"] { border-left-color: #765b26; }
+.obtain-status[data-obtain-state="error"] { border-left-color: var(--rust); }
+.obtain-status[data-obtain-next-action="reconcile"] { border-left-color: #765b26; }
+.obtain-status[data-obtain-state="done"][data-obtain-verified="true"] { border-left-color: var(--green); }
+.obtain-status[data-obtain-verified="true"] .obtain-status-line { color: var(--green); }
+.obtain-status-notice, .obtain-options .quiet-note { font: .95rem/1.6 system-ui, sans-serif; }
+.obtain-status-notice:empty { display: none; }
+.obtain-status form, .obtain-options form { margin-block: 1rem; }
+.obtain-status button, .obtain-options button { max-width: 100%; white-space: normal; }
+.obtain-status a, .obtain-options a { overflow-wrap: anywhere; }
+.obtain-options fieldset { min-width: 0; padding: 1rem; border: 1px solid var(--line); }
+.obtain-options input { max-width: 100%; box-sizing: border-box; }
+.obtain-status [hidden], .obtain-options [hidden] { display: none !important; }
+.obtain-status :focus-visible, .obtain-options :focus-visible { outline: 3px solid var(--rust); outline-offset: 3px; }
+@media (max-width: 30rem) { .obtain-status { padding: .8rem; } .obtain-status button, .obtain-options button { width: 100%; } }

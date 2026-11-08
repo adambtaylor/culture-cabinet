@@ -1,0 +1,37 @@
+{% extends enhancement_base %}
+{% block content %}
+<header><p class="eyebrow">Obtain · {{ profile_label }}</p><h1>{% if obtain_request_label %}{{ obtain_request_label }}{% else %}Your recorded TV request{% endif %}</h1>
+<p><a href="{{ cabinet_url }}">Return to your cabinet</a> · <a href="/cabinet/saved/">Saved items and recorded requests</a></p></header>
+{% if error_message %}<section class="obtain-notice" role="alert"><h2>This request needs attention</h2><p>{{ error_message }}</p><p>Read the recorded request before choosing another action. Nothing has been resubmitted.</p></section>{% endif %}
+{% if obtain_job %}
+{% comment %}Only the sole native producer supplies this flat projection. A queued transfer, stage label or successful GET cannot become verified availability in this template.{% endcomment %}
+<section class="paper-panel obtain-status" data-obtain-status data-profile-ref="{{ profile_ref }}" data-obtain-state="{{ obtain_job.state }}" data-obtain-verified="false" data-obtain-next-action="{{ obtain_job.next_action }}" data-obtain-revision="{{ obtain_job.revision }}" data-obtain-status-url="{{ obtain_status_url }}" data-obtain-poll-until="{{ obtain_poll_until|date:'c'|default:obtain_poll_until }}" data-obtain-verification-until="{{ obtain_job.verification_until|date:'c'|default:obtain_job.verification_until }}" aria-labelledby="obtain-status-heading">
+  <h2 id="obtain-status-heading" data-obtain-status-heading tabindex="-1">Recorded progress</h2>
+  <p class="obtain-status-line" role="status" aria-live="polite" aria-atomic="true"><span class="obtain-status-icon" data-obtain-icon aria-hidden="true">{% if obtain_job.state == 'working' %}…{% elif obtain_job.state == 'error' %}!{% else %}○{% endif %}</span><strong data-obtain-label>{{ obtain_job.label }}</strong></p>
+  {% if obtain_job.verification_until %}<p>Library verification valid until <time data-obtain-verification-time datetime="{{ obtain_job.verification_until|date:'c'|default:obtain_job.verification_until }}">{{ obtain_job.verification_until }}</time>.</p>{% endif %}
+  {% if obtain_job.observed_at %}<p class="quiet-note">Last recorded observation: {{ obtain_job.observed_at }}.</p>{% endif %}
+  <p><a data-obtain-detail href="{{ obtain_job.detail_href }}">Open this recorded request</a> · <a href="{{ obtain_job.detail_href }}">Reload recorded status</a></p>
+  <button type="button" data-obtain-refresh class="quiet" hidden>Refresh recorded status</button>
+  <p data-obtain-notice class="obtain-status-notice" role="status" aria-live="polite">Reloading reads the recorded status. It does not submit a download or repeat an import.</p>
+  {% if obtain_job.next_action == 'check' or obtain_job.next_action == 'reconcile' %}
+  {% if obtain_advance_url and selection_token %}
+  <div data-obtain-next="{{ obtain_job.next_action }}">
+    {% if obtain_job.next_action == 'reconcile' %}<p>The outcome is unconfirmed. Check this existing request before taking another action.</p>{% endif %}
+    <form method="post" action="{{ obtain_advance_url }}" data-obtain-advance>{% csrf_token %}
+      <input type="hidden" name="profile_ref" value="{{ profile_ref }}"><input type="hidden" name="selection_token" value="{{ selection_token }}"><input type="hidden" name="expected_revision" value="{{ obtain_job.revision }}" data-obtain-revision>
+      <button type="submit">{% if obtain_job.next_action == 'reconcile' %}Check this existing request{% else %}Check progress{% endif %}</button>
+    </form>
+  </div>
+  {% endif %}
+  {% elif obtain_job.next_action == 'confirm' %}
+  {% if selection_token %}<div data-obtain-next="confirm"><p>Review this exact selection before submitting it.</p>
+    <form method="post" action="/cabinet/saved/jobs/{{ obtain_job.id }}/submit/review/" data-obtain-submission-review>{% csrf_token %}
+      <input type="hidden" name="profile_ref" value="{{ profile_ref }}"><input type="hidden" name="selection_token" value="{{ selection_token }}"><button type="submit">Review exact submission</button>
+    </form>
+  </div>{% endif %}
+  {% elif obtain_job.next_action == 'reauthorize' %}<p data-obtain-next="reauthorize">Current owner access is needed. <a href="/setup">Review your owner session</a>, then return to this recorded request.</p>
+  {% elif obtain_job.next_action == 'choose' %}<p data-obtain-next="choose"><a href="{{ cabinet_url }}">Review current options in your cabinet</a>.</p>
+  {% endif %}
+</section>
+{% else %}<p role="status">No current request is available for this cabinet. Return to your cabinet and open its current options.</p>{% endif %}
+{% endblock %}

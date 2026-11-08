@@ -387,6 +387,22 @@
         {% endfor %}
       </details>
       {% endif %}
+      {% if card.obtain_action %}
+      {% comment %}Obtain is independent of Save. Only this producer's closed flat state and finite verification can describe availability; the choose POST is navigation, never a submission.{% endcomment %}
+      <div class="obtain-status" data-obtain-status data-profile-ref="{{ profile_ref }}" data-obtain-state="{{ card.obtain_action.state }}" data-obtain-verified="false" data-obtain-verification-until="{{ card.obtain_action.verification_until|date:'c'|default:card.obtain_action.verification_until }}">
+        <p class="obtain-status-line" role="status" aria-live="polite" aria-atomic="true"><span class="obtain-status-icon" data-obtain-icon aria-hidden="true">{% if card.obtain_action.state == 'working' %}…{% elif card.obtain_action.state == 'error' %}!{% else %}○{% endif %}</span><strong data-obtain-label>{{ card.obtain_action.label }}</strong></p>
+        {% if card.obtain_action.verification_until %}<p>Verification valid until <time data-obtain-verification-time datetime="{{ card.obtain_action.verification_until|date:'c'|default:card.obtain_action.verification_until }}">{{ card.obtain_action.verification_until }}</time>.</p>{% endif %}
+        {% if card.obtain_action.state == 'idle' and card.obtain_choose_url %}
+        <form method="post" action="/cabinet/obtain/choose/" data-obtain-choose>{% csrf_token %}
+          <input type="hidden" name="profile_ref" value="{{ profile_ref }}"><input type="hidden" name="publication_revision" value="{{ publication_revision }}"><input type="hidden" name="candidate_key" value="{{ card.candidate_key }}">
+          <button type="submit" class="quiet">Choose an episode and review Obtain options</button>
+        </form>
+        <p>Saving is optional. You will review the exact release before submitting a download.</p>
+        {% endif %}
+        <p><a data-obtain-detail href="{{ card.obtain_action.detail_href }}">Open Obtain details</a></p>
+        <p data-obtain-notice class="obtain-status-notice" role="status" aria-live="polite"></p>
+      </div>
+      {% endif %}
       {% if card.save_list_kind %}
         {% if save_unavailable_reason %}<p role="status">{{ save_unavailable_reason }}</p>
         {% elif selection_token %}
@@ -398,7 +414,7 @@
         </form>
         <p>Save keeps this item separately from enjoyment. Current source rights and attribution must still permit saving; it never starts Obtain.</p>
         {% else %}<p>Select this cabinet above before saving this item.</p>{% endif %}
-      {% else %}<p>Save and Obtain are unavailable for this category. Its current picks remain visible.</p>{% endif %}
+      {% elif not card.obtain_action %}<p>Save and Obtain are unavailable for this category. Its current picks remain visible.</p>{% endif %}
     </article>
   {% empty %}<p>No fresh cards in this category. {{ category.status }}</p>{% endfor %}
   </div>
