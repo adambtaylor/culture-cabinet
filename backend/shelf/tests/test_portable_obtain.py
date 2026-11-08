@@ -695,3 +695,67 @@ class PortableObtainTests(RecoveryCase):
                          (before.policy_epoch, before.restriction_watermark))
         self.assertFalse(AcquisitionJob.objects.exists())
         self.assertFalse(ObtainTransfer.objects.exists())
+
+    def test_native_unconfigured_submission_review_keeps_page_and_owned_status_navigation(self):
+        from shelf import obtain_runtime
+        from shelf.models import ObtainReviewedNZB
+        with self.scope():
+            job = self.choice()
+        def content_state():
+            state = ProfileCabinetState.objects.get(pk=self.state.pk)
+            return (SavedItem.objects.count(), AcquisitionJob.objects.count(),
+                ObtainTransfer.objects.count(), ObtainReviewedNZB.objects.count(),
+                state.policy_epoch, state.restriction_watermark)
+        before = content_state()
+        with self.settings(OBTAIN_SUBMISSION_POLICY=None), \
+             patch.object(obtain_runtime.store, 'open_store', side_effect=AssertionError('No private reads')) as opened, \
+             patch.object(obtain_runtime, 'check_capacity', side_effect=AssertionError('No storage reads')) as capacity, \
+             patch.object(obtain_runtime, 'Backend', side_effect=AssertionError('No provider')) as backend, \
+             patch.object(acquire, 'review_submission', side_effect=AssertionError('No descriptor')) as reviewed, \
+             patch.object(acquire, 'repair_registration', side_effect=AssertionError('No repair')) as repaired, \
+             patch.object(acquire, 'transfer_for', side_effect=AssertionError('No reconciliation')) as reconciled:
+            response = self.post(f'/cabinet/saved/jobs/{job.pk}/submit/review/')
+        self.assertEqual(response.status_code, 409)
+        self.assertTrue(response['Content-Type'].startswith('text/html'))
+        self.assertEqual(response['Cache-Control'], 'no-store')
+        self.assertContains(response, '<title>Enhance · Culture Cabinet</title>', status_code=409)
+        self.assertContains(response, '<h1>Your saved items and Obtain requests</h1>', status_code=409, html=True)
+        self.assertContains(response, 'role="alert"', status_code=409)
+        self.assertContains(response, 'Submission review is unavailable or has changed.', status_code=409)
+        self.assertContains(response, f'href="/cabinet/saved/jobs/{job.pk}/"', status_code=409)
+        self.assertContains(response, f'href="/setup/cabinet?profile_ref={self.profile_ref}"', status_code=409)
+        self.assertContains(response, 'href="/setup/cabinet"', status_code=409)
+        self.assertNotContains(response, 'Confirm and submit this exact selection once', status_code=409)
+        for effect in (opened, capacity, backend, reviewed, repaired, reconciled):
+            effect.assert_not_called()
+        self.assertEqual(content_state(), before)
+
+    def test_unavailable_submission_review_never_projects_after_selection_loss(self):
+        from shelf import obtain_runtime, portable_obtain_views
+        with self.scope():
+            job = self.choice()
+        before = ProfileCabinetState.objects.get(pk=self.state.pk)
+        def invalidate_then_refuse(**kwargs):
+            Context().run(select_portable_profile, self.authority, self.ref, profile_ref=self.profile_ref)
+            raise acquire.Blocked('SYNTHETIC_PRIVATE_PROVIDER_ERROR')
+        with patch.object(obtain_runtime, 'submission_factory', side_effect=invalidate_then_refuse) as factory, \
+             patch.object(portable_obtain_views, '_render', side_effect=AssertionError('No private projection')) as rendered:
+            response = self.post(f'/cabinet/saved/jobs/{job.pk}/submit/review/')
+        factory.assert_called_once()
+        rendered.assert_not_called()
+        self.assertContains(response, 'SELECTION_STALE', status_code=409)
+        self.assertNotContains(response, job.title, status_code=409)
+        self.assertNotContains(response, 'SYNTHETIC_PRIVATE_PROVIDER_ERROR', status_code=409)
+        # The old form remains stale on the next request: it cannot acquire the
+        # backend or obtain private context just to display its earlier error.
+        with patch.object(obtain_runtime, 'submission_factory', side_effect=AssertionError('Stale factory')) as factory, \
+             patch.object(portable_obtain_views, '_render', side_effect=AssertionError('Stale projection')) as rendered:
+            response = self.post(f'/cabinet/saved/jobs/{job.pk}/submit/review/')
+        self.assertEqual(response.status_code, 409)
+        factory.assert_not_called()
+        rendered.assert_not_called()
+        self.assertNotContains(response, job.title, status_code=409)
+        self.assertFalse(ObtainTransfer.objects.exists())
+        after = ProfileCabinetState.objects.get(pk=before.pk)
+        self.assertEqual((after.policy_epoch, after.restriction_watermark),
+                         (before.policy_epoch, before.restriction_watermark))
