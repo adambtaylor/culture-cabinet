@@ -204,8 +204,7 @@ def advance_selected(context, *, expected_revision, services):
     if completion.state != 'completed':
         progress.update(stage='download_failed' if completion.state == 'failed' else 'awaiting_completion',
                         reason=completion.reason, observed_at=completion.observed_at.isoformat())
-        _native_cas(context, progress, failed=completion.state == 'failed')
-        return
+        return _native_cas(context, progress, failed=completion.state == 'failed').transfer_revision
     completion = _original_completion(progress, completion)
     progress.update(stage='copying', reason='', completion=_completion_material(completion),
         copy_intent=progress.get('copy_intent') or str(uuid4()), intent={
@@ -226,8 +225,7 @@ def advance_selected(context, *, expected_revision, services):
         intent=progress['copy_intent'], ports=ports)
     if outcome.status != 'verified':
         progress.update(stage='copy_' + outcome.status, reason=outcome.reason)
-        _native_cas(context, progress)
-        return
+        return _native_cas(context, progress).transfer_revision
     destination = outcome.receipt
     progress.update(stage='verifying_library', reason='', destination=asdict(destination), intent={
         'id': str(uuid4()), 'stage': 'verify_library', 'revision': context.transfer_revision + 1})
@@ -282,8 +280,7 @@ def advance_selected(context, *, expected_revision, services):
     if resolution.status != 'resolved':
         progress.update(stage='awaiting_library_index', reason=resolution.reason,
                         series_ref=resolution.series_id or progress.get('series_ref'))
-        _native_cas(context, progress, series_evidence=observed_series)
-        return
+        return _native_cas(context, progress, series_evidence=observed_series).transfer_revision
     def revalidate_services():
         actual = services.generations(context)
         if actual != job.service_generations:
@@ -295,13 +292,13 @@ def advance_selected(context, *, expected_revision, services):
     if verified.status != 'verified':
         progress.update(stage='verification_' + verified.status, reason=verified.reason,
                         series_ref=resolution.series_id)
-        _native_cas(context, progress, series_evidence=observed_series)
-        return
+        return _native_cas(context, progress, series_evidence=observed_series).transfer_revision
     proof = verified.verification
     wire = {**asdict(proof), 'observed_at': proof.observed_at.isoformat(), 'valid_until': proof.valid_until.isoformat()}
     progress.update(stage='verified', reason='', series_ref=resolution.series_id, observed_at=proof.observed_at.isoformat())
     fresh = _native_cas(context, progress, verification=wire, series_evidence=observed_series)
     _remember_verified(fresh, proof, wire)
+    return fresh.transfer_revision
 
 
 def _remember_verified(context, proof, wire):

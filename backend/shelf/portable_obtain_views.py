@@ -681,11 +681,12 @@ def advance(request, job_id):
         # constructs a provider to guess an acknowledgement or resend addfile.
         if transfer.state != 'queued' or not transfer.provider_job or transfer.local_cancelled_at is not None:
             return HttpResponseRedirect(target)
-        if not obtain_runtime.worker_running(access.authority, job_id):
+        if obtain_runtime.supervision_enabled():
+            obtain_runtime.start_selected_worker(access, job_id=job_id)
+        elif not obtain_runtime.worker_running(access.authority, job_id):
             context = native_job_context(access, job_id=job_id, operation='observe')
             services = obtain_runtime.selected_services(context)
             advance_selected(context, expected_revision=int(raw), services=services)
-            obtain_runtime.start_selected_worker(access, job_id=job_id)
         return HttpResponseRedirect(target)
 
 

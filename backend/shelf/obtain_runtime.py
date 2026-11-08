@@ -1,5 +1,6 @@
 """Server-only composition using existing scoped records; disabled by default."""
 from dataclasses import dataclass, replace
+from contextlib import contextmanager
 import os
 from pathlib import Path
 from uuid import UUID
@@ -325,132 +326,261 @@ def selected_services(context):
 
 
 class _SelectedWorker:
-    """One current-job effect thread and a custody/deadline stop monitor."""
+    """One owner-thread registration; its monitor can only cancel custody."""
     def __init__(self, access, context, services):
-        from threading import Event, Thread
+        from threading import Event, Thread, Lock
         self.authority, self.session_ref, self.profile_ref = access.authority, access.session_ref, access.profile_ref
         self.token, self.job_id = access.selection_token, context.job_id
         self.selection = dict(access._signed)
+        self.identity = access.identity
         self.session = self.authority._sessions[self.session_ref]
+        self.binding_digest, self.request_id = context.binding_digest, context.request_id
+        self.expected_revision = context.transfer_revision
         self.deadline = context.authority_deadline()
         self.monotonic_end = self.authority.monotonic() + (self.deadline - self.authority.now()).total_seconds()
+        self.next_due = self.authority.monotonic()
         self.stop_event, self.done = Event(), Event()
+        self._cancel_lock = Lock()
         self.stop_children = services.stop_owned_children
         self.cleanup_failed = False
         self.reason = ''
-        self.thread = Thread(target=self._run, name='obtain-selected-' + str(self.job_id), daemon=True)
         self.monitor = Thread(target=self._monitor, name='obtain-bound-' + str(self.job_id), daemon=True)
 
     def start(self):
-        self.thread.start(); self.monitor.start()
+        self.monitor.start()
 
-    def stop(self):
+    def stop(self, reason=''):
         self.stop_event.set()
-        try:
-            self.stop_children()
-        except Exception:
-            self.cleanup_failed = True
-            getattr(self.authority, '_obtain_verified', {}).pop(self.job_id, None)
+        # The port is bounded, idempotent and independent of owner/recovery/SQL
+        # locks. The monitor never changes authority, progress or proof caches.
+        with self._cancel_lock:
+            if reason and not self.reason:
+                self.reason = reason
+            try:
+                self.stop_children()
+            except Exception:
+                self.cleanup_failed = True
 
     def _monitor(self):
         while not self.done.wait(0.25):
             current = getattr(self.authority, '_saved_selections', {}).get(self.session_ref)
-            # These reads only stop custody. Every effect still uses the real
-            # native/recovery fence; the monitor never authorizes continuation.
             if (self.stop_event.is_set() or not self.authority.boundary.active
                     or self.authority._sessions.get(self.session_ref) is not self.session
                     or current is None or current[1] != self.selection['nonce']
                     or self.authority.monotonic() >= self.monotonic_end):
-                self.reason = 'original_authority_window_ended'
-                self.stop()
+                self.stop('original_authority_window_ended')
                 return
 
-    def _run(self):
-        from django.db import close_old_connections
+    def close(self, *, invalidate=True):
+        if not self.done.is_set():
+            self.stop()
+            if self.monitor.ident is not None:
+                self.monitor.join(timeout=2)
+            self.done.set()
+        if invalidate or self.cleanup_failed:
+            getattr(self.authority, '_obtain_verified', {}).pop(self.job_id, None)
+        if self.monitor.is_alive() or self.cleanup_failed:
+            raise Blocked('Selected worker shutdown unconfirmed')
+        self.token = self.session = None
+
+
+class _SelectedSupervisor:
+    """Cooperate with the existing synchronous native server and disk witness."""
+    def __init__(self, authority):
+        from threading import get_ident
+        from . import grant_authority as ga, recovery
+        if (type(authority) is not ga.PortableAuthority or not authority.boundary.active
+                or recovery.installed_coordinator() is None):
+            raise Blocked('Original native serving witness required')
+        self.authority, self.boundary = authority, authority.boundary
+        self.coordinator = recovery.installed_coordinator()
+        self.owner_thread = get_ident()
+        self.closed, self.failed, self._ticking = False, False, False
+        self.cursor = 0
+        authority._obtain_workers = {}
+
+    def _owner(self):
+        from threading import get_ident
+        from . import recovery
+        # Thread containment precedes even connection/scope inspection. It does
+        # not replace the fresh recovery barriers used by each native pass.
+        if (get_ident() != self.owner_thread or self.closed or self.failed
+                or not self.boundary.active or self.authority.boundary is not self.boundary
+                or recovery.installed_coordinator() is not self.coordinator
+                or self.coordinator.closed or self.coordinator.blocked):
+            raise Blocked('Original native supervisor authority required')
+
+    def register(self, access, context, services):
+        self._owner()
+        previous = self.authority._obtain_workers.get(context.job_id)
+        if previous is not None and not previous.done.is_set():
+            if (previous.session is not self.authority._sessions.get(access.session_ref)
+                    or previous.session_ref != access.session_ref or previous.selection != access._signed
+                    or previous.binding_digest != context.binding_digest
+                    or previous.expected_revision != context.transfer_revision):
+                previous.stop('selected_job_changed')
+                return False
+            return not previous.stop_event.is_set()
+        if previous is not None and previous.cleanup_failed:
+            self.failed = True
+            raise Blocked('Previous selected worker cleanup unconfirmed')
+        worker = _SelectedWorker(access, context, services)
+        self.authority._obtain_workers[context.job_id] = worker
+        worker.start()
+        return True
+
+    def tick_once(self):
+        from django.db import connection
+        from . import grant_authority as ga, recovery
+        from .portable_saved_authority import active_portable_access
+        self._owner()
+        if (self._ticking or active_portable_access() is not None
+                or ga._CURRENT_WRITER.get() is not None or recovery._BARRIER_STACK.get()
+                or connection.in_atomic_block or getattr(connection, '_disclosure_write_open', False)):
+            raise Blocked('Native supervisor must run between request scopes')
+        self._ticking = True
+        try:
+            workers = list(self.authority._obtain_workers.values())
+            if not workers:
+                return
+            for offset in range(len(workers)):
+                index = (self.cursor + offset) % len(workers)
+                worker = workers[index]
+                if worker.done.is_set():
+                    continue
+                if worker.stop_event.is_set():
+                    self._finish(worker)
+                    continue
+                if self.authority.monotonic() >= worker.next_due:
+                    self.cursor = (index + 1) % len(workers)
+                    self._advance(worker)
+                    return  # One bounded pass, never a queue-draining loop.
+        finally:
+            self._ticking = False
+
+    def _finish(self, worker, *, invalidate=True):
+        try:
+            worker.close(invalidate=invalidate)
+        except Exception:
+            self.failed = True
+            raise
+
+    def _advance(self, worker):
         from .portable_saved_authority import portable_saved_scope
         from .obtain_native_context import native_job_context
         from .completion_dispatch import advance_selected
-        import time
+        started = self.authority.monotonic()
+        if (started >= worker.monotonic_end or self.authority.now() >= worker.deadline
+                or self.authority._sessions.get(worker.session_ref) is not worker.session
+                or getattr(self.authority, '_saved_selections', {}).get(worker.session_ref) !=
+                   (worker.identity, worker.selection['nonce'])):
+            worker.stop('original_authority_window_ended')
+            self._finish(worker)
+            return
         try:
-            while not self.stop_event.is_set() and self.authority.now() < self.deadline:
-                started = time.monotonic()
-                close_old_connections()
-                with portable_saved_scope(self.authority, self.session_ref, profile_ref=self.profile_ref,
-                        selection_token=self.token, mutate=True) as access:
-                    context = native_job_context(access, job_id=self.job_id, operation='observe')
-                    transfer = ObtainTransfer.objects.get(pk=self.job_id)
-                    if transfer.state != 'queued' or transfer.local_cancelled_at is not None:
-                        break
-                    context._deadline = self.deadline
-                    services = selected_services(context)
-                    self.stop_children = services.stop_owned_children
-                    advance_selected(context, expected_revision=context.transfer_revision, services=services)
-                    transfer.refresh_from_db()
-                    if (transfer.state != 'queued' or transfer.native_progress.get('stage') in
-                            {'verified', 'copy_unknown', 'copy_conflict', 'copy_pending', 'verification_mismatch'}):
-                        break
-                # Exact-job service polling is at least five seconds apart;
-                # no session touch, background keepalive or startup resumption.
-                self.stop_event.wait(max(0, 5 - (time.monotonic() - started)))
+            with portable_saved_scope(self.authority, worker.session_ref, profile_ref=worker.profile_ref,
+                    selection_token=worker.token, mutate=True) as access:
+                context = native_job_context(access, job_id=worker.job_id, operation='observe')
+                if (context.transfer_revision != worker.expected_revision
+                        or context.binding_digest != worker.binding_digest or context.request_id != worker.request_id):
+                    raise Blocked('Selected worker revision changed')
+                context._deadline = worker.deadline
+                services = selected_services(context)
+                with worker._cancel_lock:
+                    worker.stop_children = services.stop_owned_children
+                context.revalidate()
+                revision = advance_selected(context, expected_revision=worker.expected_revision, services=services)
+                transfer = ObtainTransfer.objects.get(pk=worker.job_id)
+                if type(revision) is not int or transfer.revision != revision:
+                    raise Blocked('Selected worker cannot adopt a foreign revision')
+                worker.expected_revision = revision
+                terminal = (transfer.state != 'queued' or transfer.local_cancelled_at is not None
+                    or transfer.native_progress.get('stage') in
+                       {'verified', 'copy_unknown', 'copy_conflict', 'copy_pending', 'verification_mismatch'})
+                verified = transfer.native_progress.get('stage') == 'verified'
+            if terminal:
+                self._finish(worker, invalidate=not verified)
+            else:
+                worker.next_due = started + 5
         except Exception:
-            self.reason = 'continuation_unavailable'
-        finally:
-            self.stop()
-            close_old_connections()
-            self.done.set()
+            worker.stop('continuation_unavailable')
+            self._finish(worker)
+            if self.coordinator.closed or self.coordinator.blocked:
+                raise  # A lost disk witness is not an ordinary pending result.
+        # BaseException deliberately escapes through the launcher's ExitStack.
 
     def close(self):
-        self.stop()
-        self.thread.join(timeout=10)
-        self.monitor.join(timeout=2)
-        if self.thread.is_alive() or self.monitor.is_alive() or self.cleanup_failed:
-            raise Blocked('Selected worker shutdown unconfirmed')
+        from threading import get_ident
+        if get_ident() != self.owner_thread:
+            raise Blocked('Supervisor cleanup requires its serving thread')
+        if self.closed:
+            if self.failed:
+                raise Blocked('Selected supervisor cleanup unconfirmed')
+            return
+        self.closed = True
+        workers = list(self.authority._obtain_workers.values())
+        for worker in workers:
+            worker.stop()
+        for worker in workers:
+            try:
+                worker.close()
+            except Exception:
+                self.failed = True
+        self.authority._obtain_workers.clear()
+        self.coordinator = None
+        if self.failed:
+            raise Blocked('Selected supervisor cleanup unconfirmed')
+
+
+def supervision_enabled():
+    from . import grant_authority as ga
+    return getattr(settings, 'PORTABLE_OBTAIN_SUPERVISE', not ga._fixture_database()) is True
+
+
+@contextmanager
+def selected_supervisor(authority):
+    if getattr(authority, '_selected_supervisor', None) is not None:
+        raise Blocked('Native supervisor cannot be replaced or revived')
+    supervisor = _SelectedSupervisor(authority)
+    authority._selected_supervisor = supervisor
+    def revoke(ref):
+        for worker in authority._obtain_workers.values():
+            if worker.session_ref == ref:
+                worker.stop('original_authority_window_ended')
+    authority._revokers.append(revoke)
+    authority.boundary._closing.append(supervisor.close)
+    try:
+        yield supervisor
+    finally:
+        supervisor.close()
 
 
 def worker_running(authority, job_id):
     worker = getattr(authority, '_obtain_workers', {}).get(job_id)
-    return worker is not None and not worker.done.is_set()
+    return worker is not None and not worker.done.is_set() and not worker.stop_event.is_set()
 
 
 def start_selected_worker(access, *, job_id):
     from . import grant_authority as ga
     from .obtain_native_context import native_job_context
-    if getattr(settings, 'PORTABLE_OBTAIN_SUPERVISE', not ga._fixture_database()) is not True:
-        return
-    authority = access.authority
-    with ga.recovery_guard(authority, access.session_ref), authority._lock:
-        if not hasattr(authority, '_obtain_workers'):
-            authority._obtain_workers = {}
-            def revoke(ref):
-                for worker in authority._obtain_workers.values():
-                    if worker.session_ref == ref:
-                        worker.stop()  # Never join while logout holds the owner lock.
-            authority._revokers.append(revoke)
-            def close_all():
-                failed = False
-                for worker in authority._obtain_workers.values():
-                    try:
-                        worker.close()
-                    except Exception:
-                        failed = True
-                if failed:
-                    raise Blocked('Selected worker cleanup unconfirmed')
-            authority.boundary._closing.append(close_all)
-        if worker_running(authority, job_id):
-            return
-        previous = authority._obtain_workers.get(job_id)
-        if previous is not None:
-            if previous.cleanup_failed:
-                raise Blocked('Previous selected worker cleanup unconfirmed')
-            previous.close()
+    if not supervision_enabled():
+        return False
+    supervisor = getattr(access.authority, '_selected_supervisor', None)
+    if supervisor is None or supervisor.closed or supervisor.failed:
+        return False  # Preserve the acknowledgement; never invent a new worker.
+    with ga.recovery_guard(access.authority, access.session_ref), access.authority._lock:
         context = native_job_context(access, job_id=job_id, operation='observe')
         transfer = ObtainTransfer.objects.get(pk=job_id)
         if transfer.state != 'queued' or not transfer.provider_job or transfer.local_cancelled_at is not None:
-            return
+            return False
+        if transfer.job.publication_origin is None:
+            return False
+        binding = acquire.source_receipt(transfer)
+        if ('delivery_binding' not in binding or not binding.get('complete_root')
+                or 'completion_intent' not in binding):
+            return False
         if transfer.native_progress.get('stage') in {
                 'verified', 'copy_unknown', 'copy_conflict', 'copy_pending', 'verification_mismatch'}:
-            return
+            return False
         services = selected_services(context)
-        worker = _SelectedWorker(access, context, services)
-        authority._obtain_workers[job_id] = worker
-        worker.start()
+        return supervisor.register(access, context, services)

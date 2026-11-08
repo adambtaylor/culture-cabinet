@@ -135,6 +135,11 @@ def _read_frame(access, job_id, operation):
             raise Blocked('Owned native job unavailable') from None
         if operation != 'view' and job.status != 'blocked_configuration':
             raise Blocked('Cancelled native job cannot perform work')
+        worker = getattr(access.authority, '_obtain_workers', {}).get(job_id)
+        if (operation != 'view' and worker is not None and not worker.done.is_set()
+                and worker.session_ref == access.session_ref and worker.selection == access._signed
+                and worker.stop_event.is_set()):
+            raise Blocked('Selected continuation has stopped')
         transfer = ObtainTransfer.objects.filter(job=job).first()
         return _Frame(identity, str(job.request_id), job.status, transfer.revision if transfer else None,
                       operational_digest(transfer.binding) if transfer else None)
