@@ -92,26 +92,27 @@
 </section>
 {% elif source_setup %}
 <section class="paper-panel cabinet-source-setup" aria-labelledby="musicbrainz-heading">
-  <h1 id="musicbrainz-heading">MusicBrainz recordings</h1>
+  <h1 id="musicbrainz-heading">{{ source_label|default:"MusicBrainz recordings" }}</h1>
   <p>{{ profile_label }}</p>
-  <p>Find recording identities by an artist name you have chosen to share. MusicBrainz needs no API key. Configuration, source permission and each actual API request are separate choices.</p>
-  <p>Only the selected artist title is used for this search, not raw notes. A name match does not verify an exact artist identity. Core recording titles, artist credits and identifiers come from <a href="https://musicbrainz.org" rel="noreferrer noopener">MusicBrainz</a> under <a href="https://musicbrainz.org/doc/About/Data_License" rel="noreferrer noopener">CC0</a>; this grants no audio rights.</p>
-  <p>This source supports recordings. Films, books and other categories still need their own available permitted sources. Their outcomes remain visible when Enhance runs.</p>
+  <p>{% if source_category == 'artist' %}Find artist identities{% else %}Find recording identities{% endif %} by an artist name you have chosen to share. MusicBrainz needs no API key. Configuration, source permission and each actual API request are separate choices.</p>
+  <p>Only the selected artist title is used for this search, not raw notes. A name match does not verify an exact artist identity. {% if source_category == 'artist' %}Artist names and artist identifiers{% else %}Core recording titles, artist credits and identifiers{% endif %} come from <a href="https://musicbrainz.org" rel="noreferrer noopener">MusicBrainz</a> under <a href="https://musicbrainz.org/doc/About/Data_License" rel="noreferrer noopener">CC0</a>; this grants no audio rights.</p>
+  {% if source_category == 'artist' %}<p>This source finds artists, not recordings. The recording source has its own configuration and permission.</p>{% else %}<p>This source supports recordings, not artist results. The artist source has its own configuration and permission.</p>{% endif %}
+  <p>Films, books and other categories still need their own available permitted sources. Missing configuration or permission is not an empty search. Category outcomes remain visible when Enhance runs.</p>
   {% comment %}Configuration never grants catalogue access. These current-owner projections expose only the appropriate native action; GET changes no authority. A saved expired grant must be revoked before regranting.{% endcomment %}
   {% if not source_configured %}
   <h2>1. Configure this source</h2>
-  <form method="post" action="/cabinet/source/musicbrainz/configure" data-source-configure>{% csrf_token %}
+  <form method="post" action="{{ source_configure_action|default:'/cabinet/source/musicbrainz/configure' }}" data-source-configure>{% csrf_token %}
     <input type="hidden" name="profile_ref" value="{{ profile_ref }}"><input type="hidden" name="expected_revision" value="{{ source_revision }}">
-    <label class="cabinet-check"><input type="checkbox" name="confirmed" value="yes" required autocomplete="off"> Configure MusicBrainz recordings for this cabinet.</label>
-    <button type="submit">Configure MusicBrainz</button>
+    <label class="cabinet-check"><input type="checkbox" name="confirmed" value="yes" required autocomplete="off"> Configure {{ source_label|default:"MusicBrainz recordings" }} for this cabinet.</label>
+    <button type="submit">Configure {{ source_label|default:"MusicBrainz recordings" }}</button>
   </form>
   {% else %}
-  <p role="status">MusicBrainz is configured. Configuration alone does not grant source permission.</p>
+  <p role="status">{{ source_label|default:"MusicBrainz recordings" }} is configured. Configuration alone does not grant source permission.</p>
   <h2>2. Review source permission</h2>
   <p>Source permission is separate from inference permission. It does not send a request or approve model use. You will review the exact API request before collection, then the separate inference body before any model send.</p>
   {% if source_consent_active %}<p role="status">Current source permission is active until {{ source_consent_expires }}.</p>{% elif source_consent_record_active %}<p role="status">The saved source permission has expired or no longer matches. Revoke it before explicitly granting new permission.</p>{% else %}<p role="status">No current source permission is active.</p>{% endif %}
   {% if source_consent_groups %}<p>Previously selected groups:</p><ul>{% for group in source_consent_groups %}<li>{{ group }}</li>{% endfor %}</ul>{% endif %}
-  <form method="post" action="/cabinet/source/musicbrainz/consent" data-source-consent>{% csrf_token %}
+  <form method="post" action="{{ source_consent_action_url|default:'/cabinet/source/musicbrainz/consent' }}" data-source-consent>{% csrf_token %}
     <input type="hidden" name="profile_ref" value="{{ profile_ref }}"><input type="hidden" name="source_connection_ref" value="{{ source_connection_ref }}"><input type="hidden" name="expected_revision" value="{{ source_consent_revision }}">
     {% if source_consent_record_active %}
     <input type="hidden" name="action" value="revoke">
@@ -122,11 +123,12 @@
     <input type="hidden" name="action" value="{{ source_consent_action }}">
     <fieldset><legend>Choose the artist signal groups for source lookup</legend>{% for choice in source_choices %}<label class="cabinet-check"><input type="checkbox" name="allow_{{ choice.code }}" value="yes" autocomplete="off"> {{ choice.label }}</label>{% endfor %}</fieldset>
     <p>Only permitted artist signals can supply the search name. No notes or inference permission are included here. Permission lasts up to five minutes or the current owner session’s end, whichever comes first.</p>
-    <label class="cabinet-check"><input type="checkbox" name="confirmed" value="yes" required autocomplete="off"> Allow only the selected groups for MusicBrainz catalogue lookup during this permission window.</label>
+    <label class="cabinet-check"><input type="checkbox" name="confirmed" value="yes" required autocomplete="off"> Allow only the selected groups for {{ source_label|default:"MusicBrainz recordings" }} catalogue lookup during this permission window.</label>
     <button type="submit">Grant source permission</button>
     {% endif %}
   </form>
   {% endif %}
+  <p><a href="/cabinet/source/musicbrainz?profile_ref={{ profile_ref|urlencode }}">Recording source and permission</a> · <a href="/cabinet/source/musicbrainz/artist?profile_ref={{ profile_ref|urlencode }}">Artist source and permission</a></p>
   <p><a href="/cabinet/taste/artist?profile_ref={{ profile_ref|urlencode }}">Add an artist you know</a></p>
   <p><a href="{{ cabinet_url }}">Return to your cabinet</a></p>
 </section>
@@ -246,7 +248,7 @@
   {% if round_url and not round_blocks_start %}<p class="cabinet-round-status" role="status"><a href="{{ round_url }}">Review this round’s recorded status</a>{% if round_pending %}. Pending, failed or uncertain work does not replace the publication shown below.{% endif %}</p>{% endif %}
   <details class="cabinet-options"><summary>Cabinet options and permissions</summary>
     <p><a href="/setup/cabinet">Choose a cabinet or connection</a></p>
-    {% if profile_ref %}<p><a href="/cabinet/source/musicbrainz?profile_ref={{ profile_ref|urlencode }}">Configure MusicBrainz and review source permission</a></p><p><a href="/cabinet/taste/artist?profile_ref={{ profile_ref|urlencode }}">Add an artist you know</a></p>{% endif %}
+    {% if profile_ref %}<p><a href="/cabinet/source/musicbrainz?profile_ref={{ profile_ref|urlencode }}">Configure MusicBrainz recordings and review source permission</a></p><p><a href="/cabinet/source/musicbrainz/artist?profile_ref={{ profile_ref|urlencode }}">Configure MusicBrainz artists and review source permission</a></p><p><a href="/cabinet/taste/artist?profile_ref={{ profile_ref|urlencode }}">Add an artist you know</a></p>{% endif %}
     {% if inference_consent_url %}<p><a href="{{ inference_consent_url }}">Review inference permission</a>. Source collection permission remains separate.</p>{% endif %}
   </details>
   {% if selection_token %}

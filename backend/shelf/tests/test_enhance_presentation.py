@@ -750,3 +750,55 @@ class EnhancePresentationTests(SimpleTestCase):
                 self.assertIn('This note was cleared.' if cleared else 'Saved note is empty.', doc.root.text())
                 self.assertNotIn('Saved note is empty.' if cleared else 'This note was cleared.', doc.root.text())
                 self.assertTrue(any('data-taste-undo' in n.attrs for n in doc.tagged('form')))
+
+    def test_musicbrainz_artist_and_recording_setup_use_distinct_fixed_actions_and_meanings(self):
+        from shelf import enhancement_views as views
+        from django.test import RequestFactory
+        profile = self.backend_feedback_fixture()['profile_ref']
+        for adapter, category, label, path in [
+            ('musicbrainz_artist', 'artist', 'MusicBrainz artists', '/cabinet/source/musicbrainz/artist'),
+            ('musicbrainz_recording', 'recording', 'MusicBrainz recordings', '/cabinet/source/musicbrainz')]:
+            for configured in (False, True):
+                with self.subTest(adapter=adapter, configured=configured):
+                    context = {'source_setup': True, 'source_adapter': adapter, 'source_category': category,
+                        'source_label': label, 'profile_ref': profile, 'source_configured': configured,
+                        'source_connection_ref': 'synthetic-source', 'source_revision': 0,
+                        'source_consent_revision': 2, 'source_consent_action': 'grant',
+                        'source_choices': [{'code': 'anticipated_reactions', 'label': 'Artist interest'}],
+                        'cabinet_url': '/cabinet'}
+                    response = views._native_cabinet_html(RequestFactory().get(path), context)
+                    doc = Document(response.content.decode())
+                    self.assertEqual(doc.tagged('h1')[0].text(), label)
+                    form = next(n for n in doc.tagged('form') if n.attrs.get('method') == 'post')
+                    self.assertEqual(form.attrs['action'], path + ('/consent' if configured else '/configure'))
+                    fields = {n.attrs.get('name'): n.attrs.get('value') for n in form.nodes() if n.tag == 'input'}
+                    self.assertEqual(fields['profile_ref'], profile)
+                    self.assertEqual(fields['expected_revision'], '2' if configured else '0')
+                    self.assertIn('csrfmiddlewaretoken', fields)
+                    self.assertFalse({'adapter', 'origin', 'purpose', 'secret'} & fields.keys())
+                    self.assertFalse(any('checked' in n.attrs for n in form.nodes()))
+                    self.assertIn('Missing configuration or permission is not an empty search', doc.root.text())
+                    self.assertIn('Artist names and artist identifiers' if category == 'artist'
+                        else 'Core recording titles, artist credits and identifiers', doc.root.text())
+                    self.assertIn('not recordings' if category == 'artist' else 'not artist results', doc.root.text())
+                    self.assertIn('Find artist identities' if category == 'artist' else 'Find recording identities',
+                                  doc.root.text())
+                    self.assertTrue(any(n.attrs.get('href') ==
+                        '/cabinet/source/musicbrainz/artist?profile_ref=' + profile for n in doc.tagged('a')))
+
+    def test_musicbrainz_source_projection_refuses_cross_operation_and_external_actions(self):
+        from shelf import enhancement_views as views
+        from shelf.portable_authority import AuthorityFault
+        profile = self.backend_feedback_fixture()['profile_ref']
+        context = {'source_adapter': 'musicbrainz_artist', 'profile_ref': profile}
+        for extra in ({'source_adapter': 'unreviewed_source'},
+                      {'source_category': 'recording'},
+                      {'source_label': 'MusicBrainz recordings'},
+                      {'source_configure_action': '/cabinet/source/musicbrainz/configure'},
+                      {'source_consent_action_url': 'https://untrusted.invalid/consent'},
+                      {'source_page_url': '//untrusted.invalid/source'}):
+            with self.subTest(extra=extra), self.assertRaises(AuthorityFault):
+                views._source_setup_display({**context, **extra})
+        legacy = views._source_setup_display({'profile_ref': profile})
+        self.assertEqual(legacy['source_adapter'], 'musicbrainz_recording')
+        self.assertEqual(legacy['source_consent_action_url'], '/cabinet/source/musicbrainz/consent')

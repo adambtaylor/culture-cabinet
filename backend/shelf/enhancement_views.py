@@ -702,6 +702,29 @@ def _card_feedback_display(value, *, profile_ref, target_ref):
     return {'target_ref': target_ref, 'signals': _feedback_signals(value['signals'], actions=value['actions'])}
 
 
+def _source_setup_display(value):
+    """Keep the two fixed MusicBrainz operations distinct in native forms.
+
+    An adapter chooses only these reviewed routes, never an arbitrary action
+    URL. A connection or permission shown here is not permission for its sibling.
+    Recording defaults keep already accepted callers compatible.
+    """
+    from .portable_authority import AuthorityFault
+    from .portable_connection_views import _uuid
+    adapter = value.get('source_adapter', 'musicbrainz_recording')
+    if adapter not in ('musicbrainz_recording', 'musicbrainz_artist'):
+        raise AuthorityFault('CONTRACT_INVALID', 422)
+    artist = adapter == 'musicbrainz_artist'
+    category, label = ('artist', 'MusicBrainz artists') if artist else ('recording', 'MusicBrainz recordings')
+    base = '/cabinet/source/musicbrainz' + ('/artist' if artist else '')
+    page = base + '?' + urlencode({'profile_ref': str(_uuid(value['profile_ref']))})
+    expected = {'source_category': category, 'source_label': label, 'source_page_url': page,
+                'source_configure_action': base + '/configure', 'source_consent_action_url': base + '/consent'}
+    if any(key in value and value[key] != item for key, item in expected.items()):
+        raise AuthorityFault('CONTRACT_INVALID', 422)
+    return {'source_adapter': adapter, **expected}
+
+
 @sensitive_variables()
 def _native_cabinet_html(request, context, *, status=200):
     from django.http import HttpResponse
@@ -709,6 +732,8 @@ def _native_cabinet_html(request, context, *, status=200):
     from django.template import Engine
     if context.get('taste_input') is True:
         context = {**context, **_taste_display_context(context)}
+    if context.get('source_setup') is True:
+        context = {**context, **_source_setup_display(context)}
     context = {**context, 'csrf_token': get_token(request),
                'enhancement_base': Engine.get_default().from_string(_PORTABLE_ENHANCE_BASE)}
     return HttpResponse(render_to_string('cabinet/portable_cabinet.html', context), status=status,
