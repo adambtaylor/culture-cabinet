@@ -119,7 +119,7 @@ class NativeThreeRoundTests(NativeFeedbackCase):
                     status = self.action(f'/enhance/runs/{run_ref}/confirm', confirmation)
                     if status['published']:
                         break
-                self.assertTrue(status['published'])
+                self.assertTrue(status['published'], {'round': round_number, 'status': status, 'trace': trace})
                 self.assertEqual(status['publication_revision'], round_number)
                 row = SynthesisRun.objects.get(pk=run_ref)
                 self.assertEqual(row.attempts, 1)
