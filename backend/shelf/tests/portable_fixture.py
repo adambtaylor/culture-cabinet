@@ -112,7 +112,10 @@ class BoundSocketLease:
     cleanup is retained as failure, never substituted for a passing test. An
     independent execution supervisor is still required for abrupt runner loss.
     """
-    def __init__(self, case_id):
+    def __init__(self, case_id, *, lifetime=20):
+        if type(lifetime) is not int or lifetime not in (20, 25):
+            raise PortableFixtureFailure('BOUND_SOCKET_LIFETIME')
+        self.lifetime = lifetime
         self.case_id = case_id
         self.start = reserve_resource('bound_socket', case_id, 13)
         self.boundary = None
@@ -127,7 +130,7 @@ class BoundSocketLease:
             resource_event(category='bound_socket', case_id=self.case_id,
                 phase='acquired', start=self.start, owner_pid=os.getpid(),
                 socket_identity=[info.st_dev, info.st_ino], fd=boundary._socket.fileno())
-            self.timer = threading.Timer(max(0, self.start+20-time.monotonic()), self.expire)
+            self.timer = threading.Timer(max(0, self.start+self.lifetime-time.monotonic()), self.expire)
             self.timer.daemon = True
             self.timer.start()
 
