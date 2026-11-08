@@ -1,5 +1,6 @@
 """Three native Enhance rounds; only external wire responses are synthetic."""
 import uuid
+import time
 from urllib.parse import urlencode
 from unittest.mock import patch
 
@@ -33,6 +34,7 @@ class NativeThreeRoundTests(NativeFeedbackCase):
 
     def test_three_native_rounds_feedback_undo_exact_input_and_persistent_publications(self):
         bodies, previews, trace = [], [], []
+        began = time.monotonic()
 
         def model_reply(transport, body, permit):
             if type(permit) is ProbePermit:
@@ -111,6 +113,7 @@ class NativeThreeRoundTests(NativeFeedbackCase):
                     client_key=str(uuid.uuid4()), refresh_nonce=str(uuid.uuid4()))
                 run = self.action('/enhance/start', start_fields)
                 run_ref = run['run_ref']
+                print('NATIVE_ROUND_STARTED', round_number, round(time.monotonic()-began, 3), flush=True)
                 trace.append('round-start')
                 for _ in range(3):
                     preview = self.action(f'/enhance/runs/{run_ref}/preview', {})['disclosure']
@@ -123,6 +126,7 @@ class NativeThreeRoundTests(NativeFeedbackCase):
                     status = self.action(f'/enhance/runs/{run_ref}/confirm', confirmation)
                     if status['published']:
                         break
+                print('NATIVE_ROUND_SETTLED', round_number, status['stage'], round(time.monotonic()-began, 3), flush=True)
                 self.assertTrue(status['published'], {'round': round_number, 'status': status, 'trace': trace})
                 self.assertEqual(status['publication_revision'], round_number)
                 row = SynthesisRun.objects.get(pk=run_ref)
