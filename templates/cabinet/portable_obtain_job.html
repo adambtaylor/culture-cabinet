@@ -5,12 +5,12 @@
 {% if error_message %}<section class="obtain-notice" role="alert"><h2>This request needs attention</h2><p>{{ error_message }}</p><p>Read the recorded request before choosing another action. Nothing has been resubmitted.</p></section>{% endif %}
 {% if obtain_job %}
 {% comment %}Only the sole native producer supplies this flat projection. A queued transfer, stage label or successful GET cannot become verified availability in this template.{% endcomment %}
-<section class="paper-panel obtain-status" data-obtain-status data-profile-ref="{{ profile_ref }}" data-obtain-state="{{ obtain_job.state }}" data-obtain-verified="false" data-obtain-next-action="{{ obtain_job.next_action }}" data-obtain-revision="{{ obtain_job.revision }}" data-obtain-status-url="{{ obtain_status_url }}" data-obtain-poll-until="{{ obtain_poll_until|date:'c'|default:obtain_poll_until }}" data-obtain-verification-until="{{ obtain_job.verification_until|date:'c'|default:obtain_job.verification_until }}" aria-labelledby="obtain-status-heading">
+<section class="paper-panel obtain-status" data-obtain-status data-profile-ref="{{ profile_ref }}" data-obtain-state="{{ obtain_job.state }}" data-obtain-verified="false" data-obtain-next-action="{{ obtain_job.next_action }}" data-obtain-revision="{{ obtain_job.revision }}" data-obtain-job-id="{{ obtain_job.id }}" data-obtain-status-profile="{{ profile_ref }}" data-obtain-status-url="{{ obtain_status_url }}" data-obtain-poll-until="{{ obtain_poll_until|date:'c'|default:obtain_poll_until|default_if_none:'' }}" data-obtain-verification-until="{{ obtain_job.verification_until|date:'c'|default:obtain_job.verification_until|default_if_none:'' }}" aria-labelledby="obtain-status-heading">
   <h2 id="obtain-status-heading" data-obtain-status-heading tabindex="-1">Recorded progress</h2>
   <p class="obtain-status-line" role="status" aria-live="polite" aria-atomic="true"><span class="obtain-status-icon" data-obtain-icon aria-hidden="true">{% if obtain_job.state == 'working' %}…{% elif obtain_job.state == 'error' %}!{% else %}○{% endif %}</span><strong data-obtain-label>{{ obtain_job.label }}</strong></p>
-  {% if obtain_job.verification_until %}<p>Library verification valid until <time data-obtain-verification-time datetime="{{ obtain_job.verification_until|date:'c'|default:obtain_job.verification_until }}">{{ obtain_job.verification_until }}</time>.</p>{% endif %}
+  {% if obtain_job.verification_until %}<p>Library verification valid until <time data-obtain-verification-time datetime="{{ obtain_job.verification_until|date:'c'|default:obtain_job.verification_until|default_if_none:'' }}">{{ obtain_job.verification_until }}</time>.</p>{% endif %}
   {% if obtain_job.observed_at %}<p class="quiet-note">Last recorded observation: {{ obtain_job.observed_at }}.</p>{% endif %}
-  <p><a data-obtain-detail href="{{ obtain_job.detail_href }}">Open this recorded request</a> · <a href="{{ obtain_job.detail_href }}">Reload recorded status</a></p>
+  <p><a data-obtain-detail href="{{ obtain_job.detail_href }}">Reload this recorded request</a></p>
   <button type="button" data-obtain-refresh class="quiet" hidden>Refresh recorded status</button>
   <p data-obtain-notice class="obtain-status-notice" role="status" aria-live="polite">Reloading reads the recorded status. It does not submit a download or repeat an import.</p>
   {% if obtain_job.next_action == 'check' or obtain_job.next_action == 'reconcile' %}
@@ -34,4 +34,5 @@
   {% endif %}
 </section>
 {% else %}<p role="status">No current request is available for this cabinet. Return to your cabinet and open its current options.</p>{% endif %}
+{% if obtain_job and not error_message %}<script src="/cabinet/obtain/status.js" defer></script>{% endif %}
 {% endblock %}

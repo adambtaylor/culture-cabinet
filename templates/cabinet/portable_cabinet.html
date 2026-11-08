@@ -389,9 +389,9 @@
       {% endif %}
       {% if card.obtain_action %}
       {% comment %}Obtain is independent of Save. Only this producer's closed flat state and finite verification can describe availability; the choose POST is navigation, never a submission.{% endcomment %}
-      <div class="obtain-status" data-obtain-status data-profile-ref="{{ profile_ref }}" data-obtain-state="{{ card.obtain_action.state }}" data-obtain-verified="false" data-obtain-verification-until="{{ card.obtain_action.verification_until|date:'c'|default:card.obtain_action.verification_until }}">
+      <div class="obtain-status" data-obtain-status data-profile-ref="{{ profile_ref }}" data-obtain-state="{{ card.obtain_action.state }}" data-obtain-verified="false" data-obtain-verification-until="{{ card.obtain_action.verification_until|date:'c'|default:card.obtain_action.verification_until|default_if_none:'' }}"{% if card.obtain_status_context %} data-obtain-job-id="{{ card.obtain_status_context.job_id }}" data-obtain-status-profile="{{ card.obtain_status_context.profile_ref }}" data-obtain-status-url="{{ card.obtain_status_context.status_url }}" data-obtain-poll-until="{{ card.obtain_status_context.poll_until|date:'c'|default:card.obtain_status_context.poll_until|default_if_none:'' }}"{% endif %}>
         <p class="obtain-status-line" role="status" aria-live="polite" aria-atomic="true"><span class="obtain-status-icon" data-obtain-icon aria-hidden="true">{% if card.obtain_action.state == 'working' %}…{% elif card.obtain_action.state == 'error' %}!{% else %}○{% endif %}</span><strong data-obtain-label>{{ card.obtain_action.label }}</strong></p>
-        {% if card.obtain_action.verification_until %}<p>Verification valid until <time data-obtain-verification-time datetime="{{ card.obtain_action.verification_until|date:'c'|default:card.obtain_action.verification_until }}">{{ card.obtain_action.verification_until }}</time>.</p>{% endif %}
+        {% if card.obtain_action.verification_until %}<p>Verification valid until <time data-obtain-verification-time datetime="{{ card.obtain_action.verification_until|date:'c'|default:card.obtain_action.verification_until|default_if_none:'' }}">{{ card.obtain_action.verification_until }}</time>.</p>{% endif %}
         {% if card.obtain_action.state == 'idle' and card.obtain_choose_url %}
         <form method="post" action="/cabinet/obtain/choose/" data-obtain-choose>{% csrf_token %}
           <input type="hidden" name="profile_ref" value="{{ profile_ref }}"><input type="hidden" name="publication_revision" value="{{ publication_revision }}"><input type="hidden" name="candidate_key" value="{{ card.candidate_key }}">
@@ -422,5 +422,6 @@
 {% endif %}{% endfor %}
 {% endif %}
 {% if feedback_available %}<p class="fine-print">Your responses and notes are saved separately from Enhance. A changed response needs a fresh request preview; no collection or inference is sent automatically.</p>{% else %}<p class="fine-print">Ratings and reactions are not connected on this native page yet. No response, Save, Obtain or provider action is inferred from viewing a card.</p>{% endif %}
+{% if not read_code %}<script src="/cabinet/obtain/status.js" defer></script>{% endif %}
 {% endif %}
 {% endblock %}
