@@ -1,6 +1,7 @@
 """Live native job authority; operational receipt values never recreate access."""
 from contextlib import contextmanager
 from dataclasses import dataclass
+from datetime import datetime, timedelta
 import hashlib
 
 from . import grant_authority as ga
@@ -37,6 +38,7 @@ class NativeJobContext:
         if _issuer is not _ISSUER:
             raise Blocked('Live native context factory required')
         self._access, self.job_id, self.operation, self._frame = access, job_id, operation, frame
+        self._deadline = None
 
     @property
     def actor_id(self):
@@ -63,6 +65,41 @@ class NativeJobContext:
         if (type(self) is not NativeJobContext or active_portable_access() is not self._access
                 or _read_frame(self._access, self.job_id, self.operation) != self._frame):
             raise Blocked('Native job authority or revision changed')
+
+    def authority_deadline(self):
+        """Actual sensitive-session/runtime minimum, frozen against renewal.
+
+        A continuing owner interaction can change idle/reauthentication times.
+        It cannot extend a worker or file intent already issued by this context.
+        """
+        from django.conf import settings
+        if self.operation == 'view':
+            raise Blocked('Read-only context cannot issue an effect deadline')
+        self.revalidate()
+        authority, ref = self._access.authority, self._access.session_ref
+        with ga.recovery_guard(authority, ref), authority._lock:
+            _, session = ga._bound(authority, ref, self._access.profile_ref, sensitive=True)
+            cache = getattr(authority, '_obtain_sensitive_ends', {})
+            key = (ref, session.reauthenticated)
+            if key not in cache:
+                cache = {pair: value for pair, value in cache.items()
+                         if pair[0] in authority._sessions and pair[0] != ref}
+                cache[key] = authority.now() + timedelta(seconds=session.reauthenticated + 300 - authority.monotonic())
+                authority._obtain_sensitive_ends = cache
+            end = min(ga._end(authority, session), cache[key])
+            runtime_end = getattr(settings, 'PORTABLE_OBTAIN_POLL_UNTIL', None)
+            if runtime_end is not None:
+                if type(runtime_end) is not datetime or runtime_end.utcoffset() is None:
+                    raise Blocked('Actual runtime deadline required')
+                end = min(end, runtime_end)
+            worker = getattr(authority, '_obtain_workers', {}).get(self.job_id)
+            if (worker is not None and not worker.done.is_set() and worker.session_ref == ref
+                    and worker.selection == self._access._signed):
+                end = min(end, worker.deadline)
+            self._deadline = min(end, self._deadline) if self._deadline is not None else end
+            if not authority.now() < self._deadline:
+                raise Blocked('Original native effect window expired')
+            return self._deadline
 
     def require(self, actor, profile_id):
         if (actor.pk, profile_id) != (self.actor_id, self.profile_id):
@@ -98,6 +135,11 @@ def _read_frame(access, job_id, operation):
             raise Blocked('Owned native job unavailable') from None
         if operation != 'view' and job.status != 'blocked_configuration':
             raise Blocked('Cancelled native job cannot perform work')
+        worker = getattr(access.authority, '_obtain_workers', {}).get(job_id)
+        if (operation != 'view' and worker is not None and not worker.done.is_set()
+                and worker.session_ref == access.session_ref and worker.selection == access._signed
+                and worker.stop_event.is_set()):
+            raise Blocked('Selected continuation has stopped')
         transfer = ObtainTransfer.objects.filter(job=job).first()
         return _Frame(identity, str(job.request_id), job.status, transfer.revision if transfer else None,
                       operational_digest(transfer.binding) if transfer else None)

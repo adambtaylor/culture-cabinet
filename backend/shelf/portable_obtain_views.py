@@ -311,6 +311,27 @@ def options(request):
 @require_POST
 @csrf_protect
 @_guard
+def choose(request):
+    """Select the actual native profile, then navigate to a fresh card review."""
+    from .portable_owner_tv import ObtainOriginSelectorForm
+    data = _fields(request, {'profile_ref', 'publication_revision', 'candidate_key'})
+    selector = ObtainOriginSelectorForm({key: value for key, value in data.items() if key != 'profile_ref'})
+    ga._require('profile_ref' in data and selector.is_valid()
+        and selector.cleaned_data.get('publication_revision') is not None
+        and not selector.cleaned_data.get('owner_selection_ref'), 'CONTRACT_INVALID', 422)
+    # This POST establishes selection only. The following GET resolves the
+    # current publication and source permissions before displaying any search.
+    selection = select_portable_profile(request.portable_authority,
+        request.session.get('portable_session'), profile_ref=data['profile_ref'])
+    request.session['portable_saved_selection'] = selection
+    response = HttpResponseRedirect(reverse('portable_obtain_options') + '?' + urlencode(data))
+    response.status_code = 303
+    return response
+
+
+@require_POST
+@csrf_protect
+@_guard
 def origin_search(request):
     from .portable_owner_tv import ObtainOptionsForm, ObtainOriginSelectorForm
     data = _fields(request, {'profile_ref', 'selection_token'} | set(ObtainOptionsForm.base_fields))
@@ -424,7 +445,7 @@ def submission_review(request, job_id):
             result = acquire.review_submission(actor=access.actor, profile_id=access.identity.profile_id, job_id=job_id,
                 context=services.context, evidence=services.evidence, max_bytes=services.max_bytes,
                 retriever=services.retriever, complete_root=services.complete_root, test_only=services.test_only,
-                completion_intent=services.completion_intent)
+                completion_intent=services.completion_intent, delivery_binding=services.delivery_binding)
         except acquire.ContractError:
             # Render before the live scope closes. Both projections recheck PA1;
             # authority loss must still deny, without exposing retained job data.
@@ -449,12 +470,20 @@ def submit(request, job_id):
     ga._require(form.is_valid(), 'CONTRACT_INVALID', 422)
     with _scope(request, data, mutate=True) as access:
         job = acquire.owned_job(access.actor, access.identity.profile_id, job_id)
+        previous = acquire.retained_origin_submission(actor=access.actor, profile_id=access.identity.profile_id,
+            job_id=job_id, token=form.cleaned_data['token'])
+        if previous is not None:
+            return HttpResponseRedirect('/cabinet/obtain/jobs/' + str(job_id) + '/')
         with access.effect_window(action='select'):
             services = obtain_runtime.submission_factory(actor=access.actor, profile_id=access.identity.profile_id, job=job)
-        acquire.submit(actor=access.actor, profile_id=access.identity.profile_id, job_id=job_id, context=services.context,
+        transfer = acquire.submit(actor=access.actor, profile_id=access.identity.profile_id, job_id=job_id, context=services.context,
             token=form.cleaned_data['token'], confirmed=True, retriever=services.retriever, backend=services.backend,
             max_bytes=services.max_bytes, complete_root=services.complete_root, test_only=services.test_only,
-            completion_intent=services.completion_intent)
+            completion_intent=services.completion_intent, delivery_binding=services.delivery_binding)
+        if job.publication_origin is not None and transfer.state == 'queued':
+            obtain_runtime.start_selected_worker(access, job_id=job_id)
+        if job.publication_origin is not None:
+            return HttpResponseRedirect('/cabinet/obtain/jobs/' + str(job_id) + '/')
     return HttpResponseRedirect(BASE + f'jobs/{job_id}/')
 
 
@@ -525,14 +554,53 @@ def _flat_status(access, job, context):
         stage, reason, state, label, next_action = states[transfer.state]
         if next_action in {'check', 'reconcile'} and advance is None:
             next_action = 'none'
-    # The current integration supplies no accepted library-verification writer.
-    # Keep local_verified historical; T1/O1's typed proof/CAS producer must be
-    # composed before this projection can expose any verified availability.
+    verification_until = None
+    observed_at = transfer.created_at if transfer else job.created_at
+    if (transfer is not None and job.publication_origin is not None and transfer.state == 'queued'
+            and transfer.local_cancelled_at is None and job.status != 'cancelled'):
+        from .completion_dispatch import current_verification
+        progress = transfer.native_progress
+        stages = {
+            'submitted': ('working', 'Accepted by downloader; completion unverified', 'check'),
+            'observing': ('working', 'Checking the selected download', 'check'),
+            'awaiting_completion': ('working', 'Downloading or post-processing', 'check'),
+            'copying': ('working', 'Copying the verified episode', 'check'),
+            'copy_pending': ('working', 'Copy needs reconciliation', 'reconcile'),
+            'copy_unknown': ('error', 'Copy outcome unconfirmed', 'reconcile'),
+            'copy_conflict': ('error', 'Destination conflict needs review', 'none'),
+            'verifying_library': ('working', 'Checking Jellyfin readback', 'check'),
+            'awaiting_library_index': ('working', 'Waiting for Jellyfin to index the episode', 'check'),
+            'verification_unavailable': ('working', 'Library verification unavailable', 'check'),
+            'verification_mismatch': ('error', 'Library evidence does not match this request; review needed', 'none'),
+            'verified': ('working', 'Library verification needed', 'check'),
+        }
+        if type(progress) is dict and progress.get('schema') == 'obtain-tv-progress/v1' and progress.get('stage') in stages:
+            stage = progress['stage']; state, label, next_action = stages[stage]
+            reason = progress.get('reason', '')
+            observed_at = progress.get('observed_at') or observed_at
+        proof = current_verification(access, transfer)
+        if proof is not None:
+            stage, reason, state, label, next_action = 'verified', '', 'done', 'Available in Jellyfin', 'none'
+            verification_until, observed_at = proof.valid_until, proof.observed_at
+        else:
+            worker = getattr(access.authority, '_obtain_workers', {}).get(job.pk)
+            if worker is not None and worker.done.is_set() and worker.reason:
+                stage, reason, state, label, next_action = (
+                    'continuation_blocked', worker.reason, 'error', 'Progress paused; review current access', 'check')
+            elif obtain_runtime.supervision_enabled():
+                supervisor = getattr(access.authority, '_selected_supervisor', None)
+                if supervisor is None or supervisor.closed or supervisor.failed:
+                    stage, reason, state, label, next_action = ('continuation_unavailable',
+                        'native_supervisor_unavailable', 'working', 'Automatic progress unavailable; review current access', 'check')
+        if proof is None and next_action in {'check', 'reconcile'}:
+            session = access.authority.authorize(access.session_ref, touch=False)
+            if access.authority.monotonic() - session.reauthenticated >= 300:
+                next_action, label = 'reauthorize', 'Owner access needed to continue this request'
     context.revalidate()
     return {'id': job.pk, 'state': state, 'label': label,
         'detail_href': reverse('portable_obtain_job', kwargs={'job_id': job.pk}),
-        'verification_until': None, 'stage': stage, 'reason': reason, 'revision': revision,
-        'next_action': next_action, 'observed_at': transfer.created_at if transfer else job.created_at}
+        'verification_until': verification_until, 'stage': stage, 'reason': reason, 'revision': revision,
+        'next_action': next_action, 'observed_at': observed_at}
 
 
 def _read_query(request, access):
@@ -597,6 +665,34 @@ def job_status(request, job_id):
         projection = _flat_status(access, job, context)
         return JsonResponse(projection, headers={'Cache-Control': 'no-store',
                                                  'X-Content-Type-Options': 'nosniff'})
+
+
+@require_POST
+@csrf_protect
+@_guard
+def advance(request, job_id):
+    from .obtain_native_context import native_job_context
+    from .completion_dispatch import advance_selected
+    data = _fields(request, {'profile_ref', 'selection_token', 'expected_revision'})
+    raw = data.get('expected_revision', '')
+    ga._require(type(raw) is str and raw.isascii() and raw.isdigit() and len(raw) <= 16
+                and str(int(raw)) == raw and int(raw) < 2**53, 'CONTRACT_INVALID', 422)
+    with _scope(request, data, mutate=True) as access:
+        job = acquire.owned_job(access.actor, access.identity.profile_id, job_id)
+        transfer = ObtainTransfer.objects.filter(job=job).first()
+        ga._require(transfer is not None and transfer.revision == int(raw), 'REVISION_CONFLICT', 409)
+        target = '/cabinet/obtain/jobs/' + str(job_id) + '/'
+        # Unknown/unacknowledged receipts stay read-only. This route never
+        # constructs a provider to guess an acknowledgement or resend addfile.
+        if transfer.state != 'queued' or not transfer.provider_job or transfer.local_cancelled_at is not None:
+            return HttpResponseRedirect(target)
+        if obtain_runtime.supervision_enabled():
+            obtain_runtime.start_selected_worker(access, job_id=job_id, explicit=True)
+        elif not obtain_runtime.worker_running(access.authority, job_id):
+            context = native_job_context(access, job_id=job_id, operation='observe')
+            services = obtain_runtime.selected_services(context)
+            advance_selected(context, expected_revision=int(raw), services=services)
+        return HttpResponseRedirect(target)
 
 
 @require_GET

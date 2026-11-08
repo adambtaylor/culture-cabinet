@@ -1,9 +1,10 @@
 """Closed library/series/episode resolution through the real injected transport."""
 from contextlib import contextmanager
 from copy import deepcopy
-from dataclasses import replace
+from dataclasses import FrozenInstanceError, replace
 from datetime import timedelta
 import json
+import hashlib
 from unittest import TestCase
 from unittest.mock import patch
 from urllib.parse import parse_qs, urlsplit
@@ -127,3 +128,150 @@ class EpisodeResolutionTests(TestCase):
         result = self.run_resolve(revalidate=revalidate)
         self.assertEqual(result.status, 'unavailable')
         self.assertLess(self.factory_count, 3)
+
+    def test_validated_series_survives_explicit_missing_episode_without_arrival(self):
+        result = self.run_resolve([{'Items': [self.series]}, {'Items': []}])
+        self.assertEqual(result.status, 'not_indexed')
+        self.assertIsNone(result.series_id)
+        self.assertIsNone(result.selection)
+        self.assertIsNone(result.observation)
+        self.assertIsNone(result.binding)
+        evidence = result.series_evidence
+        self.assertIs(type(evidence), jf.ValidatedSeriesBinding)
+        self.assertEqual(evidence.series_id, self.series['Id'])
+        self.assertEqual(evidence.binding, self.binding)
+        self.assertEqual(evidence.content_identity_digest, self.target.content_identity_digest)
+        self.assertEqual(evidence.request_id, self.target.request_id)
+        self.assertEqual(evidence.job_binding_digest, self.target.binding_digest)
+        self.assertEqual(evidence.destination_binding_digest, self.target.destination_binding_digest)
+        self.assertEqual(evidence.scope, self.target.scope)
+        self.assertEqual(evidence.target_digest, jf._digest(self.target.material()))
+        self.assertEqual(evidence.service_binding_digest, jf._digest(self.binding.material()))
+        self.assertEqual(evidence.operation_digest, result.operation_digests[0])
+        self.assertEqual(evidence.response_digest, result.response_digests[0])
+        self.assertEqual(evidence.response_digest,
+                         hashlib.sha256(self.connections[0].response.payload).hexdigest())
+        self.assertEqual(evidence.observed_at, self.clock.now())
+        self.assertEqual(evidence.valid_until, self.target.facts_valid_until)
+        self.assertEqual(self.factory_count, 2)
+
+    def test_series_evidence_closed_roundtrip_preserves_original_bounds(self):
+        result = self.run_resolve()
+        evidence = result.series_evidence
+        self.assertEqual(result.status, 'resolved')
+        self.assertIs(type(evidence), jf.ValidatedSeriesBinding)
+        self.assertEqual(len(result.operation_digests), 3)
+        self.assertEqual(len(result.response_digests), 3)
+        material = jf.series_evidence_material(evidence)
+        self.clock.elapsed = 600
+        self.assertEqual(jf.read_series_evidence(material), evidence)
+        self.assertEqual(jf.series_evidence_material(jf.read_series_evidence(material)), material)
+        self.assertEqual(evidence.valid_until, self.target.facts_valid_until)
+        self.assertEqual(set(material), {'schema', *jf.ValidatedSeriesBinding.__dataclass_fields__})
+        for forbidden in ('ProviderIds', '"show_id"', '"Tmdb"', 'Fictional Fixture Show', 'SYNTHETIC_NOT_A_KEY'):
+            self.assertNotIn(forbidden, json.dumps(material))
+        with self.assertRaises(FrozenInstanceError):
+            evidence.series_id = 'f' * 32
+
+    def test_final_selected_item_not_observed_keeps_only_validated_series(self):
+        result = self.run_resolve([{'Items': [self.series]}, {'Items': [self.episode]}, {'Items': []}])
+        self.assertEqual(result.status, 'not_indexed')
+        self.assertIs(type(result.series_evidence), jf.ValidatedSeriesBinding)
+        self.assertIsNone(result.selection)
+        self.assertIsNone(result.observation)
+        self.assertIsNone(result.series_id)
+        self.assertIsNone(result.binding)
+        self.assertEqual(self.factory_count, 3)
+        self.assertTrue(all(connection.closed for connection in self.connections))
+
+    def test_unvalidated_ambiguous_and_generic_failures_never_salvage_series_locals(self):
+        cases = [([{'Items': []}], 'not_indexed'),
+                 ([{'Items': [self.series, self.series]}], 'ambiguous'),
+                 ([{'Items': [{'Id': self.series['Id']}]}], 'unavailable'),
+                 ([{'Items': [{**self.series, 'ProviderIds': {'Tmdb': '123'}}]}], 'unavailable'),
+                 ([{'Items': [{**self.series, 'ProviderIds': {'Tmdb': '01399'}}]}], 'unavailable'),
+                 ([{'Items': [{**self.series, 'ServerId': 'f' * 32}]}], 'unavailable'),
+                 ([{'Items': [{**self.series, 'Type': 'Episode'}]}], 'unavailable'),
+                 ([{'Items': [{**self.series, 'Name': 'Different show'}]}], 'unavailable'),
+                 ([{'Items': [{**self.series, 'Path': jf.TV_ROOTS[0] + '-other/Show'}]}], 'unavailable'),
+                 ([{'Items': [self.series]}, {'Items': [self.episode, self.episode]}], 'ambiguous'),
+                 ([{'Items': [self.series]}, {'Items': [{'Id': self.episode['Id']}]}], 'unavailable'),
+                 ([{'Items': [self.series]}, {'Items': [self.episode]},
+                   {'Items': [{**self.episode, 'ServerId': 'f' * 32}]}], 'unavailable')]
+        for values, expected in cases:
+            with self.subTest(expected=expected, values=values):
+                result = self.run_resolve(values)
+                self.assertEqual(result.status, expected)
+                self.assertIsNone(result.series_evidence)
+                self.assertIsNone(result.series_id)
+                self.assertIsNone(result.binding)
+                self.assertIsNone(result.selection)
+                self.assertIsNone(result.observation)
+                self.assertEqual(self.factory_count, len(values))
+        entries = [0]
+        @contextmanager
+        def credential_failure(binding):
+            entries[0] += 1
+            if entries[0] == 2:
+                raise RuntimeError('SYNTHETIC_PRIVATE_CREDENTIAL_FAILURE')
+            with self.credential(binding) as credential:
+                yield credential
+        result = self.run_resolve(credential_scope=credential_failure)
+        self.assertEqual(result.status, 'unavailable')
+        self.assertIsNone(result.series_evidence)
+        self.assertEqual(self.factory_count, 1)
+        self.assertNotIn('SYNTHETIC_PRIVATE_CREDENTIAL_FAILURE', repr(result))
+
+    def test_partial_return_revalidates_after_episode_empty_before_releasing_evidence(self):
+        original_init = jf._ResolutionStop.__init__
+        for refusal in ('revoked', 'source_expired', 'service_expired', 'generation_changed'):
+            allowed = [True]
+            self.clock.elapsed = 0
+            def stopped(error, status, reason):
+                original_init(error, status, reason)
+                if refusal == 'source_expired':
+                    self.clock.elapsed = 30
+                elif refusal == 'service_expired':
+                    self.clock.elapsed = 60
+                else:
+                    allowed[0] = False
+            def current(binding, target):
+                if allowed[0]:
+                    return binding, target
+                if refusal == 'generation_changed':
+                    return replace(binding, credential_generation='f' * 32), target
+                return None
+            with self.subTest(refusal=refusal), patch.object(jf._ResolutionStop, '__init__', stopped):
+                result = self.run_resolve([{'Items': [self.series]}, {'Items': []}], revalidate=current)
+                self.assertEqual(result.status, 'unavailable')
+                self.assertIsNone(result.series_evidence)
+                self.assertEqual(self.factory_count, 2)
+
+    def test_series_codec_rejects_mixed_keys_types_digests_and_invalid_time_bounds(self):
+        evidence = self.run_resolve([{'Items': [self.series]}, {'Items': []}]).series_evidence
+        material = jf.series_evidence_material(evidence)
+        malformed = [{**material, 'unknown': 'extra'},
+                     {**material, 'schema': 'other-schema'},
+                     {key: value for key, value in material.items() if key != 'scope'}]
+        for field in ('job_binding_digest', 'content_identity_digest', 'destination_binding_digest',
+                      'target_digest', 'service_binding_digest', 'operation_digest', 'response_digest'):
+            for value in (True, 'a' * 63, 'G' * 64):
+                malformed.append({**material, field: value})
+        for field, values in {
+                'request_id': (None, '', 'x' * 65, 'bad\nrequest'),
+                'scope': (None, True, 'series', 'episode_s1e02'),
+                'series_id': ('0' * 32, '7' * 31, '7' * 32 + ',other'),
+                'observed_at': (None, True, 'not-a-date', '2026-11-08T00:00:00', material['valid_until']),
+                'valid_until': (material['observed_at'], (self.binding.expires_at + timedelta(seconds=1)).isoformat())
+        }.items():
+            malformed.extend({**material, field: value} for value in values)
+        for binding in ({**material['binding'], 'token': 'SYNTHETIC_FORBIDDEN'},
+                        {key: value for key, value in material['binding'].items() if key != 'request_seconds'},
+                        {**material['binding'], 'profile_id': True},
+                        {**material['binding'], 'credential_generation': 'f' * 32},
+                        {**material['binding'], 'expires_at': '2026-11-08T00:00:00'}):
+            malformed.append({**material, 'binding': binding})
+        with patch.object(jf, '_Connection', side_effect=AssertionError('Codec must perform no I/O')):
+            for value in malformed:
+                with self.subTest(value=value), self.assertRaises(jf.Unavailable):
+                    jf.read_series_evidence(value)

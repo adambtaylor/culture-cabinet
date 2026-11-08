@@ -4,6 +4,8 @@ from pathlib import Path
 import resource
 import sqlite3
 import tempfile
+import subprocess
+import sys
 from unittest.mock import patch
 from types import SimpleNamespace
 import uuid
@@ -15,6 +17,35 @@ from django.test import SimpleTestCase, TransactionTestCase
 
 from cabinet.portable_boundary import open_boundary
 from cabinet import portable_runtime as runtime
+
+
+class SelectedSupervisorLauncherTests(SimpleTestCase):
+    def test_enabled_file_launcher_progresses_idle_native_job_and_closes_before_witness(self):
+        child = Path(__file__).with_name('portable_obtain_supervisor_child.py')
+        with tempfile.TemporaryDirectory(prefix='selected-supervisor-launcher-') as folder:
+            environment = {'PATH': '/usr/bin:/bin', 'LANG': 'C.UTF-8', 'PYTHONDONTWRITEBYTECODE': '1'}
+            if os.environ.get('PR001_RESOURCE_LOG'):
+                environment['PR001_RESOURCE_LOG'] = os.environ['PR001_RESOURCE_LOG']
+            result = subprocess.run([sys.executable, '-I', '-B', str(child), folder],
+                env=environment, capture_output=True, text=True, timeout=24)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn('NATIVE_SUPERVISOR_FILE_LAUNCHER_PASS', result.stdout)
+        print(next(line for line in result.stdout.splitlines()
+            if line.startswith('NATIVE_SUPERVISOR_FILE_LAUNCHER_PASS ')), flush=True)
+
+    def test_file_launcher_refuses_witness_loss_and_reports_cleanup_failure(self):
+        child = Path(__file__).with_name('portable_obtain_supervisor_child.py')
+        for mode, marker in (('witness_loss', 'NATIVE_SUPERVISOR_WITNESS_LOSS_REFUSED_PASS'),
+                ('cleanup_failure', 'NATIVE_SUPERVISOR_CLEANUP_REFUSED_PASS')):
+            with self.subTest(mode=mode), tempfile.TemporaryDirectory(prefix='selected-supervisor-denial-') as folder:
+                environment = {'PATH': '/usr/bin:/bin', 'LANG': 'C.UTF-8', 'PYTHONDONTWRITEBYTECODE': '1'}
+                if os.environ.get('PR001_RESOURCE_LOG'):
+                    environment['PR001_RESOURCE_LOG'] = os.environ['PR001_RESOURCE_LOG']
+                result = subprocess.run([sys.executable, '-I', '-B', str(child), folder, mode],
+                    env=environment, capture_output=True, text=True, timeout=24)
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                self.assertIn(marker, result.stdout)
+                print(next(line for line in result.stdout.splitlines() if line.startswith(marker)), flush=True)
 
 
 class ObtainResponsePolicyTests(SimpleTestCase):

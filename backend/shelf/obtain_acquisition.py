@@ -23,6 +23,10 @@ from shelf.obtain_parser import digest, listing_reason
 
 SALT = 'obtain-submit-v1'
 MAX_LOCAL_BYTES = 128 * 1024**3
+ORIGIN_SUBMISSION_TAGS = {
+    'obtain-publication-origin/v1': 'obtain-publication-submission/v1',
+    'obtain-owner-selection-origin/v1': 'obtain-owner-selection-submission/v1',
+}
 
 
 @dataclass(frozen=True)
@@ -63,6 +67,40 @@ class ExactResult:
         if not valid_id:
             raise ContractError('Invalid local result identity')
 
+    def material(self):
+        return asdict(self)
+
+
+@dataclass(frozen=True, repr=False)
+class OriginExactResult(ExactResult):
+    publication_origin: dict
+
+    def __post_init__(self):
+        super().__post_init__()
+        from .portable_obtain_origin import validate_obtain_origin
+        validate_obtain_origin(self.publication_origin)
+        if (self.snapshot.provider, self.snapshot.medium) != ('tmdb', 'tv'):
+            raise ContractError('Exact source TV identity required')
+
+    @property
+    def snapshot_digest(self):
+        from .disclosure import canonical_bytes
+        return hashlib.sha256(canonical_bytes(asdict(self.snapshot))).hexdigest()
+
+    @property
+    def content_identity_digest(self):
+        from .obtain_tv_flow import tv_content_identity_digest
+        from .episode_scope import parse_scope
+        season, episode = parse_scope(self.snapshot.scope)
+        return tv_content_identity_digest(tmdb_show_id=self.snapshot.source_id, season=season, episode=episode)
+
+    def material(self):
+        # Descriptor identity contains only opaque provenance/digests and the
+        # independent Hydra fields. Dataclass recursion would retain source IDs.
+        return {'result_id': self.result_id, 'guid': self.guid, 'digest': self.digest, 'size': self.size,
+            'publication_origin': self.publication_origin, 'snapshot_digest': self.snapshot_digest,
+            'content_identity_digest': self.content_identity_digest}
+
 
 @dataclass(frozen=True, repr=False)
 class RetrievedNZB:
@@ -82,7 +120,7 @@ class Retriever:
 
     def retrieve(self, result: ExactResult) -> RetrievedNZB:
         """Fixed Hydra GET through the credential and bounded transport boundaries."""
-        if type(result) is not ExactResult:
+        if type(result) not in (ExactResult, OriginExactResult):
             raise Blocked('Exact selected result required')
         payload = self.backend.retrieve(result.guid, actor_id=result.snapshot.actor_id,
                                         profile_id=result.snapshot.profile_id)
@@ -111,6 +149,8 @@ def exact_result(job, *, fresh):
     except ObtainSelection.DoesNotExist:
         raise Blocked('A saved item alone is not an exact result selection') from None
     result, receipt = selection.result, selection.result.preview
+    if job.publication_origin is not None:
+        return _origin_exact_result(job, receipt, result, fresh=fresh)
     snapshot = Snapshot.from_saved_job(job)
     if job.provider == 'album_request':
         from shelf.album_acquisition import current_request
@@ -133,10 +173,39 @@ def exact_result(job, *, fresh):
     return ExactResult(snapshot, str(result.pk), result.guid, result.digest, result.metadata['size']), receipt
 
 
+def _origin_exact_result(job, receipt, result, *, fresh):
+    from .portable_obtain_origin import resolve_obtain_origin_again
+    access = active_portable_access()
+    if access is None:
+        raise Blocked('Current native source selection required')
+    access.require(actor_id=job.actor_id, profile_id=job.profile_id, action='export')
+    target = resolve_obtain_origin_again(access, job.publication_origin, job.scope, access.authority.now())
+    target.require_title_export()
+    if ((receipt.actor_id, receipt.profile_id, str(receipt.pk), receipt.scope, receipt.publication_origin) !=
+            (job.actor_id, job.profile_id, str(job.request_id), job.scope, job.publication_origin)
+            or any(getattr(row, key) is not None for row in (job, receipt)
+                   for key in ('provider', 'medium', 'source_id', 'title'))
+            or job.saved_item_id is not None or receipt.saved_identity is not None
+            or result.guid != result.metadata['guid'] or digest(result.metadata) != result.digest
+            or result.metadata['selectable'] is not True
+            or listing_reason(result.metadata, preview.release_title(target), job.scope)
+            or job.edition != result.metadata['title']):
+        raise ContractError('Exact source selection identity conflict')
+    if fresh and (receipt.state not in ('results', 'partial') or receipt.expires_at <= access.authority.now()):
+        raise Blocked('Fresh exact source result required')
+    snapshot = Snapshot(job.actor_id, job.profile_id, str(job.request_id), target.provider, target.medium,
+        target.source_id, job.edition, job.scope, job.storage, job.authorized_content, job.storage_check)
+    return OriginExactResult(snapshot, str(result.pk), result.guid, result.digest, result.metadata['size'],
+                             job.publication_origin), receipt
+
+
 def review_submission(*, actor, profile_id, job_id, context, evidence, max_bytes,
-                      retriever=None, complete_root=None, test_only=True, completion_intent=None):
-    context.require(actor, profile_id)
+                      retriever=None, complete_root=None, test_only=True, completion_intent=None, delivery_binding=None):
     job = owned_job(actor, profile_id, job_id)
+    if job.publication_origin is not None:
+        _require_source_context(context, actor, profile_id, job, delivery_binding=delivery_binding)
+    else:
+        context.require(actor, profile_id)
     if job.status != 'blocked_configuration' or ObtainTransfer.objects.filter(job=job).exists():
         raise Blocked('Submission already recorded or cancelled')
     exact, receipt = exact_result(job, fresh=True)
@@ -151,20 +220,27 @@ def review_submission(*, actor, profile_id, job_id, context, evidence, max_bytes
     # Review can persist/prune descriptors: check live PA1 under its owner fence
     # before the descriptor/transport effect, with no enclosing SQL transaction.
     with effect_for(actor, profile_id):
+        if job.publication_origin is not None:
+            _require_source_context(context, actor, profile_id, job, delivery_binding=delivery_binding)
         nzb = getattr(source, 'review', source.retrieve)(exact)
     if type(nzb) is not RetrievedNZB:
         raise ContractError('Exact result NZB binding required')
-    context.require(actor, profile_id)
+    if job.publication_origin is not None:
+        _require_source_context(context, actor, profile_id, job, delivery_binding=delivery_binding)
+    else:
+        context.require(actor, profile_id)
     job = owned_job(actor, profile_id, job_id)
     current, current_receipt = exact_result(job, fresh=True)
     if (current != exact or job.status != 'blocked_configuration'
             or current_receipt.nonce != receipt.nonce or current_receipt.version != receipt.version
             or ObtainTransfer.objects.filter(job=job).exists()):
         raise Blocked('Selection changed during retrieval')
-    binding = {'exact': asdict(exact), 'selection': asdict(evidence.selection),
+    binding = {'exact': exact.material(), 'selection': asdict(evidence.selection),
                'nzb_sha256': nzb.sha256(exact), 'max_bytes': max_bytes,
                'nonce': str(receipt.nonce), 'version': receipt.version,
                'complete_root': complete_root, 'test_only': test_only}
+    if type(exact) is OriginExactResult:
+        binding = _origin_submission_binding(binding, exact, evidence, delivery_binding)
     if job.provider == 'album_request':
         from shelf.album_acquisition import authorization_binding
         binding['album_authorization'] = authorization_binding(job)
@@ -174,6 +250,89 @@ def review_submission(*, actor, profile_id, job_id, context, evidence, max_bytes
     return {'token': signing.dumps(binding, salt=SALT), 'binding': binding}
 
 
+def _origin_submission_binding(binding, exact, evidence, delivery_binding):
+    from .disclosure import canonical_bytes
+    from .obtain_tv_flow import delivery_binding_material
+    result = {**binding, 'schema': ORIGIN_SUBMISSION_TAGS[exact.publication_origin['schema']],
+        'publication_origin': exact.publication_origin, 'request_id': exact.snapshot.request_id,
+        'snapshot_digest': exact.snapshot_digest, 'content_identity_digest': exact.content_identity_digest,
+        'selection_digest': hashlib.sha256(canonical_bytes(asdict(evidence.selection))).hexdigest(),
+        'delivery_binding': delivery_binding_material(delivery_binding),
+        'exact': {key: getattr(exact, key) for key in ('result_id', 'guid', 'digest', 'size')},
+        'selection': {'edition': evidence.selection.edition, 'storage': evidence.selection.storage}}
+    validate_origin_submission(result)
+    return result
+
+
+def validate_origin_submission(binding):
+    """Closed structural receipt, never authority to reconstruct a source target."""
+    from .portable_obtain_origin import validate_obtain_origin
+    from .disclosure import canonical_bytes
+    fields = {'schema', 'publication_origin', 'request_id', 'snapshot_digest', 'selection_digest',
+        'content_identity_digest', 'exact', 'selection', 'nzb_sha256', 'max_bytes', 'nonce', 'version',
+        'complete_root', 'test_only'}
+    allowed = tuple(fields | extra for extra in (set(), {'completion_intent'}, {'delivery_binding'},
+                                                 {'completion_intent', 'delivery_binding'}))
+    if type(binding) is not dict or set(binding) not in allowed:
+        raise ContractError('Closed source submission required')
+    try:
+        origin = validate_obtain_origin(binding['publication_origin'])
+        valid = binding['schema'] == ORIGIN_SUBMISSION_TAGS[origin['schema']]
+        for name in ('request_id', 'nonce'):
+            valid = valid and type(binding[name]) is str and str(UUID(binding[name])) == binding[name] and UUID(binding[name]).int != 0
+        for name in ('snapshot_digest', 'selection_digest', 'content_identity_digest', 'nzb_sha256'):
+            valid = valid and type(binding[name]) is str and re.fullmatch('[0-9a-f]{64}', binding[name]) is not None
+        exact = binding['exact']; choice = binding['selection']
+        valid = valid and type(exact) is dict and set(exact) == {'result_id', 'guid', 'digest', 'size'}
+        valid = valid and str(UUID(exact['result_id'])) == exact['result_id'] and UUID(exact['result_id']).int != 0
+        valid = valid and type(exact['guid']) is str and re.fullmatch(r'-?(?:0|[1-9][0-9]{0,18})', exact['guid']) is not None
+        valid = valid and -(2**63) <= int(exact['guid']) < 2**63 and str(int(exact['guid'])) == exact['guid']
+        valid = valid and type(exact['digest']) is str and re.fullmatch('[0-9a-f]{64}', exact['digest']) is not None
+        valid = valid and type(exact['size']) is int and 0 < exact['size'] <= binding['max_bytes'] <= MAX_LOCAL_BYTES
+        valid = valid and type(binding['max_bytes']) is int and type(binding['version']) is int and 1 <= binding['version'] < 2**53
+        valid = valid and type(binding['test_only']) is bool
+        valid = valid and (binding['complete_root'] is None or type(binding['complete_root']) is str
+                          and 0 < len(binding['complete_root']) <= 4096)
+        valid = valid and type(choice) is dict and set(choice) == {'edition', 'storage'}
+        valid = valid and preview.plain(choice['edition']) == choice['edition'] and choice['storage'] == 'local_library'
+        if origin['schema'] == 'obtain-owner-selection-origin/v1':
+            valid = valid and origin['target_digest'] == binding['content_identity_digest']
+        if 'delivery_binding' in binding:
+            from .obtain_tv_flow import read_delivery_binding
+            read_delivery_binding(binding['delivery_binding'])
+        valid = valid and len(canonical_bytes(binding)) <= 6144
+    except (ValueError, KeyError, TypeError, AttributeError):
+        valid = False
+    if not valid:
+        raise ContractError('Source submission identity conflict')
+    return binding
+
+
+def retained_origin_submission(*, actor, profile_id, job_id, token):
+    job = owned_job(actor, profile_id, job_id)
+    if job.publication_origin is None:
+        return None
+    access = active_portable_access()
+    if access is None:
+        raise Blocked('Current native job access required')
+    access.require(actor_id=job.actor_id, profile_id=job.profile_id, action='view')
+    transfer = ObtainTransfer.objects.filter(job=job).first()
+    if transfer is None:
+        return None
+    # MAC authenticity, not token freshness, is enough to identify an existing
+    # read-only receipt. This path cannot acquire services, repair or resend.
+    try:
+        if type(token) is not str or not 0 < len(token) <= 8192:
+            raise signing.BadSignature()
+        binding = validate_origin_submission(signing.loads(token, salt=SALT))
+    except signing.BadSignature:
+        raise Blocked('Invalid retained submission review') from None
+    if (binding != transfer.binding or binding['publication_origin'] != job.publication_origin
+            or binding['request_id'] != str(job.request_id)):
+        raise ContractError('Retained source submission conflict')
+    return transfer
+
+
 class DjangoCheckpoints:
     """CAS owns each dispatch transition; stale owners fail before sending.
 
@@ -181,9 +340,21 @@ class DjangoCheckpoints:
     expiry or automatic takeover/retry of an uncertain send. Only dispatch uses
     Pipeline here; file handoff is a separate local receipt, never Emby available.
     """
-    def __init__(self, transfer):
+    def __init__(self, transfer, *, trusted_snapshot=None):
         self.transfer = transfer
-        self.snapshot = Snapshot(**transfer.binding['exact']['snapshot'])
+        if transfer.job.publication_origin is not None:
+            validate_origin_submission(transfer.binding)
+            from .disclosure import canonical_bytes
+            if (type(trusted_snapshot) is not Snapshot or hashlib.sha256(canonical_bytes(asdict(trusted_snapshot))).hexdigest()
+                    != transfer.binding['snapshot_digest']
+                    or (trusted_snapshot.actor_id, trusted_snapshot.profile_id, trusted_snapshot.request_id) !=
+                       (transfer.job.actor_id, transfer.job.profile_id, str(transfer.job.request_id))):
+                raise Blocked('Fresh trusted source snapshot required for dispatch')
+            self.snapshot = trusted_snapshot
+        else:
+            if trusted_snapshot is not None:
+                raise ContractError('Legacy checkpoint cannot borrow source identity')
+            self.snapshot = Snapshot(**transfer.binding['exact']['snapshot'])
         self.revision = transfer.revision
 
     def load(self, request_id):
@@ -192,7 +363,14 @@ class DjangoCheckpoints:
             raise ContractError('Checkpoint request mismatch')
         self.revision = self.transfer.revision
         from shelf.acquisition_contract import ConfirmedSelection
-        evidence = Evidence(self.snapshot, ConfirmedSelection(**self.transfer.binding['selection']))
+        if self.transfer.job.publication_origin is not None:
+            from .disclosure import canonical_bytes
+            selection = _source_selection(self.snapshot)
+            if hashlib.sha256(canonical_bytes(asdict(selection))).hexdigest() != self.transfer.binding['selection_digest']:
+                raise ContractError('Source checkpoint selection conflict')
+        else:
+            selection = ConfirmedSelection(**self.transfer.binding['selection'])
+        evidence = Evidence(self.snapshot, selection)
         job = ProviderJob(self.snapshot, self.transfer.provider_job) if self.transfer.provider_job else None
         return Checkpoint(self.snapshot, self.transfer.state, evidence=evidence,
                           job=job, reason=self.transfer.reason)
@@ -210,7 +388,17 @@ class DjangoCheckpoints:
 
 
 def submit(*, actor, profile_id, job_id, context, token, confirmed, retriever=None, backend,
-           max_bytes=None, complete_root=None, test_only=True, completion_intent=None):
+           max_bytes=None, complete_root=None, test_only=True, completion_intent=None, delivery_binding=None):
+    job = owned_job(actor, profile_id, job_id)
+    if job.publication_origin is not None:
+        if confirmed is not True:
+            raise Blocked('Explicit source submission confirmation required')
+        previous = retained_origin_submission(actor=actor, profile_id=profile_id, job_id=job_id, token=token)
+        if previous is not None:
+            return previous
+        return _submit_origin(actor=actor, profile_id=profile_id, job=job, context=context, token=token,
+            retriever=retriever, backend=backend, max_bytes=max_bytes, complete_root=complete_root,
+            test_only=test_only, completion_intent=completion_intent, delivery_binding=delivery_binding)
     context.require(actor, profile_id)
     if type(token) is not str or not 0 < len(token) <= 8192:
         raise Blocked('Invalid submission review')
@@ -291,7 +479,12 @@ def check_completion_intent(binding, *, before_send=False):
     """Only the current approved fixed layout can realize this persisted intent."""
     from shelf.obtain_runtime import operator_policy
     policy = operator_policy()
-    intent = policy.intent(binding['exact']['snapshot']['request_id'])
+    if 'schema' in binding:
+        validate_origin_submission(binding)
+        request_id = binding['request_id']
+    else:
+        request_id = binding['exact']['snapshot']['request_id']
+    intent = policy.intent(request_id)
     if (binding.get('completion_intent') != intent
             or binding.get('complete_root') != policy.complete_root
             or binding.get('max_bytes') != policy.max_bytes
@@ -305,10 +498,136 @@ def check_completion_intent(binding, *, before_send=False):
     return intent
 
 
+def _source_selection(snapshot):
+    from .acquisition_contract import ConfirmedSelection
+    from .acquisition_pipeline import scope_family
+    media, episode = scope_family(snapshot.provider, snapshot.medium, snapshot.scope)
+    return ConfirmedSelection(item_id=f'{snapshot.provider}:{snapshot.medium}:{snapshot.source_id}',
+        media=media, edition=snapshot.edition, storage=snapshot.storage,
+        authorized_content=snapshot.authorized_content, user_confirmed=True,
+        storage_checked=snapshot.storage_check, duplicate_checked=True, episode=episode)
+
+
+def _require_source_context(context, actor, profile_id, job, *, delivery_binding):
+    from .obtain_runtime import SubmissionContext
+    from .obtain_tv_flow import delivery_binding_material
+    if type(context) is not SubmissionContext or context.job_id != job.pk:
+        raise Blocked('Current native submission context required')
+    context.require(actor, profile_id)
+    reviewed = delivery_binding_material(delivery_binding)
+    if delivery_binding_material(context.current_delivery_binding(actor, profile_id)) != reviewed:
+        raise Blocked('Confirmed TV delivery mapping changed; review again')
+
+
+def _submit_origin(*, actor, profile_id, job, context, token, retriever, backend, max_bytes,
+                   complete_root, test_only, completion_intent, delivery_binding):
+    access = active_portable_access()
+    if access is None:
+        raise Blocked('Current native source access required')
+    if type(token) is not str or not 0 < len(token) <= 8192:
+        raise Blocked('Invalid source submission review')
+    try:
+        binding = validate_origin_submission(signing.loads(token, salt=SALT, max_age=300))
+    except signing.BadSignature:
+        raise Blocked('Source submission review expired or invalid') from None
+    with access.effect_window(action='mutate'):
+        _require_source_context(context, actor, profile_id, job, delivery_binding=delivery_binding)
+        exact, receipt = exact_result(job, fresh=True)
+        evidence = Evidence(exact.snapshot, _source_selection(exact.snapshot))
+        expected = _origin_submission_binding({key: binding[key] for key in
+            ('nzb_sha256', 'max_bytes', 'nonce', 'version', 'complete_root', 'test_only')}, exact, evidence, delivery_binding)
+        if completion_intent is not None:
+            expected['completion_intent'] = completion_intent
+        if (binding != expected or binding['nonce'] != str(receipt.nonce) or binding['version'] != receipt.version
+                or binding.get('completion_intent') != completion_intent
+                or max_bytes is not None and (max_bytes, complete_root, test_only) !=
+                    (binding['max_bytes'], binding['complete_root'], binding['test_only'])
+                or job.status != 'blocked_configuration'):
+            raise ContractError('Current source submission review conflict')
+        if completion_intent is not None:
+            check_completion_intent(binding, before_send=True)
+        nzb = (retriever or UnavailableRetriever()).retrieve(exact)
+        if type(nzb) is not RetrievedNZB or nzb.sha256(exact) != binding['nzb_sha256']:
+            raise ContractError('Reviewed source NZB changed')
+        _require_source_context(context, actor, profile_id, job, delivery_binding=delivery_binding)
+        current, current_receipt = exact_result(owned_job(actor, profile_id, job.pk), fresh=True)
+        if current != exact or (current_receipt.nonce, current_receipt.version) != (receipt.nonce, receipt.version):
+            raise Blocked('Source selection changed during retrieval')
+        with write_for(actor, profile_id, durable=True):
+            AcquisitionJob.objects.filter(pk=job.pk).update(reason=F('reason'))
+            fresh_job = owned_job(actor, profile_id, job.pk)
+            if fresh_job.status != 'blocked_configuration' or fresh_job.publication_origin != exact.publication_origin:
+                raise Blocked('Source choice cancelled or changed')
+            transfer, created = ObtainTransfer.objects.get_or_create(job=fresh_job, defaults={
+                'binding': binding, 'result_guid': exact.guid, 'nzb_sha256': binding['nzb_sha256'],
+                'native_progress': {'schema': 'obtain-tv-progress/v1', 'stage': 'submitted', 'reason': '',
+                    'service_generations': [asdict(value) for value in context.service_generations]}})
+            if not created:
+                if transfer.binding != binding:
+                    raise ContractError('Concurrent source submission conflict')
+                return transfer
+        checkpoints = DjangoCheckpoints(transfer, trusted_snapshot=exact.snapshot)
+        provider = backend.provider(actor_id=actor.pk, profile_id=profile_id, snapshot=exact.snapshot,
+                                    selection=evidence.selection, nzb=nzb.payload)
+        raw_provider = provider
+        class OriginDispatchProvider:
+            def enqueue(self, snapshot, request):
+                # Pipeline commits its no-resend barrier before invoking us.
+                # Recheck at this final edge too; expiry never rolls that
+                # durable barrier back into an implicitly retryable request.
+                _require_source_context(context, actor, profile_id, fresh_job, delivery_binding=delivery_binding)
+                latest, _ = exact_result(owned_job(actor, profile_id, job.pk), fresh=True)
+                if latest != exact or snapshot != exact.snapshot:
+                    raise Blocked('Source authority changed at dispatch')
+                return raw_provider.enqueue(snapshot, request)
+        provider = OriginDispatchProvider()
+        pipeline = Pipeline(fresh_job, checkpoints, provider, None, None, trusted_snapshot=exact.snapshot)
+        _require_source_context(context, actor, profile_id, job, delivery_binding=delivery_binding)
+        before, _ = exact_result(owned_job(actor, profile_id, job.pk), fresh=True)
+        if before != exact:
+            raise Blocked('Source selection changed before dispatch')
+        if completion_intent is not None:
+            check_completion_intent(binding, before_send=True)
+        pipeline.dispatch(evidence)
+        transfer.refresh_from_db()
+        repair_registration(transfer)
+        return transfer
+
+
+def source_receipt(transfer):
+    """Read independent retained release/command evidence after source expiry."""
+    binding = validate_origin_submission(transfer.binding)
+    job = transfer.job
+    try:
+        choice = ObtainSelection.objects.select_related('result__preview').get(job=job)
+    except ObtainSelection.DoesNotExist:
+        raise ContractError('Retained selected release missing') from None
+    result, receipt = choice.result, choice.result.preview
+    if (job.publication_origin != binding['publication_origin'] or str(job.request_id) != binding['request_id']
+            or (receipt.actor_id, receipt.profile_id, str(receipt.pk), receipt.scope, receipt.publication_origin) !=
+               (job.actor_id, job.profile_id, str(job.request_id), job.scope, job.publication_origin)
+            or result.metadata['selectable'] is not True or digest(result.metadata) != result.digest
+            or binding['exact'] != {'result_id': str(result.pk), 'guid': result.guid,
+                                   'digest': result.digest, 'size': result.metadata['size']}
+            or binding['selection'] != {'edition': job.edition, 'storage': job.storage}
+            or job.edition != result.metadata['title'] or transfer.result_guid != result.guid
+            or binding['nzb_sha256'] != transfer.nzb_sha256 or binding['nonce'] != str(receipt.nonce)
+            or binding['version'] != receipt.version):
+        raise ContractError('Retained source command identity conflict')
+    return binding
+
+
 def completion_registration(*, actor, profile_id, job_id, context, include_failed=False):
     """Build the hook binding only from a durable acknowledged exact intent."""
-    context.require(actor, profile_id)
     job = owned_job(actor, profile_id, job_id)
+    if job.publication_origin is not None:
+        from .obtain_native_context import NativeJobContext
+        if type(context) is not NativeJobContext or context.operation != 'observe' or context.job_id != job.pk:
+            raise Blocked('Current native observation context required')
+        context.require(actor, profile_id)
+        transfer = ObtainTransfer.objects.get(job=job)
+        return _source_completion_registration(job, transfer, include_failed=include_failed)
+    context.require(actor, profile_id)
     transfer = ObtainTransfer.objects.get(job=job)
     exact, _ = exact_result(job, fresh=False)
     check_album_authorization(job, transfer.binding)
@@ -329,6 +648,19 @@ def completion_registration(*, actor, profile_id, job_id, context, include_faile
         'nzb_sha256': transfer.nzb_sha256, 'scope': job.scope,
         'complete_root': root, 'root': intent['root'], 'files': None,
         'max_bytes': transfer.binding['max_bytes'], 'test_only': transfer.binding['test_only']}
+
+
+def _source_completion_registration(job, transfer, *, include_failed):
+    binding = source_receipt(transfer)
+    intent = check_completion_intent(binding)
+    allowed = transfer.state == 'queued' or include_failed is True and transfer.state == 'failed' and transfer.reason == 'provider_failed'
+    if (job.status != 'blocked_configuration' or not allowed or not transfer.provider_job
+            or transfer.local_cancelled_at is not None or not binding['complete_root']):
+        raise Blocked('Known selected source job required')
+    return {'nzo_id': transfer.provider_job, 'request_id': str(job.request_id),
+        'result_id': binding['exact']['result_id'], 'result_digest': binding['exact']['digest'],
+        'nzb_sha256': transfer.nzb_sha256, 'scope': job.scope, 'complete_root': binding['complete_root'],
+        'root': intent['root'], 'files': None, 'max_bytes': binding['max_bytes'], 'test_only': binding['test_only']}
 
 
 def check_album_authorization(job, binding):
@@ -352,13 +684,21 @@ def repair_registration(transfer):
     try:
         access = active_portable_access()
         if access is None:
+            if job.publication_origin is not None:
+                return
             context = OperatorContext(job.actor_id, job.profile_id, 'candidate_operator', True)
         else:
             from .obtain_native_context import native_job_context
             context = native_job_context(access, job_id=job.pk, operation='observe')
-        entry = completion_registration(actor=job.actor, profile_id=job.profile_id,
-                                        job_id=job.pk, context=context)
-        registry.publish_registration(transfer.binding['completion_intent']['registry_path'], entry)
+        if access is not None:
+            with context.effect_window():
+                entry = completion_registration(actor=job.actor, profile_id=job.profile_id,
+                                                job_id=job.pk, context=context)
+                registry.publish_registration(transfer.binding['completion_intent']['registry_path'], entry)
+        else:
+            entry = completion_registration(actor=job.actor, profile_id=job.profile_id,
+                                            job_id=job.pk, context=context)
+            registry.publish_registration(transfer.binding['completion_intent']['registry_path'], entry)
     except (ContractError, OSError, ValueError, KeyError, Http404):
         reason = 'registration_pending'
     else:
@@ -527,6 +867,8 @@ def transfer_for(job, *, reconcile=True):
     if ObtainTransfer._meta.db_table not in connection.introspection.table_names():
         return None
     transfer = ObtainTransfer.objects.filter(job=job).first()
+    if job.publication_origin is not None:
+        return transfer  # Native continuation is an explicit selected command.
     if transfer is not None:
         repair_registration(transfer)
         if reconcile:
