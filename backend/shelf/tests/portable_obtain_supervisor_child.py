@@ -186,6 +186,16 @@ def main(folder):
                 read_history=history, read_hook=lambda request: None), stop_owned_children=cancel)
         settings.PORTABLE_OBTAIN_TV_SERVICES = obtain_runtime.CurrentTVServiceProvider(authority,
             delivery_for=fixture.delivery_binding, services_for=services_for)
+        from shelf import obtain_acquisition
+        for module, name in ((obtain_runtime, 'submission_factory'), (obtain_acquisition, 'review_submission')):
+            original = getattr(module, name)
+            def traced(*args, _original=original, _name=name, **kwargs):
+                try:
+                    return _original(*args, **kwargs)
+                except Exception as error:
+                    state['errors'].append(_name + ':' + type(error).__name__ + ':' + str(error))
+                    raise
+            stack.enter_context(patch.object(module, name, side_effect=traced))
         server = original_make(boundary, application)
         original_handle = server.handle_request
         def handle():
@@ -244,12 +254,12 @@ def main(folder):
                         conn.close()
                 base = {'profile_ref': profile, 'selection_token': token}
                 status, body = request('POST', f'/cabinet/saved/jobs/{job.pk}/submit/review/', base)
-                assert status == 200, (status, body)
+                assert status == 200, ('submission_review', status)
                 submission = html.unescape(re.search(rb'name="token" value="([^"]+)"', body)[1].decode())
                 fields = {**base, 'token': submission,
                     **{key: 'on' for key in ('exact_selection', 'rights', 'scope', 'size', 'duplicates')}}
                 status, body = request('POST', f'/cabinet/saved/jobs/{job.pk}/submit/', fields)
-                assert status == 302, (status, body)
+                assert status == 302, ('submit', status)
                 worker = authority._obtain_workers[job.pk]
                 original_deadlines = (worker.deadline, worker.monotonic_end)
                 # The next automatic observation needs no browser/HTTP turn.
@@ -273,7 +283,7 @@ def main(folder):
                 while not worker.done.is_set() and time.monotonic() < until: time.sleep(0.02)
                 assert worker.done.is_set() and not worker.monitor.is_alive()
                 status, body = request('GET', f'/cabinet/obtain/jobs/{job.pk}/')
-                assert status == 200, (status, body)
+                assert status == 200, ('job_page', status)
                 new_token = html.unescape(re.search(rb'name="selection_token" value="([^"]+)"', body)[1].decode())
                 status, body = request('GET', f'/cabinet/obtain/jobs/{job.pk}/status/')
                 current = json.loads(body)
