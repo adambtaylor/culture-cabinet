@@ -73,6 +73,16 @@ def validate_obtain_history(raw):
         if row[0] is None or row[1] is None or read_json(row[0].encode()) != read_json(row[1].encode()) \
                 or any(row[index] != row[index + 1] for index in (2, 4, 6, 8)):
             raise ValueError('Restored Obtain selection mismatch')
+    from .obtain_acquisition import validate_origin_submission
+    query = '''SELECT t.binding,j.publication_origin,j.request_id,t.result_guid,t.nzb_sha256
+        FROM shelf_obtaintransfer t JOIN shelf_acquisitionjob j ON j.id=t.job_id
+        WHERE j.publication_origin IS NOT NULL'''
+    for raw_binding, raw_origin, request_id, guid, nzb_sha in raw.execute(query):
+        binding = validate_origin_submission(read_json(raw_binding.encode()))
+        if (binding['publication_origin'] != read_json(raw_origin.encode())
+                or binding['request_id'].replace('-', '') != request_id
+                or binding['exact']['guid'] != guid or binding['nzb_sha256'] != nzb_sha):
+            raise ValueError('Restored source command receipt mismatch')
 
 
 def _validate_origin_values(value, *, refs, digests):

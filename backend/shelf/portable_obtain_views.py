@@ -431,6 +431,10 @@ def submit(request, job_id):
     ga._require(form.is_valid(), 'CONTRACT_INVALID', 422)
     with _scope(request, data, mutate=True) as access:
         job = acquire.owned_job(access.actor, access.identity.profile_id, job_id)
+        previous = acquire.retained_origin_submission(actor=access.actor, profile_id=access.identity.profile_id,
+            job_id=job_id, token=form.cleaned_data['token'])
+        if previous is not None:
+            return HttpResponseRedirect('/cabinet/obtain/jobs/' + str(job_id) + '/')
         with access.effect_window(action='select'):
             services = obtain_runtime.submission_factory(actor=access.actor, profile_id=access.identity.profile_id, job=job)
         acquire.submit(actor=access.actor, profile_id=access.identity.profile_id, job_id=job_id, context=services.context,

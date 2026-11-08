@@ -133,6 +133,11 @@ class SubmissionContext:
 
     def require(self, actor, profile_id):
         saved.authority(actor, profile_id)
+        from .portable_saved_authority import active_portable_access
+        access = active_portable_access()
+        if access is not None:
+            from .obtain_native_context import native_job_context
+            native_job_context(access, job_id=self.job_id, operation='submit').require(actor, profile_id)
         if ((actor.pk, profile_id) != (self.actor_id, self.profile_id)
                 or operator_policy() != self.policy):
             raise Blocked('Submission policy or authority changed')
@@ -144,9 +149,10 @@ class SubmissionContext:
         # Known Cabinet duplicates only. The final form also asks the owner to
         # check external downloads/library; titles cannot prove their absence.
         others = ObtainTransfer.objects.exclude(job=job)
-        if (others.filter(result_guid=exact.guid).exists()
-                or others.filter(job__provider=job.provider, job__medium=job.medium,
-                                 job__source_id=job.source_id, job__scope=job.scope).exists()):
+        duplicate = (others.filter(job__active_key=job.active_key).exists() if job.publication_origin is not None else
+            others.filter(job__provider=job.provider, job__medium=job.medium,
+                          job__source_id=job.source_id, job__scope=job.scope).exists())
+        if others.filter(result_guid=exact.guid).exists() or duplicate:
             raise Blocked('Existing acquisition requires review')
 
 

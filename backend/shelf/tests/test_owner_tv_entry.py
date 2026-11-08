@@ -1,5 +1,7 @@
 """Normal native owner-query callers; synthetic source/indexer I/O only."""
 from dataclasses import replace
+from dataclasses import asdict
+from pathlib import Path
 from datetime import timedelta
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
@@ -356,3 +358,116 @@ class OwnerTVEntryTests(RecoveryCase):
             with self.assertRaises(EnhanceFault):
                 state.preview(title='X' * 101, series_year=2024, season=2, episode=1)
             self.assertEqual(sent.call_count, 1)
+
+    def source_job(self):
+        ref, (origin, target) = self.selected()
+        backend = Mock(); destination = object(); backend._grants = {'hydra': destination}
+        backend.search.return_value = PrivateSearch(payload(item(title='Fiction Series 2024 S02E01 1080p', category='5000')))
+        with self.scope() as access, patch('shelf.obtain_runtime.existing_grant', return_value=destination):
+            receipt = preview.search_origin(access=access, origin=origin, scope=target.scope, factory=lambda **kw: backend)
+            result = receipt.results.get()
+            job, _ = preview.confirm(actor=self.actor, profile_id=self.state.profile_id, preview_id=receipt.pk,
+                result_id=result.pk, data={'review_token': preview.review_token(receipt, result), 'scope': receipt.scope,
+                    'edition': result.metadata['title'], 'storage': 'local_library',
+                    'authorized_content': 'on', 'storage_check': 'on'})
+        from shelf.obtain_runtime import SubmissionContext, SubmissionPolicy
+        from shelf.acquisition_contract import COMPLETION_SCRIPT
+        complete = Path(self.directory.name) / 'source-complete'; complete.mkdir()
+        policy = SubmissionPolicy(True, str(complete), 20000, 0, True,
+            str(Path(self.directory.name) / 'source-registry'), True, COMPLETION_SCRIPT)
+        options = self.settings(OBTAIN_SUBMISSION_POLICY=asdict(policy)); options.enable(); self.addCleanup(options.disable)
+        return job, SubmissionContext(self.actor.pk, self.state.profile_id, job.pk, policy)
+
+    def test_native_source_submission_uses_reviewed_bytes_and_duplicate_receipt_precedes_factories(self):
+        import html, re
+        from shelf import obtain_acquisition as acquire, obtain_runtime
+        from shelf.acquisition_pipeline import Evidence
+        from shelf.models import ObtainReviewedNZB, ObtainTransfer
+        from shelf.reviewed_nzb import ReviewedRetriever
+        from .test_obtain_acquisition import FixtureBackend, NZB
+        job, context = self.source_job()
+        descriptor_source = Mock(); descriptor_source.retrieve.return_value = NZB
+        retriever = ReviewedRetriever(descriptor_source); backend = FixtureBackend()
+        with self.scope():
+            exact, _ = acquire.exact_result(job, fresh=True)
+            evidence = Evidence(exact.snapshot, acquire._source_selection(exact.snapshot))
+        services = obtain_runtime.SubmissionServices(context, evidence, 20000, retriever, backend)
+        with patch('shelf.obtain_runtime.submission_factory', return_value=services):
+            response = self.post(f'/cabinet/saved/jobs/{job.pk}/submit/review/')
+        self.assertEqual(response.status_code, 200, response.content)
+        token = html.unescape(re.search(r'name="token" value="([^"]+)"', response.content.decode())[1])
+        row = ObtainReviewedNZB.objects.get()
+        self.assertNotIn('snapshot', row.exact)
+        for key in ('provider', 'medium', 'source_id', 'title', 'item_id'):
+            self.assertNotIn(('"' + key + '"').encode(), canonical_bytes(row.exact))
+        fields = {key: 'on' for key in ('exact_selection', 'rights', 'scope', 'size', 'duplicates')}
+        fields['token'] = token
+        descriptor_source.retrieve.side_effect = AssertionError('Must use the reviewed descriptor')
+        with patch('shelf.obtain_runtime.submission_factory', return_value=services):
+            response = self.post(f'/cabinet/saved/jobs/{job.pk}/submit/', fields)
+        self.assertEqual(response.status_code, 302, response.content)
+        transfer = ObtainTransfer.objects.get()
+        self.assertEqual(transfer.state, 'queued')
+        self.assertEqual(transfer.binding['schema'], 'obtain-owner-selection-submission/v1')
+        self.assertEqual(set(transfer.binding['exact']), {'result_id', 'guid', 'digest', 'size'})
+        self.assertEqual(set(transfer.binding['selection']), {'edition', 'storage'})
+        self.assertNotIn(b'81001', canonical_bytes(transfer.binding))
+        self.assertEqual(len(backend.calls), 1)
+        self.assertEqual(descriptor_source.retrieve.call_count, 1)
+        with patch('shelf.obtain_runtime.submission_factory', side_effect=AssertionError('Duplicate opened services')), \
+                patch('shelf.portable_obtain_origin.resolve_obtain_origin_again', side_effect=AssertionError('Duplicate resolved source')):
+            response = self.post(f'/cabinet/saved/jobs/{job.pk}/submit/', fields)
+        self.assertEqual(response.status_code, 302)
+        self.assertEqual(len(backend.calls), 1)
+
+    def test_unknown_source_attempt_and_expired_selection_replay_never_retrieve_or_resend(self):
+        from shelf import obtain_acquisition as acquire
+        from shelf.acquisition_pipeline import AdapterUnavailable, Evidence
+        from .test_obtain_acquisition import FixtureBackend, FixtureRetriever
+        from .test_portable_authority import PASSWORD
+        job, context = self.source_job(); retriever = FixtureRetriever(); backend = FixtureBackend()
+        backend.error = AdapterUnavailable('synthetic lost acknowledgement')
+        with self.scope():
+            exact, _ = acquire.exact_result(job, fresh=True)
+            evidence = Evidence(exact.snapshot, acquire._source_selection(exact.snapshot))
+            review = acquire.review_submission(actor=self.actor, profile_id=self.state.profile_id, job_id=job.pk,
+                context=context, evidence=evidence, max_bytes=20000, retriever=retriever)
+            transfer = acquire.submit(actor=self.actor, profile_id=self.state.profile_id, job_id=job.pk,
+                context=context, token=review['token'], confirmed=True, retriever=retriever, backend=backend)
+        self.assertEqual(transfer.state, 'outcome_unknown')
+        count = len(retriever.calls)
+        self.clock.advance(301)
+        self.authority.reauthenticate(self.ref, PASSWORD)
+        with self.scope(), patch('shelf.portable_obtain_origin.resolve_obtain_origin_again',
+                side_effect=AssertionError('Expired receipt attempted source reconstruction')):
+            same = acquire.submit(actor=self.actor, profile_id=self.state.profile_id, job_id=job.pk,
+                context=None, token=review['token'], confirmed=True, retriever=None, backend=None)
+        self.assertEqual(same.pk, transfer.pk)
+        self.assertEqual(same.state, 'outcome_unknown')
+        self.assertEqual(len(backend.calls), 1)
+        self.assertEqual(len(retriever.calls), count)
+
+    def test_source_binding_tag_conflict_and_missing_live_context_fail_before_enqueue(self):
+        from django.core import signing
+        from shelf import obtain_acquisition as acquire
+        from shelf.acquisition_pipeline import Evidence
+        from shelf.models import ObtainTransfer
+        from .test_obtain_acquisition import FixtureBackend, FixtureRetriever
+        job, context = self.source_job(); retriever = FixtureRetriever(); backend = FixtureBackend()
+        with self.scope():
+            exact, _ = acquire.exact_result(job, fresh=True)
+            evidence = Evidence(exact.snapshot, acquire._source_selection(exact.snapshot))
+            review = acquire.review_submission(actor=self.actor, profile_id=self.state.profile_id, job_id=job.pk,
+                context=context, evidence=evidence, max_bytes=20000, retriever=retriever)
+            for change in ({'schema': 'obtain-publication-submission/v1'}, {'snapshot_digest': '0' * 64},
+                           {'selection': {'edition': 'Changed', 'storage': 'local_library'}},
+                           {'exact': {**review['binding']['exact'], 'snapshot': asdict(exact.snapshot)}}):
+                token = signing.dumps({**review['binding'], **change}, salt=acquire.SALT)
+                with self.assertRaises(acquire.ContractError):
+                    acquire.submit(actor=self.actor, profile_id=self.state.profile_id, job_id=job.pk,
+                        context=context, token=token, confirmed=True, retriever=retriever, backend=backend)
+            with self.assertRaises(acquire.Blocked):
+                acquire.submit(actor=self.actor, profile_id=self.state.profile_id, job_id=job.pk,
+                    context=Mock(), token=review['token'], confirmed=True, retriever=retriever, backend=backend)
+        self.assertFalse(backend.calls)
+        self.assertFalse(ObtainTransfer.objects.exists())

@@ -280,8 +280,21 @@ def verify_staging(staged, *, max_bytes=128 * 1024**3):
 
 
 class Pipeline:
-    def __init__(self, saved_job, checkpoints, provider, importer, library):
-        self.snapshot = Snapshot.from_saved_job(saved_job)
+    def __init__(self, saved_job, checkpoints, provider, importer, library, *, trusted_snapshot=None):
+        if getattr(saved_job, 'publication_origin', None) is not None:
+            # The native caller has just resolved current source authority.
+            # Its detached snapshot remains RAM-only, never a restored identity.
+            if (type(trusted_snapshot) is not Snapshot
+                    or (trusted_snapshot.provider, trusted_snapshot.medium) != ('tmdb', 'tv')
+                    or any(getattr(trusted_snapshot, key) != (str(saved_job.request_id) if key == 'request_id'
+                           else getattr(saved_job, key)) for key in ('actor_id', 'profile_id', 'request_id',
+                            'edition', 'scope', 'storage', 'authorized_content', 'storage_check'))):
+                raise ContractError('Fresh trusted source snapshot required')
+            self.snapshot = trusted_snapshot
+        else:
+            if trusted_snapshot is not None:
+                raise ContractError('Legacy pipeline cannot borrow source identity')
+            self.snapshot = Snapshot.from_saved_job(saved_job)
         self.checkpoints = checkpoints
         self.provider, self.importer, self.library = provider, importer, library
         if saved_job.status not in {"blocked_configuration", "cancelled"}:
