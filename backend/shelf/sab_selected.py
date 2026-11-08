@@ -3,6 +3,7 @@ from dataclasses import asdict, dataclass
 from datetime import datetime
 import hashlib
 from pathlib import PurePosixPath
+import re
 
 from shelf import completion_files, completion_registry as registry
 from shelf.acquisition_contract import sab_name
@@ -32,10 +33,17 @@ def require_native(context, job, operation):
     from shelf.obtain_native_context import NativeJobContext
     registry.require(type(context) is NativeJobContext and type(job) is SelectedJobBinding
                      and context.operation == operation
+                     and all(type(value) is int and value > 0 for value in
+                             (job.job_id, job.actor_id, job.profile_id))
+                     and type(job.test_only) is bool
+                     and type(context.transfer_revision) is int and context.transfer_revision >= 0
+                     and type(job.binding_digest) is str
+                     and re.fullmatch('[0-9a-f]{64}', job.binding_digest) is not None
                      and (context.job_id, context.actor_id, context.profile_id,
                           context.request_id, context.binding_digest) ==
                      (job.job_id, job.actor_id, job.profile_id, job.request_id, job.binding_digest))
     context.revalidate()
+    registry.nzo_id(job.nzo_id)
 
 
 def _outcome(job, state, reason, now, *, files=(), manifest=None, history=None, hook=None):
@@ -122,24 +130,30 @@ def check_selected_evidence(job, entry, hook, history, *, observed_at):
 def observe_selected(context, job_binding, *, ports=None):
     """Current native fence plus separately legitimate exact-history capability."""
     require_native(context, job_binding, 'observe')
-    registry.require(type(ports) is SelectedSabPorts
-                     and type(ports.generation) is ServiceGeneration
-                     and ports.generation.service == 'sab_history'
-                     and ports.generation in job_binding.service_generations)
-    with context.effect_window():
-        # A local exact-job reader is not implied by the add-only SAB grant.
-        # Its custodian revalidates the actual independent observer binding.
-        def current():
-            require_native(context, job_binding, 'observe')
-            registry.require(ports.revalidate() == ports.generation)
-        current()
-        entry = ports.read_registration(job_binding.nzo_id)
-        current()
-        history = ports.read_history(job_binding.nzo_id)
-        current()
-        hook = ports.read_hook(job_binding.request_id)
-        current()
-        result = check_selected_evidence(job_binding, entry, hook, history,
-                                         observed_at=ports.clock())
-        current()
-        return result
+    try:
+        registry.require(type(ports) is SelectedSabPorts
+                         and type(ports.generation) is ServiceGeneration
+                         and ports.generation.service == 'sab_history'
+                         and ports.generation in job_binding.service_generations)
+        with context.effect_window():
+            # A local exact-job reader is not implied by the add-only SAB grant.
+            # Its custodian revalidates the actual independent observer binding.
+            def current():
+                require_native(context, job_binding, 'observe')
+                registry.require(ports.revalidate() == ports.generation)
+            current()
+            entry = ports.read_registration(job_binding.nzo_id)
+            current()
+            history = ports.read_history(job_binding.nzo_id)
+            current()
+            hook = ports.read_hook(job_binding.request_id)
+            current()
+            result = check_selected_evidence(job_binding, entry, hook, history,
+                                             observed_at=ports.clock())
+            current()
+            return result
+    except Exception:
+        context.revalidate()  # Revoked/stale native scope still aborts the caller.
+        from datetime import timezone
+        return _outcome(job_binding, 'unavailable', 'selected_observer_unavailable',
+                        datetime.now(timezone.utc))
