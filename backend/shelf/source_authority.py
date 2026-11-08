@@ -28,9 +28,22 @@ MUSICBRAINZ_SOURCES = (MUSICBRAINZ, MUSICBRAINZ_ARTIST)
 BUILD = 'moshtix-fixed-v1'
 ORIGIN = 'https://api.moshtix.com'
 PATH = '/v1/graphql'
+# The native book build changes with the minimal wire projection. Old grants
+# bind the old config digest; they cannot authorize the narrower operation by reuse.
 MEDIA = {'tmdb_movie': ('tmdb-movie-fixed-v1', 'https://api.themoviedb.org', '/3/search/movie'),
          'tmdb_tv': ('tmdb-tv-fixed-v1', 'https://api.themoviedb.org', '/3/search/tv'),
-         'hardcover': ('hardcover-fixed-v1', 'https://api.hardcover.app', '/v1/graphql')}
+         'hardcover': ('hardcover-minimal-v2', 'https://api.hardcover.app', '/v1/graphql')}
+
+
+# A route selects one immutable descriptor; submitted form data never chooses
+# an adapter, origin or credential mode. Sibling media keep distinct grants.
+NATIVE_SETUP = {
+    MUSICBRAINZ: ('recording', 'MusicBrainz recordings', '/cabinet/source/musicbrainz'),
+    MUSICBRAINZ_ARTIST: ('artist', 'MusicBrainz artists', '/cabinet/source/musicbrainz/artist'),
+    'hardcover': ('book', 'Hardcover books', '/cabinet/source/hardcover'),
+    'tmdb_movie': ('movie', 'TMDB movies', '/cabinet/source/tmdb/movie'),
+    'tmdb_tv': ('tv', 'TMDB television', '/cabinet/source/tmdb/tv'),
+}
 
 
 def source_identity(adapter):
@@ -96,20 +109,25 @@ def configure_source(authority, session_ref, *, confirmed, connection_ref=None,
             row = rows.first()
             if row is not None:
                 ga._require(expected_revision in (0, row.config_revision), 'REVISION_CONFLICT', 409)
-                _connection(authority, session_ref, row.pk)
+                _connection_metadata(authority, session_ref, row.pk)
                 return str(row.pk)
             ga._require(expected_revision == 0, 'REVISION_CONFLICT', 409)
             checkpoint.check()
             row = PortableConnection.objects.create(id=uuid.uuid4(), installation=installation,
                 adapter=adapter, model='', reasoning='', credential_generation=0)
             return str(row.pk)
-        row, _, _ = _connection(authority, session_ref, connection_ref)
+        row, _, _ = _connection_metadata(authority, session_ref, connection_ref)
         ga._require(row.adapter == adapter, 'AUTHORITY_DENIED')
         ga._require(row.config_revision == expected_revision, 'REVISION_CONFLICT', 409)
         return str(row.pk)
 
 
-def _connection(authority, session_ref, connection_ref):
+def _connection_metadata(authority, session_ref, connection_ref):
+    """Validate owned setup metadata without requiring a stored credential.
+
+    Setup must remain reachable before private input; this does not authorize
+    grants or sends. The strict _connection below still gates those callers.
+    """
     installation, session = ga._owner(authority, session_ref)
     row = PortableConnection.objects.filter(pk=ga._uuid(connection_ref), installation=installation,
                                            removed=False).first()
@@ -125,7 +143,7 @@ def _connection(authority, session_ref, connection_ref):
         ga._require(type(vault) is MemoryCredentials and vault.authority is authority,
                     'CREDENTIAL_REQUIRED', 503)
         description = vault.describe(session_ref, row.pk, row.config_revision)
-        ga._require(description['configured'] and description['credential_generation'] == row.credential_generation,
+        ga._require(description['credential_generation'] == row.credential_generation,
                     'CREDENTIAL_REQUIRED', 503)
     config = {'schema': 'source-configuration/v1', 'adapter': row.adapter, 'build': build,
         'origin': origin, 'path': path, 'locale': 'VIC' if row.adapter == ADAPTER else '',
@@ -134,6 +152,12 @@ def _connection(authority, session_ref, connection_ref):
     binding = {**config, 'installation_id': str(installation.pk), 'owner_id': session.owner_id,
         'owner_revision': session.owner_revision, 'process_generation': str(authority.boundary.process_generation),
         'session_id': session_ref, 'connection_id': str(row.pk), 'config_digest': digest(canonical_bytes(config))}
+    return row, binding, description
+
+
+def _connection(authority, session_ref, connection_ref):
+    row, binding, description = _connection_metadata(authority, session_ref, connection_ref)
+    ga._require(description['configured'], 'CREDENTIAL_REQUIRED', 503)
     return row, binding, description
 
 
@@ -193,9 +217,11 @@ class SourceAuthority(SourceAuthorityIssuer):
         if source == 'moshtix':
             from .discovery_transport import MOSHTIX_QUERY
             return {'source': source, 'query': MOSHTIX_QUERY, 'page_size': 9, 'window_weeks': 8}
-        from .provider_catalogue import BOOK_SEARCH, BOOK_DETAILS
+        # Bind the same selected documents used by MediaOperation.body; this
+        # template changes freshness without adding a second serializer.
+        from .provider_catalogue import BOOK_SEARCH, BOOK_DETAILS_MINIMAL
         return {'source': source, 'identity': list(source_identity(source)),
-                'documents': [BOOK_SEARCH, BOOK_DETAILS] if source == 'hardcover' else [],
+                'documents': [BOOK_SEARCH, BOOK_DETAILS_MINIMAL] if source == 'hardcover' else [],
                 'operations': list(registered_source(source).operations)}
 
     def _rights(self, now):

@@ -72,3 +72,9 @@ urlpatterns += [
     path('cabinet/saved/jobs/<int:job_id>/submit/', obtain.submit, name='portable_obtain_submit'),
     path('cabinet/saved/jobs/<int:job_id>/cancel/', obtain.cancel, name='portable_obtain_cancel'),
 ]
+
+# Fixed URL kwargs, never a browser-posted adapter or action URL.
+for adapter, page in (('hardcover', 'hardcover'), ('tmdb_movie', 'tmdb/movie'), ('tmdb_tv', 'tmdb/tv')):
+    for suffix, handler in (('', sources.source_page), ('/configure', sources.source_configure),
+                            ('/credential', sources.source_credential), ('/consent', sources.source_consent)):
+        urlpatterns.append(path('cabinet/source/' + page + suffix, handler, {'adapter': adapter}))
