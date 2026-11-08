@@ -71,6 +71,35 @@ class NativeSourceViewTests(RecoveryCase):
         fields = {'profile_ref': self.profile_ref, 'expected_revision': '0', 'confirmed': 'yes'}
         self.assertEqual(views.musicbrainz(self.request()).status_code, 200)
         self.assertFalse(PortableConnection.objects.filter(adapter=MUSICBRAINZ).exists())
+        self.assertEqual(views.musicbrainz_configure(self.request('POST', fields)).status_code, 303)
+        self.assertEqual(views.musicbrainz_configure(self.request('POST', fields)).status_code, 303)
+        row = PortableConnection.objects.get(adapter=MUSICBRAINZ)
+        self.assertEqual(row.credential_generation, 0)
+        self.assertFalse(PortableDisclosureGrant.objects.filter(connection=row).exists())
+        consent = dict(profile_ref=self.profile_ref, source_connection_ref=str(row.pk), expected_revision='0',
+                       action='grant', confirmed='yes', allow_anticipated_reactions='yes')
+        self.assertEqual(views.musicbrainz_consent(self.request('POST', consent)).status_code, 303)
+        self.assertEqual(views.musicbrainz_consent(self.request('POST', consent)).status_code, 409)
+        view = current_binding(self.authority, self.ref, profile_ref=self.profile_ref, connection_ref=str(row.pk))
+        self.assertEqual(view.context['purpose'], 'catalogue_lookup')
+        self.assertFalse(PortableDisclosureGrant.objects.filter(connection=row, purpose='inference').exists())
+        revoked = dict(profile_ref=self.profile_ref, source_connection_ref=str(row.pk), expected_revision='1',
+                       action='revoke', confirmed='yes')
+        self.assertEqual(views.musicbrainz_consent(self.request('POST', revoked)).status_code, 303)
+        self.fault('AUTHORITY_DENIED', current_binding, self.authority, self.ref,
+                   profile_ref=self.profile_ref, connection_ref=str(row.pk))
+        self.assertEqual(views.musicbrainz_consent(self.request('POST',
+            {**consent, 'expected_revision': '2', 'action': 'regrant'})).status_code, 303)
+
+    def test_source_actions_reject_wrong_scope_provider_model_permission_and_json(self):
+        fields = {'profile_ref': self.profile_ref, 'expected_revision': '0', 'confirmed': 'yes'}
+        self.assertEqual(views.musicbrainz_configure(self.request('POST', {**fields, 'origin': 'https://foreign.invalid'})).status_code, 422)
+        self.assertEqual(views.musicbrainz_configure(self.request('POST', {**fields, 'profile_ref': str(uuid.uuid4())})).status_code, 403)
+        self.assertEqual(views.musicbrainz_configure(self.request('POST', fields, csrf=False)).status_code, 403)
+        consent = dict(profile_ref=self.profile_ref, source_connection_ref=str(self.config.pk), expected_revision='0',
+                       action='grant', confirmed='yes', allow_anticipated_reactions='yes')
+        self.assertEqual(views.musicbrainz_consent(self.request('POST', consent)).status_code, 503)
+        self.assertFalse(PortableConnection.objects.filter(adapter=MUSICBRAINZ).exists())
 
 
 from .test_portable_feedback_views import NativeFeedbackCase
@@ -78,6 +107,14 @@ from .test_portable_feedback_views import NativeFeedbackCase
 
 class NativeArtistSourceTests(NativeFeedbackCase):
     """Real native source bindings and collection; wire replies alone are synthetic."""
+    def compose_enhance(self):
+        from types import SimpleNamespace
+        from shelf.portable_enhance_service import EnhanceService
+        self.workflow_clock = SimpleNamespace(now=self.authority.now,
+            monotonic=lambda: self.clock.tick, sleep=self.clock.advance)
+        return EnhanceService.compose(self.authority, self.service,
+            policy_provider=self.policies(), clock=self.workflow_clock)
+
     def configure(self, artist=True):
         from shelf.source_authority import MUSICBRAINZ_ARTIST
         adapter = MUSICBRAINZ_ARTIST if artist else MUSICBRAINZ
@@ -148,7 +185,7 @@ class NativeArtistSourceTests(NativeFeedbackCase):
             text='NOTE_IS_NOT_A_QUERY')).status_code, 303)
         self.consent(self.profile_ref, classes=['anticipated_reactions'])
         clock = SimpleNamespace(now=self.authority.now, monotonic=lambda: self.clock.tick, sleep=self.clock.advance)
-        service = EnhanceService.compose(self.authority, self.service, policy_provider=self.policies(), clock=clock)
+        service = self.enhance
         _, collector = service._normal_context(self.ref, self.profile_ref)
         self.assertIs(collector.backends[MUSICBRAINZ].limiter, collector.backends[MUSICBRAINZ_ARTIST].limiter)
         run = service.start(self.ref, profile_ref=self.profile_ref, connection_ref=str(self.config.pk),
@@ -230,32 +267,3 @@ class NativeArtistSourceTests(NativeFeedbackCase):
         self.clock.advance(301)
         with self.assertRaises((ga.AuthorityFault, EnhanceFault)):
             issuer.revalidate(permit, request, plan, operation, now=self.authority.now())
-        self.assertEqual(views.musicbrainz_configure(self.request('POST', fields)).status_code, 303)
-        self.assertEqual(views.musicbrainz_configure(self.request('POST', fields)).status_code, 303)
-        row = PortableConnection.objects.get(adapter=MUSICBRAINZ)
-        self.assertEqual(row.credential_generation, 0)
-        self.assertFalse(PortableDisclosureGrant.objects.filter(connection=row).exists())
-        consent = dict(profile_ref=self.profile_ref, source_connection_ref=str(row.pk), expected_revision='0',
-                       action='grant', confirmed='yes', allow_anticipated_reactions='yes')
-        self.assertEqual(views.musicbrainz_consent(self.request('POST', consent)).status_code, 303)
-        self.assertEqual(views.musicbrainz_consent(self.request('POST', consent)).status_code, 409)
-        view = current_binding(self.authority, self.ref, profile_ref=self.profile_ref, connection_ref=str(row.pk))
-        self.assertEqual(view.context['purpose'], 'catalogue_lookup')
-        self.assertFalse(PortableDisclosureGrant.objects.filter(connection=row, purpose='inference').exists())
-        revoked = dict(profile_ref=self.profile_ref, source_connection_ref=str(row.pk), expected_revision='1',
-                       action='revoke', confirmed='yes')
-        self.assertEqual(views.musicbrainz_consent(self.request('POST', revoked)).status_code, 303)
-        self.fault('AUTHORITY_DENIED', current_binding, self.authority, self.ref,
-                   profile_ref=self.profile_ref, connection_ref=str(row.pk))
-        self.assertEqual(views.musicbrainz_consent(self.request('POST',
-            {**consent, 'expected_revision': '2', 'action': 'regrant'})).status_code, 303)
-
-    def test_source_actions_reject_wrong_scope_provider_model_permission_and_json(self):
-        fields = {'profile_ref': self.profile_ref, 'expected_revision': '0', 'confirmed': 'yes'}
-        self.assertEqual(views.musicbrainz_configure(self.request('POST', {**fields, 'origin': 'https://foreign.invalid'})).status_code, 422)
-        self.assertEqual(views.musicbrainz_configure(self.request('POST', {**fields, 'profile_ref': str(uuid.uuid4())})).status_code, 403)
-        self.assertEqual(views.musicbrainz_configure(self.request('POST', fields, csrf=False)).status_code, 403)
-        consent = dict(profile_ref=self.profile_ref, source_connection_ref=str(self.config.pk), expected_revision='0',
-                       action='grant', confirmed='yes', allow_anticipated_reactions='yes')
-        self.assertEqual(views.musicbrainz_consent(self.request('POST', consent)).status_code, 503)
-        self.assertFalse(PortableConnection.objects.filter(adapter=MUSICBRAINZ).exists())
