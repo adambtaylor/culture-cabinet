@@ -204,6 +204,33 @@ def normalize(spec, request, reply, *, now):
         raise EnhanceFault('SOURCE_UNAVAILABLE') from None
 
 
+def _native_tv_first_air_dates(rows):
+    """Optional facts from the SAME already validated first-nine TV rows.
+
+    Legacy projection deduplicates IDs, so positional zipping could attach a
+    different series' date. Any repeated ID is ambiguous here; ignore its date
+    even when a duplicate supplies a seemingly usable name/version. Rows beyond
+    the existing considered bound cannot supply or repair a missing fact.
+    """
+    values, duplicates = {}, set()
+    for row in rows[:9]:
+        source_id = row['id']  # parse_candidates has validated these exact rows.
+        if source_id in values:
+            duplicates.add(source_id)
+        values[source_id] = row.get('first_air_date')
+    dates = {}
+    for source_id, value in values.items():
+        if (source_id in duplicates or type(value) is not str or len(value) != 10
+                or not re.fullmatch(r'[0-9]{4}-[0-9]{2}-[0-9]{2}', value, re.ASCII)):
+            continue
+        try:
+            datetime.fromisoformat(value)  # Calendar validity, not a new clock.
+        except ValueError:
+            continue
+        dates[source_id] = value  # Preserve the original date, without trimming.
+    return dates
+
+
 def _normalize(spec, request, reply, *, now):
     from . import discovery_sources as source
     require(type(spec) is SourceSpec and spec == registered_source(request.source))
@@ -252,11 +279,16 @@ def _normalize(spec, request, reply, *, now):
             rows, provider, medium = document.get('results'), 'tmdb', request.category
         projected = parse_candidates(provider, medium, rows,
             lane='source-collection', lane_label='Bounded source collection', limit=9)
+        dates = (_native_tv_first_air_dates(rows)
+                 if spec.key == 'tmdb_tv' and request.operation == 'search_tv' else {})
         # The old helper stamps parsing time. Evidence uses the actual supplied
         # observation time below, so parsing/reuse never renews source freshness.
         for index, card in enumerate(projected):
+            # An untrusted optional fact is not permission: existing evidence
+            # filtering omits it unless its exact field uses are admitted.
+            facts = (('tv.first_air_date', dates[card.source_id]),) if card.source_id in dates else ()
             cards.append(SourceCard(card.key, card.title, medium, provider,
-                str(card.source_id), card.url, f'normalized-source-row:{index}'))
+                str(card.source_id), card.url, f'normalized-source-row:{index}', facts))
     elif spec.parser == 'musicbrainz':
         category = request.category
         require((request.source, category, request.operation) in (

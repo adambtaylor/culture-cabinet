@@ -13,6 +13,82 @@ from shelf.tests.test_source_collection import plan
 
 
 class SourceAdapterTests(TestCase):
+    def test_native_tv_date_fact_requires_exact_real_calendar_date(self):
+        request = SourceRequest('tmdb_tv', 'tv', 'search_tv', ('Synthetic TV',))
+        def cards(value):
+            reply = SourceReply(request.request_digest, 200, canonical_bytes({'results': [
+                {'id': 7, 'name': 'Synthetic TV', 'first_air_date': value}]}), NOW)
+            return normalize(registered_source('tmdb_tv'), request, reply, now=NOW).cards
+        for value in ('2024-02-29', '2000-02-29', '1900-02-28', '0001-01-01', '9999-12-31'):
+            with self.subTest(value=value):
+                result = cards(value)
+                self.assertEqual(result[0].facts, (('tv.first_air_date', value),))
+                self.assertEqual(result[0].key, 'tmdb:tv:7')
+                self.assertEqual(result[0].source_url, 'https://www.themoviedb.org/tv/7')
+        for value in (None, '', True, 2024, [], {}, '2023-02-29', '1900-02-29',
+                      '2024-02-30', '2024-13-01', '2024-00-01', '0000-01-01',
+                      '2024-1-01', '2024-01-1', '2024', '2024-01-01T00:00:00Z',
+                      ' 2024-01-01', '2024-01-01 ', '2024-01-01\n', '２０２４-01-01'):
+            with self.subTest(value=value):
+                self.assertEqual(cards(value)[0].facts, ())
+        for source_id in (True, 0, -1, '7', None, 2147483648):
+            reply = SourceReply(request.request_digest, 200, canonical_bytes({'results': [
+                {'id': source_id, 'name': 'Synthetic TV', 'first_air_date': '2024-01-01'}]}), NOW)
+            with self.subTest(source_id=source_id), self.assertRaises(EnhanceFault):
+                normalize(registered_source('tmdb_tv'), request, reply, now=NOW)
+
+    def test_native_tv_date_association_survives_dedupe_and_respects_considered_rows(self):
+        request = SourceRequest('tmdb_tv', 'tv', 'search_tv', ('Synthetic TV',))
+        def parse(rows):
+            reply = SourceReply(request.request_digest, 200, canonical_bytes({'results': rows}), NOW)
+            return normalize(registered_source('tmdb_tv'), request, reply, now=NOW).cards
+        rows = [{'id': 7, 'name': 'Synthetic first', 'first_air_date': '2024-01-01'},
+                {'id': 7, 'name': 'Conflicting identity label', 'first_air_date': '2015-01-01'},
+                {'id': 8, 'name': 'Synthetic second', 'first_air_date': '2000-02-29'}]
+        cards = parse(rows)
+        self.assertEqual([(card.source_id, card.facts) for card in cards],
+            [('7', ()), ('8', (('tv.first_air_date', '2000-02-29'),))])
+        self.assertEqual(parse([rows[0], rows[0]])[0].facts, ())
+        bounded = [{'id': i, 'name': 'Synthetic TV'} for i in range(1, 10)]
+        bounded[1]['first_air_date'] = '2024-01-01'
+        cards = parse(bounded + [
+            {'id': 1, 'name': 'Outside row cannot repair date', 'first_air_date': '2024-02-29'},
+            {'id': 2, 'name': 'Outside conflict not considered', 'first_air_date': '2015-01-01'}])
+        self.assertEqual(len(cards), 9)
+        self.assertEqual(cards[0].facts, ())
+        self.assertEqual(cards[1].facts, (('tv.first_air_date', '2024-01-01'),))
+
+    def test_optional_tv_version_keeps_other_projections_and_model_rights_unchanged(self):
+        from shelf.source_evidence import build_evidence
+        from shelf.tests.test_source_evidence import policy
+        from shelf.disclosure import _sources, read_json
+        from shelf.provider_catalogue import media_operation
+        request = SourceRequest('tmdb_tv', 'tv', 'search_tv', ('Synthetic TV',))
+        reply = SourceReply(request.request_digest, 200, canonical_bytes({'results': [
+            {'id': 7, 'name': 'Synthetic TV', 'first_air_date': '2024-02-29'}]}), NOW)
+        card = normalize(registered_source('tmdb_tv'), request, reply, now=NOW).cards[0]
+        kwargs = dict(category='tv', observation_ref='synthetic-TV-date', source_revision=1,
+            response_digest='a' * 64, observed_at=NOW, expires_at=NOW + timedelta(seconds=60),
+            parents=(), now=NOW, fixture=True)
+        ordinary = read_json(build_evidence((card,), policy=policy(), **kwargs).material)
+        self.assertEqual(ordinary['records'][0]['candidate']['facts'], [])
+        local_date_policy = replace(policy(), permissions=policy().permissions + (
+            ('tv.first_air_date', ('fetch', 'display', 'retain')),))
+        local = read_json(build_evidence((card,), policy=local_date_policy, **kwargs).material)
+        fact = local['records'][0]['candidate']['facts'][0]
+        self.assertEqual((fact['property'], fact['value']), ('tv.first_air_date', '2024-02-29'))
+        projected, _, _ = _sources(local['records'], lambda _: True, {'isolated_fixture': True},
+            local['observations'], local['policies'], NOW)
+        self.assertEqual(projected[0]['facts'], [])
+        self.assertEqual(local['records'][0]['candidate']['observed_at'], '2026-01-01T00:00:00Z')
+        movie_request = SourceRequest('tmdb_movie', 'movie', 'search_movie', ('Synthetic TV',))
+        movie_reply = SourceReply(movie_request.request_digest, 200, canonical_bytes({'results': [
+            {'id': 7, 'title': 'Synthetic movie', 'first_air_date': '2024-02-29'}]}), NOW)
+        self.assertEqual(normalize(registered_source('tmdb_movie'), movie_request,
+            movie_reply, now=NOW).cards[0].facts, ())
+        self.assertEqual(media_operation(request).query,
+            'include_adult=false&language=en-US&page=1&query=Synthetic+TV')
+
     def test_hardcover_minimal_rows_never_enter_legacy_metadata_and_missing_is_not_empty(self):
         from unittest.mock import patch
         request = SourceRequest('hardcover', 'book', 'book_details', ('Synthetic',), (7,))
