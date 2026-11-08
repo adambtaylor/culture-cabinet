@@ -226,3 +226,14 @@ class InferenceBodyTests(SnapshotCase):
             inference_body.serialize_catalogue(snapshot, view.grants, wrong_purpose, registry,
                 now=self.clock.wall, plan_ref='server-query-plan', bindings=bindings)
         self.assertEqual(caught.exception.code, 'AUTHORITY_DENIED')
+
+
+class NormalBodyAuthorityTests(SnapshotCase):
+    def test_normal_context_cannot_use_fixture_collection_or_a_caller_flag(self):
+        from shelf.profile_snapshot import capture
+        view = self.view(self.profile_ref)
+        collection = self.disclosure.fixture_collection([], {}, {}, expires_at=self.expires)
+        context = dict(view.context, isolated_fixture=False)
+        with self.assertRaises(disclosure.DisclosureError) as caught:
+            inference_body.serialize(capture(view), view.grants, context, collection, now=self.clock.wall)
+        self.assertEqual(caught.exception.code, 'CAPABILITY_UNAVAILABLE')

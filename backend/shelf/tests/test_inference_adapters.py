@@ -122,3 +122,27 @@ class WireTests(unittest.TestCase):
         text = self.body.decode()
         for forbidden in ['SYNTHETIC-WIRE-KEY', 'Authorization', 'installation_id', 'owner_id', 'session_id', 'config_digest']:
             self.assertNotIn(forbidden, text)
+
+
+class PersonalAdapterTests(unittest.TestCase):
+    def test_personal_result_uses_submitted_refs_and_neutral_permit_is_refused(self):
+        from contextlib import contextmanager
+        from datetime import datetime, timedelta, timezone
+        from shelf.inference_adapters import PersonalResponsesAdapter
+        from shelf.inference_transport import personal_permit
+        from shelf.tests.test_portable_cabinet_store import candidate, result
+        from shelf.disclosure import read_json
+        import hashlib
+        submitted = {'profile': {'signals': []}, 'candidates': [candidate()]}
+        body = canonical_bytes({'input': canonical_bytes(submitted).decode()})
+        adapter = PersonalResponsesAdapter(); now = datetime.now(timezone.utc)
+        @contextmanager
+        def credential(): yield bytearray(b'SYNTHETIC')
+        permit = personal_permit(hashlib.sha256(body).hexdigest(), credential, now+timedelta(seconds=30), lambda:now)
+        with patch.object(adapter.transport, 'send', return_value=canonical_bytes(response_document(read_json(result())))) as send:
+            self.assertEqual(adapter.dispatch('reserved', body, permit=permit), result())
+            send.assert_called_once_with(body, permit)
+        with patch.object(adapter.transport, 'send') as send:
+            with self.assertRaises(TransportFault):
+                adapter.dispatch('reserved', body, permit=ProbePermit(hashlib.sha256(body).hexdigest(), lambda:b'KEY'))
+            send.assert_not_called()
