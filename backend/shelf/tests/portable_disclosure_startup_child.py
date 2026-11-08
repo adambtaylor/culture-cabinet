@@ -89,6 +89,7 @@ def main():
                 allow_canonical_seed='yes'), form=True)
             # On the old startup this exact normal caller returns503: no helper
             # constructs the missing service or repairs private registrations.
+            print('NATIVE_INFERENCE_CONSENT_STATUS', consent.status_code, flush=True)
             assert consent.status_code == 303, ('native consent', consent.status_code)
             assert client.get(consent['Location'], **headers).status_code == 200
             services = authority._disclosure_services
@@ -128,11 +129,12 @@ def main():
         patches.enter_context(patch.object(runtime, 'configure', configure))
         patches.enter_context(patch.object(runtime, 'make_server', make_server))
         result = runtime.run(root)
-    assert result == (1 if failure else 0), ('run result', result)
     boundary = observed['boundary']
     assert boundary._socket.fileno() == -1
     from django.db import connections
     assert all(c.connection is None for c in connections.all())
+    print('NORMAL_STARTUP_CLEANUP socketClosed=True databaseClosed=True', flush=True)
+    assert result == (1 if failure else 0), ('run result', result)
     if failure:
         assert 'server' not in observed
     else:
