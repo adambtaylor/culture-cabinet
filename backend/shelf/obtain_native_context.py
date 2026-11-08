@@ -21,6 +21,7 @@ def operational_digest(value):
 class _Frame:
     identity: object
     request_id: str
+    job_status: str
     transfer_revision: int | None
     binding_digest: str | None
 
@@ -95,8 +96,10 @@ def _read_frame(access, job_id, operation):
                                              profile_id=identity.profile_id)
         except AcquisitionJob.DoesNotExist:
             raise Blocked('Owned native job unavailable') from None
+        if operation != 'view' and job.status != 'blocked_configuration':
+            raise Blocked('Cancelled native job cannot perform work')
         transfer = ObtainTransfer.objects.filter(job=job).first()
-        return _Frame(identity, str(job.request_id), transfer.revision if transfer else None,
+        return _Frame(identity, str(job.request_id), job.status, transfer.revision if transfer else None,
                       operational_digest(transfer.binding) if transfer else None)
 
 
