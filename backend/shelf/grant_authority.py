@@ -317,7 +317,23 @@ def change_grant(authority, session_ref, *, profile_ref, expected_revision, purp
     _require(type(expires_at) is datetime and expires_at.utcoffset() == timedelta(0), 'CONTRACT_INVALID', 422)
     with recovery_guard(authority, session_ref) as checkpoint, authority._lock, _checked_transaction(checkpoint):
         state, session = _bound(authority, session_ref, profile_ref, sensitive=True)
-        service, (row, binding, description) = _connection(authority, session_ref, connection_ref, purpose=purpose)
+        candidate = None
+        if action == 'revoke' and purpose == 'catalogue_lookup':
+            candidate = PortableConnection.objects.filter(pk=_uuid(connection_ref),
+                installation=state.installation, removed=False,
+                adapter__in=('tmdb_movie', 'tmdb_tv', 'hardcover')).first()
+        if candidate is not None:
+            # Revocation removes an existing grant; it needs owned source
+            # metadata, not a live token or a fabricated current config binding.
+            # Grant/regrant and every effect still use the strict resolver below.
+            from .source_authority import source_identity
+            source_identity(candidate.adapter)
+            _require(candidate.model == candidate.reasoning == ''
+                and candidate.credential_generation >= 0 and candidate.validation_generation == 0,
+                'CAPABILITY_UNAVAILABLE', 503)
+            row = candidate
+        else:
+            service, (row, binding, description) = _connection(authority, session_ref, connection_ref, purpose=purpose)
         now = authority.now()
         prior = PortableDisclosureGrant.objects.filter(cabinet=state, connection=row, purpose=purpose).first()
         _require((prior.revision if prior else 0) == expected_revision, 'REVISION_CONFLICT', 409)

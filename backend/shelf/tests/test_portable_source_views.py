@@ -275,9 +275,9 @@ class NativeMediaSourceTests(NativeFeedbackCase):
         page = self.MEDIA_PAGES[adapter]
         fields = dict(profile_ref=self.profile_ref, expected_revision='0', confirmed='yes')
         self.assertEqual(self.post(page+'/configure', fields).status_code, 303)
-        row = PortableConnection.objects.get(adapter=adapter)
+        row = PortableConnection.objects.get(adapter=adapter, installation_id=self.boundary.installation_id)
         self.assertEqual(self.post(page+'/configure', fields).status_code, 303)
-        self.assertEqual(PortableConnection.objects.filter(adapter=adapter).count(), 1)
+        self.assertEqual(PortableConnection.objects.filter(adapter=adapter, installation_id=self.boundary.installation_id).count(), 1)
         return row
 
     def credential_media(self, row, **changes):
@@ -506,3 +506,76 @@ class NativeMediaSourceTests(NativeFeedbackCase):
                         {'source_credential_required':False},{'source_credential_present':'yes'},
                         {'source_readiness':'provider_approved'}):
             self.fault('CONTRACT_INVALID',_source_setup_display,{**base,**changed})
+
+    def test_missing_media_token_cannot_block_existing_grant_revocation(self):
+        from shelf.enhance_contract import EnhanceFault
+        from shelf.source_authority import SourceAuthority, _connection
+        from shelf.category_registry import registry_view
+        from shelf.enhance_coordinator import EnhanceCoordinator
+        for adapter in self.MEDIA_PAGES:
+            row = self.configure_media(adapter)
+            self.assertEqual(self.credential_media(row).status_code,303)
+            self.assertEqual(self.consent_media(row).status_code,303)
+            view = current_binding(self.authority,self.ref,profile_ref=self.profile_ref,connection_ref=str(row.pk))
+            plan = EnhanceCoordinator(None,now=self.authority.now).plan(view,registry_view(),
+                run_ref=str(uuid.uuid4()),client_key=str(uuid.uuid4()),refresh_nonce=str(uuid.uuid4())).plan
+            self.vault.remove(self.ref,row.pk,row.config_revision)
+            self.assertEqual(self.setup_context(adapter)['source_readiness'],'credential_required')
+            self.assertEqual(self.consent_media(row).status_code,503)
+            issuer = SourceAuthority(self.authority,self.ref,profile_ref=self.profile_ref,connection_ref=str(row.pk))
+            self.fault('CREDENTIAL_REQUIRED',issuer.preview,plan)
+            fields = dict(profile_ref=self.profile_ref,source_connection_ref=str(row.pk),
+                          expected_revision='1',action='revoke',confirmed='yes')
+            self.assertEqual(self.post(self.MEDIA_PAGES[adapter]+'/consent',fields).status_code,303)
+            # Exact already-revoked revision remains idempotent, with no new grant.
+            fields['expected_revision']='2'
+            self.assertEqual(self.post(self.MEDIA_PAGES[adapter]+'/consent',fields).status_code,303)
+            grant = PortableDisclosureGrant.objects.get(connection=row,purpose='catalogue_lookup')
+            self.assertEqual((grant.state,grant.revision),('revoked',2))
+            self.fault('CREDENTIAL_REQUIRED',_connection,self.authority,self.ref,str(row.pk))
+            self.fault('CREDENTIAL_REQUIRED',current_binding,self.authority,self.ref,
+                       profile_ref=self.profile_ref,connection_ref=str(row.pk))
+            self.assertEqual(self.consent_media(row,expected_revision='2',action='regrant').status_code,503)
+            self.assertEqual(self.consent_media(row,expected_revision='2').status_code,503)
+
+    def test_expired_media_token_revocation_keeps_owner_source_revision_csrf_and_recent_auth_guards(self):
+        from datetime import timedelta
+        from shelf.models import PortableInstallation
+        foreign = PortableInstallation.objects.create(id=uuid.uuid4(),root_identity=uuid.uuid4().hex*2,
+                                                       process_generation=uuid.uuid4())
+        foreign_row = PortableConnection.objects.create(id=uuid.uuid4(),installation=foreign,
+                                                        adapter='hardcover',model='',reasoning='')
+        self.fault('AUTHORITY_DENIED',ga.change_grant,self.authority,self.ref,
+            profile_ref=self.profile_ref,connection_ref=str(foreign_row.pk),expected_revision=1,
+            purpose='catalogue_lookup',allowed_data_classes=[],action='revoke',
+            expires_at=self.authority.now()+timedelta(minutes=5))
+        for adapter in self.MEDIA_PAGES:
+            row = self.configure_media(adapter)
+            self.assertEqual(self.credential_media(row).status_code,303)
+            self.assertEqual(self.consent_media(row).status_code,303)
+            # Only this owned synthetic lease expires; the real session and
+            # production credential/session limits are not changed or extended.
+            self.vault._leases[row.pk].expires = self.clock.tick
+            fields = dict(profile_ref=self.profile_ref,source_connection_ref=str(row.pk),
+                          expected_revision='1',action='revoke',confirmed='yes')
+            page = self.MEDIA_PAGES[adapter]
+            self.assertEqual(self.post(page+'/consent',{**fields,'profile_ref':str(uuid.uuid4())}).status_code,403)
+            self.assertEqual(self.post(page+'/consent',{**fields,'source_connection_ref':str(foreign_row.pk)}).status_code,403)
+            self.assertEqual(self.post(page+'/consent',{**fields,'expected_revision':'0'}).status_code,409)
+            self.assertEqual(self.post(page+'/consent',fields,csrf=False).status_code,403)
+            other_page = next(value for key,value in self.MEDIA_PAGES.items() if key != adapter)
+            self.assertEqual(self.post(other_page+'/consent',fields).status_code,403)
+            duplicate = urlencode([*fields.items(),('expected_revision','1')])
+            response = self.http.post(page+'/consent',duplicate,content_type='application/x-www-form-urlencoded',
+                                      HTTP_X_CSRFTOKEN=self.csrf(),**self.headers)
+            self.assertEqual(response.status_code,422)
+            grant = PortableDisclosureGrant.objects.get(connection=row,purpose='catalogue_lookup')
+            self.assertEqual((grant.state,grant.revision),('active',1))
+            self.assertEqual(self.post(page+'/consent',fields).status_code,303)
+            grant.refresh_from_db()
+            self.assertEqual((grant.state,grant.revision),('revoked',2))
+        row = self.configure_media('hardcover')
+        self.clock.advance(301)
+        fields = dict(profile_ref=self.profile_ref,source_connection_ref=str(row.pk),
+                      expected_revision='2',action='revoke',confirmed='yes')
+        self.assertEqual(self.post(self.MEDIA_PAGES['hardcover']+'/consent',fields).status_code,401)

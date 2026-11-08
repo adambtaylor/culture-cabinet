@@ -125,7 +125,14 @@ def source_consent(request, *, adapter=MUSICBRAINZ):
     authority, ref = request.portable_authority, request.session.get('portable_session')
     with ga.recovery_guard(authority, ref, profile_ref=profile_ref), authority._lock:
         state, session = ga._bound(authority, ref, profile_ref, sensitive=True)
-        row, _, _ = _connection(authority, ref, connection_ref)
+        if value['action'] == 'revoke' and adapter in MEDIA:
+            # The fixed route must match before the authority's metadata-only
+            # revocation branch; a missing token must not prevent withdrawal.
+            row = PortableConnection.objects.filter(pk=connection_ref,
+                installation=state.installation, removed=False).first()
+            ga._require(row is not None, 'AUTHORITY_DENIED', 403)
+        else:
+            row, _, _ = _connection(authority, ref, connection_ref)
         ga._require(row.adapter == adapter, 'AUTHORITY_DENIED', 403)
         # This fixed source purpose cannot reuse or create a processor grant.
         ga.change_grant(authority, ref, profile_ref=profile_ref, connection_ref=connection_ref,
