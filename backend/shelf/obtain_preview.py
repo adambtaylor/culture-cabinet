@@ -9,6 +9,7 @@ from django.http import Http404
 from django.utils import timezone
 
 from shelf import credential_store as store, saved
+from shelf.portable_saved_authority import effect_for
 from shelf.acquisition_backend import Backend, PrivateSearch
 from shelf.acquisition_contract import Blocked, ContractError
 from shelf.models import AcquisitionJob, ObtainPreview, ObtainResult, ObtainSelection
@@ -119,21 +120,26 @@ def search(*, actor, profile_id, item_id, factory=None, season=None, episode=Non
     except ContractError:
         raise saved.SavedError('Saved title cannot be searched safely.', 409) from None
     now = timezone.now()
-    preview = ObtainPreview.objects.create(actor=actor, profile_id=profile_id,
-        **identity(item, scope), created_at=now, expires_at=now + timedelta(minutes=15))
+    with effect_for(actor, profile_id):
+        preview = ObtainPreview.objects.create(actor=actor, profile_id=profile_id,
+            **identity(item, scope), created_at=now, expires_at=now + timedelta(minutes=15))
     state, rows = 'failed', []
     private = None
     try:
-        backend = (factory or search_backend)(actor=actor, profile_id=profile_id)
-        caps = backend.caps(actor_id=actor.pk, profile_id=profile_id)
+        # Provider metadata cannot validate PA1's live generation. Fence backend
+        # acquisition and caps themselves, not only their later result consumer.
+        with effect_for(actor, profile_id):
+            backend = (factory or search_backend)(actor=actor, profile_id=profile_id)
+            caps = backend.caps(actor_id=actor.pk, profile_id=profile_id)
         # Caps is provider work too: do not start search after authority was revoked.
         current_item(actor, profile_id, preview)
         query = item.title
         if preview.scope.startswith('episode_'):
             query += ' ' + episode_code(preview.scope)
-        private = backend.search(caps, query,
-            {'movie': 'film', 'tv': 'episode', 'book': 'audiobook'}[item.medium],
-            actor_id=actor.pk, profile_id=profile_id)
+        with effect_for(actor, profile_id):
+            private = backend.search(caps, query,
+                {'movie': 'film', 'tv': 'episode', 'book': 'audiobook'}[item.medium],
+                actor_id=actor.pk, profile_id=profile_id)
         if type(private) is not PrivateSearch:
             raise ContractError('Invalid private search')
         rows, omitted_rows = parse(private._payload, title=item.title, scope=preview.scope)
@@ -146,7 +152,7 @@ def search(*, actor, profile_id, item_id, factory=None, season=None, episode=Non
         if type(private) is PrivateSearch:
             private.close()
     # No private payload or upstream exception is persisted, even on failure.
-    with transaction.atomic():
+    with effect_for(actor, profile_id), transaction.atomic():
         current_item(actor, profile_id, preview)
         if preview.expires_at <= timezone.now():
             rows, state = [], 'expired'
@@ -208,7 +214,7 @@ def review(*, actor, profile_id, preview_id, result_id):
 
 
 def confirm(*, actor, profile_id, preview_id, result_id, data):
-    with transaction.atomic():
+    with effect_for(actor, profile_id), transaction.atomic():
         preview, result = review(actor=actor, profile_id=profile_id,
                                  preview_id=preview_id, result_id=result_id)
         item = current_item(actor, profile_id, preview)
