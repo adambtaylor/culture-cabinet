@@ -643,3 +643,14 @@ class IdleCurrentnessTests(RecoveryCase):
             view = self.view(profile)
             self.clock.advance(1800)
             self.fault('UNAUTHENTICATED', ga.assert_current, view)
+
+    def test_actual_absolute_expiry_refuses_despite_regular_owner_activity(self):
+        with self.controlled_recovery_state('clear'):
+            profile = self.bind()
+            self.consent(profile)
+            view = self.view(profile)
+            for _ in range(16):
+                self.clock.advance(1700)
+                self.authority.authorize(self.ref)
+            self.clock.advance(1600)
+            self.fault('UNAUTHENTICATED', ga.assert_current, view)
