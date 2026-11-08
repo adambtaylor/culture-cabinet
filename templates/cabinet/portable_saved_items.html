@@ -2,6 +2,7 @@
 {% block content %}
 <header><p class="eyebrow">Saved items · {{ profile_label }}</p><h1>Your saved items and Obtain requests</h1>
 <p>Save keeps an item for later. It does not record enjoyment, grant provider permission or start acquisition.</p>
+<p>Current TV picks also offer Obtain directly in your cabinet. Saving is optional.</p>
 <p><a href="{{ cabinet_url }}">Return to {{ profile_label }}</a> · <a href="/setup/cabinet">Choose another cabinet</a></p></header>
 {% if message %}<p role="status">{{ message }}</p>{% endif %}
 {% if error_message %}<section role="alert"><h2>This action could not be completed</h2><p>{{ error_message }}</p><p>Reload the selected cabinet and open a fresh review. Nothing is resubmitted automatically.</p><a href="/setup">Review owner session and setup</a></section>{% endif %}

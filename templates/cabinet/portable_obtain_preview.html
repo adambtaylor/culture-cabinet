@@ -1,7 +1,7 @@
 {% extends enhancement_base %}
 {% block content %}
-<header><p class="eyebrow">Obtain · {{ profile_label }}</p><h1>{% if obtain_selected_result %}Review exact listing{% else %}Review listing search{% endif %}</h1><p><a href="/cabinet/saved/">Back to saved items for {{ profile_label }}</a></p></header>
-{% if error_message %}<p role="alert">{{ error_message }} Return to saved items and open a fresh review. Nothing is retried automatically.</p>{% endif %}
+<header><p class="eyebrow">Obtain · {{ profile_label }}</p><h1>{% if obtain_selected_result %}Review exact listing{% else %}Review listing search{% endif %}</h1><p><a href="{{ cabinet_url }}">Return to your cabinet</a> · <a href="/cabinet/saved/">Saved items and recorded requests</a></p></header>
+{% if error_message %}<p role="alert">{{ error_message }} Open current options in your cabinet or saved items for a fresh review. Nothing is retried automatically.</p>{% endif %}
 {% if obtain_preview %}<p>Title: {{ obtain_preview.title }}</p><p>Scope: {% if obtain_preview.scope == 'film' %}Full film{% elif obtain_preview.scope == 'audiobook' %}Full audiobook, never ebook{% elif obtain_preview.episode_code %}{{ obtain_preview.episode_code }} only{% else %}{{ obtain_preview.scope }}{% endif %}</p>
 {% if obtain_preview.state == 'failed' %}<p role="status">Search failed before submission. Return to saved items and explicitly search again; no enqueue retry is implied.</p>
 {% elif obtain_preview.state == 'empty' %}<p role="status">No listings found within this search. This does not establish availability.</p>
@@ -31,5 +31,5 @@
 {% endif %}
 {% else %}{% for result in obtain_preview.results %}<article class="paper-panel"><h2>{{ result.title }}</h2><p>Indexer: {{ result.indexer }} · {{ result.size }} bytes</p><p>Edition: {{ result.edition }} · Full work claim: {{ result.full_work }}</p>
 {% if result.selectable and result.review_url %}<a href="{{ result.review_url }}">Review exact listing: {{ result.title }}</a>{% else %}<p>Cannot select this listing: {% if result.reason == 'ebook_not_audiobook' %}ebooks are outside full audiobook scope.{% elif result.reason == 'ambiguous_episode' %}a pack or ambiguous episode is outside the exact single-episode scope.{% else %}the listing does not match the required title, category or scope.{% endif %}</p>{% endif %}</article>{% empty %}<p>No selectable listings in this stored preview.</p>{% endfor %}{% endif %}
-{% else %}<p role="status">Preview unavailable. Return to saved items for current options.</p>{% endif %}{% endif %}
+{% else %}<p role="status">Preview unavailable. Open current options in your cabinet or saved items.</p>{% endif %}{% endif %}
 {% endblock %}

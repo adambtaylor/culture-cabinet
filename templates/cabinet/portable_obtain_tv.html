@@ -1,0 +1,66 @@
+{% extends enhancement_base %}
+{% block content %}
+<header><p class="eyebrow">Obtain · {{ profile_label }}</p><h1>Obtain a TV episode</h1>
+<p>Choose a TV series and one episode, review its source match, then review the available releases.</p>
+<p><a href="{{ cabinet_url }}">Return to your cabinet</a>{% if obtain_tv_source_url %} · <a href="{{ obtain_tv_source_url }}">Review TV source connection and permission</a>{% endif %}</p></header>
+{% if error_message %}<section class="obtain-notice" role="alert" tabindex="-1" autofocus><h2>This lookup needs attention</h2><p>{{ error_message }}</p><p>Review the current form and source permission before choosing another action. Nothing is retried automatically.</p></section>{% endif %}
+
+{% if obtain_tv_needs_selection %}
+<section class="paper-panel obtain-options" aria-labelledby="owner-tv-cabinet-heading"><h2 id="owner-tv-cabinet-heading">Use your selected cabinet</h2>
+{% if profile_ref and obtain_tv_select_profile_url %}
+<form method="post" action="{{ obtain_tv_select_profile_url }}" data-owner-tv-profile>{% csrf_token %}
+  <input type="hidden" name="profile_ref" value="{{ profile_ref }}"><input type="hidden" name="return_to" value="owner_tv">
+  <button type="submit">Use {{ profile_label }} for this TV request</button>
+</form>
+{% else %}<p><a href="/setup/cabinet">Choose your cabinet</a> before starting a TV lookup.</p>{% endif %}
+</section>
+{% elif obtain_tv_preview and obtain_tv_lookup_form and selection_token %}
+<section class="paper-panel obtain-options" aria-labelledby="owner-tv-preview-heading"><h2 id="owner-tv-preview-heading">Review the TV source lookup</h2>
+<p>Confirm this exact title lookup with TMDB, then choose the matching series and episode.</p>
+{% if obtain_tv_preview.operation.origin %}<p>Destination: {{ obtain_tv_preview.operation.origin }}{{ obtain_tv_preview.operation.path }}</p>{% endif %}
+<details open><summary>Exact source request</summary><textarea readonly rows="8" aria-label="Exact TV source request">{{ obtain_tv_preview.body }}</textarea></details>
+{% if obtain_tv_preview.expires_at %}<p>This review expires at {{ obtain_tv_preview.expires_at }}.</p>{% endif %}
+{% if obtain_tv_lookup_url %}<form method="post" action="{{ obtain_tv_lookup_url }}" data-owner-tv-lookup>{% csrf_token %}
+  <input type="hidden" name="profile_ref" value="{{ profile_ref }}"><input type="hidden" name="selection_token" value="{{ selection_token }}">
+  {{ obtain_tv_lookup_form.as_p }}
+  <button type="submit">Confirm and look up this title once</button>
+</form>{% endif %}
+<p><a href="{{ obtain_tv_entry_url }}">Start a different TV lookup</a></p>
+</section>
+{% elif obtain_tv_matches != None %}
+<section aria-labelledby="owner-tv-matches-heading"><h2 id="owner-tv-matches-heading">Choose the matching TV series</h2>
+{% for match in obtain_tv_matches %}
+<article class="paper-panel obtain-options" aria-labelledby="owner-tv-match-{{ forloop.counter }}"><h3 id="owner-tv-match-{{ forloop.counter }}">{{ match.title }}</h3>
+<p>{% if match.series_year %}Series first-air year: {{ match.series_year }}.{% else %}The series year has not been confirmed.{% endif %} Episode: {{ match.scope|cut:'episode_'|upper }}.</p>
+{% if match.source_url %}<p><a href="{{ match.source_url }}" rel="noreferrer noopener">View TMDB source record for {{ match.title }}</a></p>{% endif %}
+{% if match.expires_at %}<p>Source selection valid until {{ match.expires_at }}.</p>{% endif %}
+{% if match.selectable and match.select_form and obtain_tv_select_url and selection_token %}
+{% comment %}Repeated match forms keep exact server-owned field names/values. Explicit unique checkbox IDs avoid cross-card labels without introducing a form prefix or a client-supplied source identity.{% endcomment %}
+<form method="post" action="{{ obtain_tv_select_url }}" data-owner-tv-match>{% csrf_token %}
+  <input type="hidden" name="profile_ref" value="{{ profile_ref }}"><input type="hidden" name="selection_token" value="{{ selection_token }}">
+  <input type="hidden" name="{{ match.select_form.intent_ref.html_name }}" value="{{ match.select_form.intent_ref.value|default_if_none:'' }}">
+  <input type="hidden" name="{{ match.select_form.match_ref.html_name }}" value="{{ match.select_form.match_ref.value|default_if_none:'' }}">
+  <input type="hidden" name="{{ match.select_form.match_digest.html_name }}" value="{{ match.select_form.match_digest.value|default_if_none:'' }}">
+  {{ match.select_form.non_field_errors }}{{ match.select_form.intent_ref.errors }}{{ match.select_form.match_ref.errors }}{{ match.select_form.match_digest.errors }}{{ match.select_form.confirmed.errors }}
+  <label for="owner-tv-confirm-match-{{ forloop.counter }}"><input type="checkbox" id="owner-tv-confirm-match-{{ forloop.counter }}" name="{{ match.select_form.confirmed.html_name }}" value="yes" required> Use {{ match.title }}{% if match.series_year %} ({{ match.series_year }}){% endif %}, {{ match.scope|cut:'episode_'|upper }}, for this request.</label>
+  <button type="submit">Use this series and episode</button>
+</form>
+{% else %}<p role="status">This match cannot currently be selected. Review the current source details or start a new lookup.</p>{% endif %}
+</article>
+{% empty %}<p role="status">No matching series was confirmed within this lookup. Review the title and year before explicitly starting another lookup.</p>{% endfor %}
+<p><a href="{{ obtain_tv_entry_url }}">Start a new TV lookup</a></p>
+</section>
+{% elif obtain_tv_form and obtain_tv_preview_url and selection_token %}
+<section class="paper-panel obtain-options" aria-labelledby="owner-tv-entry-heading"><h2 id="owner-tv-entry-heading">Your TV episode</h2>
+<p>Enter the series title, its first-air year, and one season and episode. You will review the exact source request before sending it.</p>
+<form method="post" action="{{ obtain_tv_preview_url }}" data-owner-tv-entry>{% csrf_token %}
+  <input type="hidden" name="profile_ref" value="{{ profile_ref }}"><input type="hidden" name="selection_token" value="{{ selection_token }}">
+  {{ obtain_tv_form.as_p }}
+  <button type="submit">Review TV title lookup</button>
+</form>
+</section>
+{% else %}<p role="status">A current cabinet selection and owner session are needed to open this TV form. Return to your cabinet and review current access.</p>{% endif %}
+
+<footer><a class="tmdb-credit" href="https://www.themoviedb.org" rel="noreferrer noopener" aria-label="TMDB, The Movie Database"><span class="tmdb-logo" aria-hidden="true">{% include 'assets/tmdb-approved.svg' %}</span><span>TMDB (The Movie Database)</span></a>
+<p>This product uses the TMDB API but is not endorsed or certified by TMDB.</p></footer>
+{% endblock %}
