@@ -66,6 +66,16 @@ class NativeThreeRoundTests(NativeFeedbackCase):
         original_safe_code = coordinator_module._safe_code
         def diagnose(error):
             traceback.print_tb(error.__traceback__)
+            tb = error.__traceback__
+            while tb:
+                if tb.tb_frame.f_code.co_name == 'assert_current':
+                    from dataclasses import fields
+                    old, fresh = (tb.tb_frame.f_locals[k] for k in ('view', 'fresh'))
+                    print('AUTHORITY_CHANGED_FIELDS', [f.name for f in fields(old)
+                          if getattr(old, f.name) != getattr(fresh, f.name)])
+                    print('AUTHORITY_CONTEXT_CHANGED_KEYS', [k for k in old.context
+                          if old.context[k] != fresh.context.get(k)])
+                tb = tb.tb_next
             return original_safe_code(error)
 
         with patch('shelf.enhance_coordinator._safe_code', side_effect=diagnose), patch.object(CheckedTransport, 'send', model_reply), patch(
