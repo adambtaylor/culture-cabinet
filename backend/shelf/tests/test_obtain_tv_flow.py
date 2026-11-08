@@ -1,4 +1,5 @@
 """Native job fences use the genuine non-1 owner fixture and selected scope."""
+from unittest import TestCase
 from shelf.acquisition_contract import Blocked
 from shelf.obtain_native_context import NativeJobContext, native_job_context
 from shelf.obtain_tv_flow import card_projection
@@ -6,6 +7,19 @@ from shelf.portable_authority import AuthorityFault
 from shelf.portable_saved_authority import select_portable_profile
 from shelf import grant_authority as ga, saved
 from .test_portable_obtain import PortableObtainTests
+
+
+class ContentIdentityContractTests(TestCase):
+    def test_canonical_content_identity_refuses_ambiguous_episode_inputs(self):
+        from shelf.obtain_tv_flow import tv_content_identity_digest
+        from shelf.acquisition_contract import ContractError
+        self.assertEqual(tv_content_identity_digest(tmdb_show_id=1399, season=1, episode=2),
+                         '39bf6a3fcd9d753be2800f6ff78b6d993b74afbb5594719f72a74311d9ced0bc')
+        for changes in ({'tmdb_show_id': True}, {'tmdb_show_id': '1399'},
+                        {'tmdb_show_id': 0}, {'season': -1}, {'episode': 0},
+                        {'season': 1000}, {'episode': 1000}):
+            with self.subTest(changes=changes), self.assertRaises(ContractError):
+                tv_content_identity_digest(**({'tmdb_show_id': 1399, 'season': 1, 'episode': 2} | changes))
 
 
 class NativeJobContextTests(PortableObtainTests):

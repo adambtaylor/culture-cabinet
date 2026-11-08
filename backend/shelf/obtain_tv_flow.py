@@ -5,6 +5,26 @@ an import verified, or supplies a missing remote destination hash.
 """
 from dataclasses import dataclass
 from datetime import datetime
+import hashlib
+
+from .acquisition_contract import ContractError
+from .disclosure import canonical_bytes
+
+
+TV_CONTENT_IDENTITY_DOMAIN = b'obtain-tv-content-identity/v1\x00'
+
+
+def tv_content_identity_digest(*, tmdb_show_id, season, episode):
+    """Bind one canonical episode without retaining or recovering its source ID."""
+    values = {'tmdb_show_id': tmdb_show_id, 'season': season, 'episode': episode}
+    if (any(type(value) is not int for value in values.values())
+            or not 1 <= tmdb_show_id <= 2147483647
+            or not 0 <= season <= 999 or not 1 <= episode <= 999):
+        raise ContractError('Canonical selected TV episode required')
+    # One shared byte contract lets a fresh library identity match the original
+    # confirmed command. Equality never supplies expired catalogue facts or
+    # reauthorizes the command; each producer must validate its own evidence.
+    return hashlib.sha256(TV_CONTENT_IDENTITY_DOMAIN + canonical_bytes(values)).hexdigest()
 
 
 @dataclass(frozen=True)
