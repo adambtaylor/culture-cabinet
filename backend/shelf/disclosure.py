@@ -403,6 +403,11 @@ def _lineage(nodes, permissions, purpose):
 def _profile(nodes, allowed, parents):
     signals, notes, traits, omitted = [], [], [], set()
     for key, node in nodes.items():
+        if (node.get('basis') == 'typed_feedback' and node['value']['signal'] == 'note'
+                and node['value']['value'] is None):
+            # A real null clear keeps its local event/revision/Undo lineage,
+            # but asserts no current text. Authored empty text is still a note.
+            continue
         if not allowed(key):
             omitted.update(_classifications(node))
         elif 'basis' not in node:
