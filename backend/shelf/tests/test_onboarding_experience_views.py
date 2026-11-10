@@ -525,7 +525,7 @@ class OnboardingExperienceTests(SimpleTestCase):
         self.assertIn('disabled', doc.forms['credential']['buttons'][0])
         self.assertNotIn('preview', doc.forms)
         self.assertNotIn('confirm', doc.forms)
-        self.assertNotIn('remove', doc.forms)
+        self.assertIn('remove', doc.forms)
         self.assertNotIn(PREVIEW, html)
         _, removed, after = self.render(self.model(notice='KEY_REMOVED'))
         self.assertIn('API key removed from Cabinet', removed)
@@ -575,7 +575,7 @@ class OnboardingExperienceTests(SimpleTestCase):
         self.assertNotIn('API key removed from Cabinet', pending)
         self.assertTrue(any(attrs.get('id') == 'setup-status' and attrs.get('role') == 'status'
                             for tag, attrs in doc.tags))
-        self.assertNotIn('remove', doc.forms)
+        self.assertIn('remove', doc.forms)
 
 
     def test_explicit_ram_replacement_keeps_current_key_review_without_using_disabled_saved_binding(self):
@@ -611,3 +611,32 @@ class OnboardingExperienceTests(SimpleTestCase):
                 if 'preview' in blocked.forms:
                     self.assertIn('disabled', blocked.forms['preview']['buttons'][0])
                 self.assertNotIn(PREVIEW, refused)
+
+
+    def test_pending_removal_preserves_explicit_native_reconciliation_with_current_authority(self):
+        context = self.model(credential_saved=True, credential_store_state='removal_pending',
+                             notice='KEY_REMOVAL_PENDING', secret=CANARY)
+        _, html, doc = self.render(context)
+        form = doc.forms['remove']
+        self.assertEqual(form['attrs']['method'], 'post')
+        self.assertEqual(form['attrs']['action'], '/setup/form/remove')
+        values = {row['name']: row.get('value') for row in form['inputs']}
+        self.assertEqual(values, {'csrfmiddlewaretoken': TOKEN, 'connection_ref': CONNECTION, 'revision': '1'})
+        self.assertEqual(form['buttons'][0]['type'], 'submit')
+        self.assertNotIn('disabled', form['buttons'][0])
+        self.assertIn('Finish removing key', html)
+        self.assertIn('explicitly check or complete the pending removal', html)
+        self.assertIn('nothing is retried automatically', html)
+        self.assertIn('Deletion from the encrypted store has not been confirmed', html)
+        self.assertNotIn('API key removed from Cabinet', html)
+        self.assertNotIn(CANARY, html)
+        self.assertNotIn('preview', doc.forms)
+        self.assertNotIn('confirm', doc.forms)
+        self.assertIn('disabled', doc.forms['credential']['buttons'][0])
+        self.assertFalse(any(tag == 'script' for tag, attrs in doc.tags))
+        # The added completion path is still a sensitive native operation:
+        # recent-auth confirmation must happen first, without replaying it.
+        _, pending, reauth = self.render({**context, 'reauthentication_required': True})
+        self.assertIn('disabled', reauth.forms['remove']['buttons'][0])
+        self.assertNotIn('disabled', reauth.forms['reauthenticate']['buttons'][0])
+        self.assertNotIn('confirm', reauth.forms)

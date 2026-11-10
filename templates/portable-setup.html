@@ -86,7 +86,7 @@
         <p>Cabinet cannot use the saved encrypted key. Check the key store’s setup on the Omarchy desktop, then check again here. A replacement key will not fix unavailable storage; no request is sent automatically.</p>
         {% if credential_configured %}<p>A separate session-only key is available. You can explicitly preview a connection test using that current key. The saved key remains unavailable; this session key will not survive logout or restart.</p>{% endif %}
         {% elif credential_store_state == 'removal_pending' %}
-        <p>Cabinet will not use this key. Deletion from the encrypted store has not been confirmed. If the keyring is locked, unlock it on the Omarchy desktop, then check again here. This does not revoke the key at the provider.</p>
+        <p>Cabinet will not use this key. Deletion from the encrypted store has not been confirmed. If the keyring is locked, unlock it on the Omarchy desktop. Choose “Finish removing key” below to explicitly check or complete the pending removal; nothing is retried automatically. This does not revoke the key at the provider.</p>
         {% elif credential_saved %}
         <p>The key remains encrypted on this computer after closing the entry terminal or restarting Cabinet normally. No terminal needs to stay open. Desktop logout or reboot may require a normal keyring unlock.</p>
         {% else %}
@@ -104,7 +104,8 @@
       {% if credential_saved %}</details>{% endif %}
       <div class="connection-actions">
         {% if credential_configured and credential_store_state != 'removal_pending' %}<form method="post" action="{{ actions.preview }}" data-form="preview"><input type="hidden" name="csrfmiddlewaretoken" value="{{ csrf_token }}"><input type="hidden" name="connection_ref" value="{{ connection_ref }}"><input type="hidden" name="revision" value="{{ revision }}"><button type="submit" class="secondary"{% if unknown_outcome or reauthentication_required or credential_use_blocked %} disabled{% endif %}>Preview connection test</button></form>{% endif %}
-        {% if credential_saved or credential_configured %}{% if credential_store_state != 'removal_pending' %}<form method="post" action="{{ actions.remove }}" data-form="remove"><input type="hidden" name="csrfmiddlewaretoken" value="{{ csrf_token }}"><input type="hidden" name="connection_ref" value="{{ connection_ref }}"><input type="hidden" name="revision" value="{{ revision }}"><button type="submit" class="secondary"{% if reauthentication_required %} disabled{% endif %}>{% if credential_saved %}Remove saved key{% else %}Remove session key{% endif %}</button></form>{% endif %}{% endif %}
+        {% comment %}Pending deletion may need the existing native Remove command to reconcile an uncertain receipt. A passive GET cannot finish it; preserve the bound form and require a fresh explicit click.{% endcomment %}
+        {% if credential_saved or credential_configured %}<form method="post" action="{{ actions.remove }}" data-form="remove"><input type="hidden" name="csrfmiddlewaretoken" value="{{ csrf_token }}"><input type="hidden" name="connection_ref" value="{{ connection_ref }}"><input type="hidden" name="revision" value="{{ revision }}"><button type="submit" class="secondary"{% if reauthentication_required %} disabled{% endif %}>{% if credential_store_state == 'removal_pending' %}Finish removing key{% elif credential_saved %}Remove saved key{% else %}Remove session key{% endif %}</button></form>{% endif %}
       </div>
       {% endif %}
     </section>
