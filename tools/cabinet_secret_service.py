@@ -42,6 +42,11 @@ OLD_DUMMY_ID = 'CultureCabinetb6a176add3874980b388e8e1dd41cdd0'
 OLD_DUMMY_OPERATION = 'f6ed3437-1f93-4564-8a6d-e558e5dd6462'
 OLD_SELECTION_SHA = '384b0aa2ef88f682086451516b80a491da3c26b04a2c7213c4cb3b9d61f28e9c'
 OLD_FAILURE_SHA = '08ef534d4cc1b403de94724bfc2dca880fb45731cf45c6ddca8b97cf2b2f3752'
+PENDING_OPERATION = 'ce102960-02f0-4697-8008-371439a02d04'
+PENDING_SELECTION_SHA = 'eb0206238b146a1e8df4002d44675ca84b7dce7b1f9d14c595157b356f77a1dd'
+PENDING_FAILURE_SHA = '13168d5968f1cab2d8df0de4c79b1e2a162c159df59d22b9b31bd417ca00c034'
+PENDING_TERMINAL_SHA = '8b970353668e5e1c314353d82c85325497f5f71ed0963c8e3c5b0a9debc3a713'
+PENDING_PREDECESSOR_SHA = '184e1a5ac45fe03f4bd59659c3dca3dc15d2a67b873c619c86009533a09a9dfb'
 STATUS = frozenset(('AVAILABLE', 'LOCKED', 'MISSING', 'UNAVAILABLE', 'CONFLICT',
                     'CORRUPT', 'UNKNOWN', 'REMOVED'))
 REQUEST_FIELDS = frozenset(('version', 'operation', 'record_kind', 'binding',
@@ -601,7 +606,7 @@ class _Async:
             timer.destroy()
             context.pop_thread_default()
 
-    def prompt(self, connection, owner, path, *, capture=None):
+    def prompt(self, connection, owner, path, *, capture=None, observe=None):
         """Subscribe and invoke once on the same connection AND main context.
 
         Completed may arrive before the Prompt method acknowledgement. Both are
@@ -616,32 +621,63 @@ class _Async:
         loop = self.GLib.MainLoop.new(context, False)
         cancel, outcome = self.Gio.Cancellable.new(), {}
         subscription = None
+        def observed(field, value):
+            if observe is not None:
+                observe(field, value)
+        def connection_closed():
+            return hasattr(connection, 'is_closed') and connection.is_closed()
         def completed(conn, sender, object_path, interface, signal, parameters, *_):
             if (conn != connection or sender != owner or object_path != path
                     or interface != 'org.freedesktop.Secret.Prompt' or signal != 'Completed'):
                 return
             try:
                 require('path' not in outcome)
+                require(parameters.get_type_string() == '(bv)')
+                if parameters.get_child_value(0).get_boolean():
+                    observed('completion', 'DISMISSED')
+                    raise Refused()
                 returned = _prompt_collection_result(parameters)
                 # Completed can precede a lost method acknowledgement. Retain
                 # the observed identity NOW even if this call later fails.
                 if capture is not None:
                     capture(returned)
                 outcome['path'] = returned
+                observed('completion', 'RETURNED')
             except Exception:
+                # A dismissed signal was already recorded precisely. Other
+                # invalid variants/capture failures are not called timeouts.
+                if parameters.get_type_string() != '(bv)' or not parameters.get_child_value(0).get_boolean():
+                    try:
+                        observed('completion', 'MALFORMED_OR_UNRETAINED')
+                    except Exception:
+                        pass
                 outcome['error'] = True
             if 'error' in outcome or outcome.get('ack'):
                 loop.quit()
         def acknowledged(source, result, *_):
             try:
                 require(source.call_finish(result).get_type_string() == '()')
-                outcome['ack'] = True
             except Exception:
+                try:
+                    observed('acknowledgement', 'FAILED')
+                    observed('termination', 'CONNECTION_CLOSED' if connection_closed() else 'CALL_FAILED')
+                except Exception:
+                    pass
                 outcome['error'] = True
+            else:
+                outcome['ack'] = True
+                try:
+                    observed('acknowledgement', 'ACKNOWLEDGED')
+                except Exception:
+                    outcome['error'] = True
             if 'error' in outcome or 'path' in outcome:
                 loop.quit()
         def expired(*_):
             outcome['error'] = True
+            try:
+                observed('termination', 'TIMEOUT')
+            except Exception:
+                pass
             cancel.cancel(); loop.quit()
             return False
         timer = self.GLib.timeout_source_new(max(1, int(remaining * 1000)))
@@ -716,15 +752,26 @@ def _new_selection(operation_id, backend, continuation_archive):
         'decoded_identifier': None, 'verified_filename': None, 'canary_ref': None,
         'canary_prompt_ref': None, 'canary_state': 'NOT_STARTED', 'file_binding': None,
         'master_phase': 'NOT_STARTED', 'terminal_fact': None,
-        'continuation_archive': continuation_archive}
+        'continuation_archive': continuation_archive,
+        'prompt_observation': {'acknowledgement': 'UNOBSERVED', 'completion': 'UNOBSERVED', 'termination': 'UNOBSERVED'}}
 
 
 def _selection_shape(value, *, allow_pending=False):
-    _shape(value, ('schema', 'state', 'requested_label', 'creation_operation_id',
+    require(type(value) is dict)
+    fields = ('schema', 'state', 'requested_label', 'creation_operation_id',
         'keyring_directory', 'service_provenance', 'returned_prompt_ref',
         'returned_collection_ref', 'decoded_identifier', 'verified_filename',
         'canary_ref', 'canary_prompt_ref', 'canary_state', 'file_binding',
-        'master_phase', 'terminal_fact', 'continuation_archive'))
+        'master_phase', 'terminal_fact', 'continuation_archive')
+    # Accepted A3 receipts remain readable byte-for-byte. Newly created v2
+    # receipts add only closed nonsecret observations, never inferred causes.
+    _shape(value, fields + (('prompt_observation',) if 'prompt_observation' in value else ()))
+    if 'prompt_observation' in value:
+        observation = value['prompt_observation']
+        _shape(observation, ('acknowledgement', 'completion', 'termination'))
+        require(observation['acknowledgement'] in ('UNOBSERVED', 'ACKNOWLEDGED', 'FAILED')
+                and observation['completion'] in ('UNOBSERVED', 'RETURNED', 'DISMISSED', 'MALFORMED_OR_UNRETAINED')
+                and observation['termination'] in ('UNOBSERVED', 'TIMEOUT', 'CONNECTION_CLOSED', 'CALL_FAILED'))
     require(value['schema'] == 'cabinet-key-store-selection/v2')
     stages = ('CREATE_PENDING', 'PROMPT_PENDING', 'CREATED_UNVERIFIED', 'FILE_BOUND', 'ACTIVE')
     require(value['state'] in stages and (allow_pending or value['state'] == 'ACTIVE'))
@@ -742,7 +789,7 @@ def _selection_shape(value, *, allow_pending=False):
         if value[field] is not None:
             _object_ref(value[field])
     if value['continuation_archive'] is not None:
-        require(value['continuation_archive'] == OLD_DUMMY_OPERATION)
+        require(value['continuation_archive'] in (OLD_DUMMY_OPERATION, PENDING_OPERATION))
     require(value['terminal_fact'] in (None, 'UNCERTAIN_OR_REFUSED'))
     require(value['canary_state'] in ('NOT_STARTED', 'CREATE_PENDING', 'CREATED', 'DELETE_PENDING', 'DELETED'))
     require(value['master_phase'] in ('NOT_STARTED', 'WRITE_PENDING', 'PRESENT'))
@@ -1041,6 +1088,16 @@ class _SecretBackend:
         self._verify_service()
         return absent
 
+    def _original_caller_closed(self):
+        self._verify_service()
+        # Only bus-daemon metadata for the pinned original unique name. Never
+        # ask the invalid prompt for a historical result or call it again.
+        reply = self._dbus('org.freedesktop.DBus', '/org/freedesktop/DBus',
+            'org.freedesktop.DBus', 'NameHasOwner', self.GLib.Variant('(s)', (':1.20377',)))
+        require(reply.get_type_string() == '(b)')
+        self._verify_service()
+        return reply.unpack()[0] is False
+
     def _unlocked(self):
         self._prove()
         result = self._dbus(self.owner, self.path, 'org.freedesktop.DBus.Properties', 'Get',
@@ -1152,7 +1209,9 @@ class _Creation:
         require((collection == '/') != (prompt == '/'))
         if collection == '/':
             collection = backend.async_.prompt(backend.connection, backend.owner, prompt,
-                capture=lambda path: self.save(returned_collection_ref=path, state='CREATED_UNVERIFIED'))
+                capture=lambda path: self.save(returned_collection_ref=path, state='CREATED_UNVERIFIED'),
+                observe=lambda field, value: self.save(prompt_observation={
+                    **self.selection['prompt_observation'], field: value}))
         identifier = _decode_collection_ref(collection)
         label = backend._dbus(backend.owner, collection, 'org.freedesktop.DBus.Properties',
             'Get', variant('(ss)', ('org.freedesktop.Secret.Collection', 'Label')))
@@ -1308,9 +1367,76 @@ def _validate_archive(raw):
     return archive
 
 
+def _pending_archive_name():
+    return 'abandoned-' + PENDING_OPERATION + '.json'
+
+
+def _pending_selection(value):
+    _selection_shape(value, allow_pending=True)
+    require(value['state'] == 'PROMPT_PENDING' and value['creation_operation_id'] == PENDING_OPERATION
+            and value['requested_label'] == 'CultureCabinetd8276bb67a8f41beb17e82bac48a3609'
+            and value['service_provenance']['caller'] == ':1.20377'
+            and value['service_provenance']['service_owner'] == ':1.0'
+            and value['returned_prompt_ref'] == '/org/freedesktop/secrets/prompt/p2'
+            and value['continuation_archive'] == OLD_DUMMY_OPERATION
+            and value['canary_state'] == 'NOT_STARTED' and value['master_phase'] == 'NOT_STARTED'
+            and value['terminal_fact'] is None)
+    for field in ('returned_collection_ref', 'decoded_identifier', 'verified_filename',
+                  'file_binding', 'canary_ref', 'canary_prompt_ref'):
+        require(value[field] is None)
+
+
+def _pending_receipts(original, failure, terminal):
+    for raw, expected in ((original, PENDING_SELECTION_SHA), (failure, PENDING_FAILURE_SHA),
+                          (terminal, PENDING_TERMINAL_SHA)):
+        require(type(raw) is bytes and hashlib.sha256(raw).hexdigest() == expected)
+    value, failed, ended = strict_json(original), strict_json(failure), strict_json(terminal)
+    _pending_selection(value)
+    require(ended['selection'] == value and ended['stage'] == 'CORRECTED_PROVISION_REFUSED_NO_RETRY'
+            and ended['provision_status'] == 'UNAVAILABLE' and ended['no_real_key'] is True
+            and ended['provider_requests'] == 0
+            and failed['corrected_operation_id'] == PENDING_OPERATION
+            and failed['returned_collection_ref'] is None and failed['real_api_keys_used'] is False
+            and failed['canary_state'] == failed['master_phase'] == 'NOT_STARTED')
+    return value
+
+
+def _validate_pending_archive(raw):
+    archive = strict_json(raw)
+    _shape(archive, ('schema', 'operation_id', 'original_selection', 'failure_receipt', 'terminal_receipt',
+        'selection_sha256', 'failure_sha256', 'terminal_sha256', 'original_caller', 'service_owner',
+        'returned_prompt_ref', 'prior_archive', 'prior_archive_sha256', 'caller_closed', 'disposition',
+        'returned_collection_ref', 'os_orphan_deleted', 'possible_collection_exists'))
+    require(archive['schema'] == 'cabinet-abandoned-prompt/v1'
+            and archive['operation_id'] == PENDING_OPERATION
+            and archive['selection_sha256'] == PENDING_SELECTION_SHA
+            and archive['failure_sha256'] == PENDING_FAILURE_SHA
+            and archive['terminal_sha256'] == PENDING_TERMINAL_SHA
+            and archive['original_caller'] == ':1.20377' and archive['service_owner'] == ':1.0'
+            and archive['returned_prompt_ref'] == '/org/freedesktop/secrets/prompt/p2'
+            and archive['prior_archive'] == OLD_DUMMY_OPERATION
+            and archive['prior_archive_sha256'] == PENDING_PREDECESSOR_SHA
+            and archive['caller_closed'] is True
+            and archive['disposition'] == 'ABANDONED_PREMASTER_PROMPT_UNRESOLVED'
+            and archive['returned_collection_ref'] is None
+            and archive['os_orphan_deleted'] is False and archive['possible_collection_exists'] == 'unknown')
+    for field in ('original_selection', 'failure_receipt', 'terminal_receipt'):
+        require(type(archive[field]) is str)
+    _pending_receipts(*(archive[field].encode('utf-8') for field in
+                        ('original_selection', 'failure_receipt', 'terminal_receipt')))
+    return archive
+
+
+def _predecessor_archive(directory):
+    raw, identity = _read_private_at(directory, _archive_name())
+    require(stat.S_IMODE(identity[4]) == 0o400
+            and hashlib.sha256(raw).hexdigest() == PENDING_PREDECESSOR_SHA)
+    _validate_archive(raw)
+    return raw
+
+
 def _check_continuation(reference):
-    if reference is not None:
-        require(reference == OLD_DUMMY_OPERATION)
+    require(reference is None or reference in (OLD_DUMMY_OPERATION, PENDING_OPERATION))
     try:
         directory = _open_checked_directory(str(Path(SELECTION).parent))
     except FileNotFoundError:
@@ -1318,15 +1444,101 @@ def _check_continuation(reference):
         return
     try:
         try:
-            raw, _ = _read_private_at(directory, _archive_name())
+            pending_raw, identity = _read_private_at(directory, _pending_archive_name())
+        except FileNotFoundError:
+            pending_raw = None
+        if pending_raw is not None:
+            require(stat.S_IMODE(identity[4]) == 0o400)
+            _validate_pending_archive(pending_raw)
+            _predecessor_archive(directory)
+            # The second tombstone makes the first link insufficient forever.
+            require(reference == PENDING_OPERATION)
+            return
+        try:
+            raw, identity = _read_private_at(directory, _archive_name())
         except FileNotFoundError:
             require(reference is None)
             return
+        require(stat.S_IMODE(identity[4]) == 0o400)
         _validate_archive(raw)
-        # The archive is a prerequisite, never an automatic retry trigger.
         require(reference == OLD_DUMMY_OPERATION)
     finally:
         os.close(directory)
+
+
+def _write_pending_archive(directory, raw):
+    try:
+        fd = os.open(_pending_archive_name(), os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
+                     0o600, dir_fd=directory)
+    except FileExistsError:
+        existing, identity = _read_private_at(directory, _pending_archive_name())
+        require(existing == raw and stat.S_IMODE(identity[4]) == 0o400)
+        # A preceding attempt may have stopped at fsync(file). Revalidate and
+        # sync the identical file again before treating the archive as durable.
+        fd = os.open(_pending_archive_name(), os.O_RDONLY | os.O_NOFOLLOW, dir_fd=directory)
+        try:
+            require(_file_identity(os.fstat(fd)) == identity)
+            os.fsync(fd)
+        finally:
+            os.close(fd)
+    else:
+        try:
+            offset = 0
+            while offset < len(raw):
+                offset += os.write(fd, raw[offset:])
+            os.fchmod(fd, 0o400)
+            os.fsync(fd)
+        finally:
+            os.close(fd)
+    os.fsync(directory)
+
+
+def retire_prompt_pending_dummy(failure_receipt, terminal_receipt, *, timeout=10.0):
+    """Only pinned ce102960, after its original caller has closed.
+
+    Prompt lifetime belongs to that caller; no replacement client can recover a
+    historical result. Never Prompt/Dismiss/query that old prompt, search for a
+    collection, infer file absence or reset another pending setup. A retained
+    Completed path or any master/canary progress disqualifies this disposition.
+    """
+    require(os.getuid() == UID and os.isatty(0)
+            and type(timeout) in (int, float) and 0 < timeout <= 10)
+    require(type(failure_receipt) is bytes and type(terminal_receipt) is bytes
+            and hashlib.sha256(failure_receipt).hexdigest() == PENDING_FAILURE_SHA
+            and hashlib.sha256(terminal_receipt).hexdigest() == PENDING_TERMINAL_SHA)
+    deadline = time.monotonic() + timeout
+    with mutation_lock(deadline):
+        directory = _open_checked_directory(str(Path(SELECTION).parent))
+        try:
+            original, identity = _read_private_at(directory, 'selection.json', 4096)
+            require(stat.S_IMODE(identity[4]) == 0o600)
+            _pending_receipts(original, failure_receipt, terminal_receipt)
+            _predecessor_archive(directory)
+            backend = object.__new__(_SecretBackend)
+            backend._connect(deadline)
+            require(backend._original_caller_closed())
+            archive = {'schema': 'cabinet-abandoned-prompt/v1', 'operation_id': PENDING_OPERATION,
+                'original_selection': original.decode('utf-8'), 'failure_receipt': failure_receipt.decode('utf-8'),
+                'terminal_receipt': terminal_receipt.decode('utf-8'), 'selection_sha256': PENDING_SELECTION_SHA,
+                'failure_sha256': PENDING_FAILURE_SHA, 'terminal_sha256': PENDING_TERMINAL_SHA,
+                'original_caller': ':1.20377', 'service_owner': ':1.0',
+                'returned_prompt_ref': '/org/freedesktop/secrets/prompt/p2',
+                'prior_archive': OLD_DUMMY_OPERATION, 'prior_archive_sha256': PENDING_PREDECESSOR_SHA,
+                'caller_closed': True, 'disposition': 'ABANDONED_PREMASTER_PROMPT_UNRESOLVED',
+                'returned_collection_ref': None, 'os_orphan_deleted': False, 'possible_collection_exists': 'unknown'}
+            raw = canonical(archive)
+            require(len(raw) <= 32768)
+            _validate_pending_archive(raw)
+            _write_pending_archive(directory, raw)
+            # Durable archive precedes pointer removal. An intervening callback,
+            # process, changed inode or new Completed receipt prevents unlink.
+            current, current_identity = _read_private_at(directory, 'selection.json', 4096)
+            require(current == original and current_identity == identity)
+            os.unlink('selection.json', dir_fd=directory)
+            os.fsync(directory)
+            return PENDING_OPERATION
+        finally:
+            os.close(directory)
 
 
 def retire_known_dummy(failure_receipt, *, timeout=10.0):
@@ -1397,7 +1609,7 @@ def provision(*, timeout=120.0, continuation_archive=None):
     A pending setup intent is not implicitly retried or adopted.
     """
     require(os.isatty(0) and type(timeout) in (int, float) and 0 < timeout <= 120)
-    require(continuation_archive is None or continuation_archive == OLD_DUMMY_OPERATION)
+    require(continuation_archive is None or continuation_archive in (OLD_DUMMY_OPERATION, PENDING_OPERATION))
     operation_id = str(uuid.uuid4())
     result = {'status': 'UNAVAILABLE', 'collection_ref': None}
     read_fd, write_fd = os.pipe()
@@ -1487,7 +1699,7 @@ def _main(argv):
         operation_id, response_fd = _uuid(argv[3]), int(argv[5])
         continuation = None
         if len(argv) == 8:
-            require(argv[6] == '--continuation-archive' and argv[7] == OLD_DUMMY_OPERATION)
+            require(argv[6] == '--continuation-archive' and argv[7] in (OLD_DUMMY_OPERATION, PENDING_OPERATION))
             continuation = argv[7]
         _check_pipe(response_fd, os.O_WRONLY)
         deadline = time.monotonic() + 120

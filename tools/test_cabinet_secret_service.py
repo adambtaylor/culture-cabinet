@@ -820,7 +820,7 @@ class CreationProvenanceTests(unittest.TestCase):
         prompt = '/org/freedesktop/secrets/prompt/owned'
         self.creation_reply = ('/', prompt)
         observed = []
-        def run_prompt(connection, owner, path, *, capture):
+        def run_prompt(connection, owner, path, *, capture, observe):
             self.assertEqual((connection, owner, path), (self.backend.connection, ':1.2', prompt))
             self.assertEqual(self.receipts[-1]['state'], 'PROMPT_PENDING')
             self.assertEqual(self.receipts[-1]['returned_prompt_ref'], prompt)
@@ -1075,6 +1075,226 @@ class DummyRetirementTests(unittest.TestCase):
             store.retire_known_dummy(self.failure)
         self.assertEqual(self.pointer.read_bytes(), self.original + b' ')
         self.assertTrue((self.directory / store._archive_name()).exists())
+
+
+class PendingPromptRetirementTests(unittest.TestCase):
+    # Owned files and bus metadata fixtures only; never a real keyring reset.
+
+    def setUp(self):
+        DummyRetirementTests.setUp(self)
+        store.retire_known_dummy(self.failure)
+        predecessor = (self.directory / store._archive_name()).read_bytes()
+        self.enterContext(patch.object(store, 'PENDING_PREDECESSOR_SHA', hashlib.sha256(predecessor).hexdigest()))
+        value = store._new_selection(store.PENDING_OPERATION, SimpleNamespace(owner=':1.0', connection=SimpleNamespace(get_unique_name=lambda: ':1.20377')), store.OLD_DUMMY_OPERATION)
+        value.pop('prompt_observation')
+        value.update(state='PROMPT_PENDING', requested_label='CultureCabinetd8276bb67a8f41beb17e82bac48a3609', returned_prompt_ref='/org/freedesktop/secrets/prompt/p2')
+        self.value = value
+        self.pending_failure = store.canonical({'corrected_operation_id': store.PENDING_OPERATION, 'returned_collection_ref': None, 'real_api_keys_used': False, 'canary_state': 'NOT_STARTED', 'master_phase': 'NOT_STARTED'})
+        self.caller_closed = self.enterContext(patch.object(store._SecretBackend, '_original_caller_closed', return_value=True))
+        self.set_pending(value)
+
+    def set_pending(self, value):
+        self.pending_original = store.canonical(value)
+        self.pointer.write_bytes(self.pending_original)
+        self.pointer.chmod(384)
+        self.terminal = store.canonical({'selection': value, 'stage': 'CORRECTED_PROVISION_REFUSED_NO_RETRY', 'provision_status': 'UNAVAILABLE', 'no_real_key': True, 'provider_requests': 0})
+        for name, raw in (('PENDING_SELECTION_SHA', self.pending_original), ('PENDING_FAILURE_SHA', self.pending_failure), ('PENDING_TERMINAL_SHA', self.terminal)):
+            self.enterContext(patch.object(store, name, hashlib.sha256(raw).hexdigest()))
+
+    def retire(self):
+        return store.retire_prompt_pending_dummy(self.pending_failure, self.terminal)
+
+    def assert_pending_refused(self):
+        with self.assertRaises(store.Refused):
+            self.retire()
+        self.assertTrue(self.pointer.exists())
+        self.assertFalse((self.directory / store._pending_archive_name()).exists())
+
+    def test_exact_pre_master_archive_preserves_bytes_and_requires_explicit_link_for_next_setup(self):
+        predecessor = (self.directory / store._archive_name()).read_bytes()
+        self.assertEqual(self.retire(), store.PENDING_OPERATION)
+        self.assertFalse(self.pointer.exists())
+        archived = self.directory / store._pending_archive_name()
+        self.assertEqual(archived.stat().st_mode & 511, 256)
+        value = store._validate_pending_archive(archived.read_bytes())
+        self.assertEqual(value['original_selection'].encode(), self.pending_original)
+        self.assertEqual(value['terminal_receipt'].encode(), self.terminal)
+        self.assertFalse(value['os_orphan_deleted'])
+        self.assertEqual(value['possible_collection_exists'], 'unknown')
+        self.assertEqual((self.directory / store._archive_name()).read_bytes(), predecessor)
+        store._check_continuation(store.PENDING_OPERATION)
+        for reference in (None, store.OLD_DUMMY_OPERATION, '10000000-0000-4000-8000-000000000001'):
+            with self.assertRaises(store.Refused):
+                store._check_continuation(reference)
+
+    def test_changed_pointer_cannot_retire(self):
+        self.pointer.write_bytes(self.pending_original + b' ')
+        self.assert_pending_refused()
+
+    def test_post_master_cannot_retire_even_with_matching_test_hash(self):
+        self.set_pending({**self.value, 'master_phase': 'WRITE_PENDING'})
+        self.assert_pending_refused()
+
+    def test_live_original_caller_cannot_retire(self):
+        self.caller_closed.return_value = False
+        self.assert_pending_refused()
+
+    def test_wrong_failure_receipt_cannot_retire(self):
+        with self.assertRaises(store.Refused):
+            store.retire_prompt_pending_dummy(self.pending_failure + b' ', self.terminal)
+        self.assertTrue(self.pointer.exists())
+
+    def test_pointer_change_after_archive_is_not_unlinked_and_archive_is_retained(self):
+        read = store._read_private_at
+        calls = []
+
+        def race(directory, name, *args):
+            if name == 'selection.json':
+                calls.append(name)
+                if len(calls) == 2:
+                    self.pointer.write_bytes(self.pending_original + b' ')
+            return read(directory, name, *args)
+        with patch.object(store, '_read_private_at', side_effect=race), self.assertRaises(store.Refused):
+            self.retire()
+        self.assertEqual(self.pointer.read_bytes(), self.pending_original + b' ')
+        self.assertTrue((self.directory / store._pending_archive_name()).exists())
+
+    def test_retained_completed_and_canary_progress_refuse_even_with_matching_fixture_hashes(self):
+        for change in ({'state': 'CREATED_UNVERIFIED', 'returned_collection_ref': store.COLLECTION_ROOT + 'returned'}, {'canary_state': 'CREATE_PENDING'}, {'creation_operation_id': str(__import__('uuid').uuid4())}):
+            with self.subTest(change=change):
+                self.set_pending({**self.value, **change})
+                self.assert_pending_refused()
+
+    def test_identical_archive_replay_after_failed_file_fsync_resyncs_file_before_pointer_removal(self):
+        original_sync = os.fsync
+        with patch.object(store.os, 'fsync', side_effect=OSError()), self.assertRaises(OSError):
+            self.retire()
+        self.assertTrue(self.pointer.exists())
+        archive = self.directory / store._pending_archive_name()
+        raw = archive.read_bytes()
+        identity = archive.stat().st_ino
+        synced = []
+
+        def sync(fd):
+            synced.append(os.fstat(fd).st_ino)
+            original_sync(fd)
+        with patch.object(store.os, 'fsync', side_effect=sync):
+            self.retire()
+        self.assertEqual(archive.read_bytes(), raw)
+        self.assertEqual(archive.stat().st_ino, identity)
+        self.assertEqual(synced[0], identity)
+        self.assertFalse(self.pointer.exists())
+
+    def test_mismatched_existing_archive_refuses_without_overwrite(self):
+        archive = self.directory / store._pending_archive_name()
+        archive.write_bytes(b'foreign')
+        archive.chmod(256)
+        with self.assertRaises(store.Refused):
+            self.retire()
+        self.assertEqual(archive.read_bytes(), b'foreign')
+        self.assertTrue(self.pointer.exists())
+
+    def test_second_archive_requires_exact_immutable_predecessor(self):
+        self.retire()
+        predecessor = self.directory / store._archive_name()
+        original = predecessor.read_bytes()
+        predecessor.chmod(384)
+        with self.assertRaises(store.Refused):
+            store._check_continuation(store.PENDING_OPERATION)
+        predecessor.write_bytes(original + b' ')
+        predecessor.chmod(256)
+        with self.assertRaises(store.Refused):
+            store._check_continuation(store.PENDING_OPERATION)
+        predecessor.unlink()
+        with self.assertRaises(FileNotFoundError):
+            store._check_continuation(store.PENDING_OPERATION)
+
+    def test_terminal_only_entry_and_nonmatching_terminal_refuse_before_connect(self):
+        with patch.object(store.os, 'isatty', return_value=False), self.assertRaises(store.Refused):
+            self.retire()
+        with self.assertRaises(store.Refused):
+            store.retire_prompt_pending_dummy(self.pending_failure, self.terminal + b' ')
+        self.assertTrue(self.pointer.exists())
+
+    def test_original_caller_check_uses_only_exact_bus_metadata(self):
+        from gi.repository import GLib
+        backend = object.__new__(store._SecretBackend)
+        backend.GLib = GLib
+        backend._verify_service = lambda: None
+        calls = []
+        backend._dbus = lambda *args: (calls.append(args), GLib.Variant('(b)', (False,)))[1]
+        with patch.object(store._SecretBackend, '_original_caller_closed', original_caller_check):
+            self.assertTrue(backend._original_caller_closed())
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(calls[0][3], 'NameHasOwner')
+        self.assertEqual(calls[0][4].unpack(), (':1.20377',))
+# Save the implementation before fixture patches; no bus is contacted.
+original_caller_check = store._SecretBackend._original_caller_closed
+
+class PromptObservationTests(unittest.TestCase):
+
+    def run_prompt(self, reply, *, fail_ack=False, closed=False):
+        worker = store._Async(time.monotonic() + 0.02)
+        V = worker.GLib.Variant
+        observed = []
+        captured = []
+
+        class Connection:
+
+            def signal_subscribe(self, *args):
+                self.callback = args[-2]
+                return 1
+
+            def call(self, owner, path, interface, method, parameters, *args):
+                if reply is not None:
+                    self.callback(self, owner, path, interface, 'Completed', reply)
+                args[-2](self, object())
+
+            def call_finish(self, result):
+                if fail_ack:
+                    raise RuntimeError()
+                return V('()', ())
+
+            def is_closed(self):
+                return closed
+
+            def signal_unsubscribe(self, subscription):
+                pass
+        try:
+            value = worker.prompt(Connection(), ':1.2', '/org/freedesktop/secrets/prompt/owned', capture=captured.append, observe=lambda field, value: observed.append((field, value)))
+        except store.Refused:
+            value = None
+        return (value, observed, captured)
+
+    def test_ack_completion_dismissal_malformed_timeout_and_closed_are_actual_distinct_events(self):
+        from gi.repository import GLib
+        V = GLib.Variant
+        path = store.COLLECTION_ROOT + 'owned'
+        value, observed, captured = self.run_prompt(V('(bv)', (False, V('o', path))))
+        self.assertEqual((value, captured), (path, [path]))
+        self.assertIn(('completion', 'RETURNED'), observed)
+        self.assertIn(('acknowledgement', 'ACKNOWLEDGED'), observed)
+        for reply, expected in ((V('(bv)', (True, V('o', path))), 'DISMISSED'), (V('(bv)', (False, V('s', path))), 'MALFORMED_OR_UNRETAINED')):
+            value, observed, captured = self.run_prompt(reply)
+            self.assertIsNone(value)
+            self.assertEqual(captured, [])
+            self.assertIn(('completion', expected), observed)
+            self.assertNotIn(('termination', 'TIMEOUT'), observed)
+        value, observed, captured = self.run_prompt(None)
+        self.assertIn(('termination', 'TIMEOUT'), observed)
+        value, observed, captured = self.run_prompt(None, fail_ack=True, closed=True)
+        self.assertIn(('termination', 'CONNECTION_CLOSED'), observed)
+        self.assertNotIn(('termination', 'TIMEOUT'), observed)
+
+    def test_delayed_valid_completion_survives_failed_ack_and_is_not_replayed(self):
+        from gi.repository import GLib
+        path = store.COLLECTION_ROOT + 'retained'
+        value, observed, captured = self.run_prompt(GLib.Variant('(bv)', (False, GLib.Variant('o', path))), fail_ack=True)
+        self.assertIsNone(value)
+        self.assertEqual(captured, [path])
+        self.assertIn(('completion', 'RETURNED'), observed)
+        self.assertIn(('termination', 'CALL_FAILED'), observed)
+        self.assertNotIn(('termination', 'TIMEOUT'), observed)
 
 
 class FileDummyCollection(DummyCollection):
