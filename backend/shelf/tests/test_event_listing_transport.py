@@ -1,0 +1,59 @@
+"""Fixed destinations and real private reservation state; all HTTP is mocked."""
+import tempfile
+from pathlib import Path
+from unittest import TestCase
+from unittest.mock import patch
+from shelf import event_listing_transport as transport
+from shelf.discovery_sources import SourceError
+
+
+class ListingTransportTests(TestCase):
+    def setUp(self):
+        self.directory = tempfile.TemporaryDirectory()
+        self.addCleanup(self.directory.cleanup)
+        self.setting = patch.object(transport, '_RATE_DIRECTORY', self.directory.name)
+        self.setting.start(); self.addCleanup(self.setting.stop)
+
+    def test_fixed_bounds_same_origin_refusal_and_other_origin_independence(self):
+        with patch.object(transport, '_send', return_value=(200, b'HTML')) as send:
+            transport.venue303()
+            with self.assertRaises(transport.ListingIntervalPending):
+                transport.venue303()
+            transport.forum()
+        self.assertEqual(send.call_count, 2)
+        command = send.call_args_list[0].args[0]
+        self.assertEqual(command[-1], 'https://303.net.au/gigs-events')
+        for flag, value in (('--max-filesize', '524288'), ('--max-time', '5'),
+                            ('--retry', '0'), ('--max-redirs', '0'), ('--proxy', '')):
+            self.assertEqual(command[command.index(flag)+1], value)
+        self.assertIn('--no-netrc', command)
+        self.assertNotIn('--location', command)
+
+    def test_refused_send_still_reserves_and_unsafe_state_never_fetches(self):
+        with patch.object(transport, '_send', return_value=(403, b'CANARY')) as send:
+            transport.venue303()
+            with self.assertRaises(transport.ListingIntervalPending):
+                transport.venue303()
+        send.assert_called_once()
+        file, = Path(self.directory.name).iterdir()
+        file.chmod(0o644)
+        with patch.object(transport, '_send') as send, self.assertRaises(SourceError):
+            transport.venue303()
+        send.assert_not_called()
+
+    def test_robots_and_listing_share_interval_and_stricter_delay_is_kept(self):
+        with patch.dict(transport._DELAYS, {'venue303': 10}), \
+             patch.object(transport, '_send', return_value=(200, b'User-agent: *\nCrawl-delay: 20\nDisallow: /private\n')):
+            receipt = transport.observe_robots('venue303')
+            self.assertTrue(receipt['allowed'])
+            self.assertEqual(receipt['delay'], 20)
+            with self.assertRaises(transport.ListingIntervalPending):
+                transport.venue303()
+
+    def test_robots_denial_and_unrecognized_html_are_not_permission(self):
+        with patch.object(transport, '_reserve'), \
+             patch.object(transport, '_send', return_value=(200, b'User-agent: *\nDisallow: /gigs-events\n')):
+            self.assertFalse(transport.observe_robots('venue303')['allowed'])
+        with patch.object(transport, '_reserve'), \
+             patch.object(transport, '_send', return_value=(200, b'<html>challenge</html>')):
+            with self.assertRaises(SourceError): transport.observe_robots('venue303')

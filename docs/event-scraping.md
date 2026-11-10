@@ -51,3 +51,40 @@ keeps date ranges rather than fabricating sessions, and retains source notices
 without turning them into ticket availability. Recognized out-of-window cards
 yield a bounded `empty`; missing/challenge markup remains `invalid`. Unknown-date
 leads remain useful. No PBS real-source call is implied by deterministic checks.
+
+## 303 occurrence port (E3a)
+
+The next producer operation is `venue303`, an empty-key/radio-mode POST through
+that same authenticated provider-discovery route. Its fixed listing is
+`https://303.net.au/gigs-events`. Experience owns its visible read control; this
+backend slice alone does not establish a rendered entry button or native Enhance.
+
+`EventCandidate` and `EventEvidence` append optional `occurrence_ref` and
+`occurrence_basis`. Old constructors remain valid. New listing candidates use
+`ListingEvent`, adding small `listed_date` and `source_notice` labels. Its
+`date_status(now)` includes unknown timezone/session identity and attributed
+notices for existing escaped card rendering. Source clocks without a zone do not
+become instants. A date range stays one range, not expanded sessions.
+
+`occurrence_event` binds the normalized observation to a versioned source key.
+A proved session ID takes priority; otherwise the exact event URL and explicit
+date/time/precision distinguish the occurrence. Missing identity uses only the
+HTML digest and source position and is visibly unresolved. Reconciliation uses
+only source/mode/occurrence aliases for these records; legacy URL/show-ID aliases
+cannot bridge sessions. Every attached reference must match the occurrence and
+source mode. Seller binding also requires occurrence identity and an existing
+locator on the same reference, while permitting fresh receipt times/digests.
+
+The 303 parser inspects one bounded listing: at most 48 cards/100 observations,
+nine returned leads, eight-week explicit date window. It calls existing field/date
+normalization directly and hashes the actual HTML, never fabricated snapshot JSON.
+`parse_official_snapshot` retains its supplied-only guards. Fixture candidates
+retain fixture provenance and no outgoing display URL.
+
+The separate fixed `event_listing_transport` reuses existing curl/TLS/parent
+containment: 512 KiB, five-second request/six-second parent, no redirects/retries,
+cookies, proxy or credentials. A private locked origin receipt reserves every
+attempt and shares at least ten-second pacing across processes, including robots.
+Explicit initial robots evidence must be recorded before a live listing; stricter
+publisher pacing is saved in the shared receipt. Robots are not crawled by GET,
+replay or ordinary listing actions. No ICS/detail/image/ticket link is followed.

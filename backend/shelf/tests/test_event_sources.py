@@ -518,3 +518,45 @@ class EventSnapshotBoundsTests(TestCase):
                 parse(official(), retrieved_at=value)
         with self.assertRaises(SourceError):
             parse(official(), provenance='verified-live')
+
+
+class OccurrenceTests(TestCase):
+    def sessions(self, provenance='supplied-snapshot'):
+        result = []
+        for clock in ('19:00', '21:00'):
+            item = parse(official(startDate=f'2026-11-01T{clock}:00+11:00'), provenance=provenance)[0]
+            result.append(e.occurrence_event(item))
+        return result
+
+    def test_shared_url_sessions_and_cancellation_do_not_merge_or_cross_legacy(self):
+        first, second = self.sessions()
+        cancelled = replace(first, status='cancelled', retrieved_at=LATER,
+            evidence=(replace(first.evidence[0], retrieved_at=LATER),))
+        legacy = parse(official(), provenance='supplied-snapshot')[0]
+        fixture = self.sessions('fixture')[0]
+        result = e.reconcile_events([first, second, cancelled, legacy, fixture])
+        self.assertEqual(len(result), 4)
+        states = {item.key: item.status for item in result}
+        self.assertEqual(states[first.key], 'cancelled')
+        self.assertEqual(states[second.key], 'scheduled')
+        self.assertIn(second.key, {item.key for item in e.upcoming_events([first, second, cancelled], NOW)})
+        self.assertNotIn(first.key, {item.key for item in e.upcoming_events([first, second, cancelled], NOW)})
+
+    def test_occurrence_evidence_cannot_bridge_sessions_sources_or_modes(self):
+        first, second = self.sessions()
+        for wrong in (second.evidence[0], replace(first.evidence[0], source_id='forum'),
+                      replace(first.evidence[0], provenance='fixture')):
+            with self.subTest(wrong=wrong), self.assertRaises(SourceError):
+                e.reconcile_events([replace(first, evidence=(first.evidence[0], wrong))])
+        legacy = parse(official(), provenance='supplied-snapshot')[0]
+        with self.assertRaises(SourceError):
+            e.reconcile_events([replace(legacy, evidence=first.evidence)])
+
+    def test_unresolved_observations_and_ranges_do_not_invent_sessions(self):
+        item = parse(official(startDate=None), provenance='supplied-snapshot')[0]
+        first = e.occurrence_event(item)
+        second = e.occurrence_event(replace(item, evidence=(replace(item.evidence[0], position=2),)))
+        self.assertEqual(len(e.reconcile_events([first, second])), 2)
+        self.assertEqual(first.occurrence_basis, 'unresolved_observation')
+        ranged = parse(official(startDate='2026-11-01', endDate='2026-11-03'))[0]
+        self.assertEqual(e.occurrence_event(ranged).occurrence_basis, 'explicit_range')
