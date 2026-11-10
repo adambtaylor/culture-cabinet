@@ -30,6 +30,12 @@ class SourceSpec:
     response_bytes: int = 131072
     search: bool = False
     kind: str = 'page'
+    starter_operation: str | None = None
+    starter_label: str = ''
+
+    def requires_terms(self, operation):
+        require(operation in self.operations)
+        return self.search and operation != self.starter_operation
 
 
 SOURCES = (
@@ -40,12 +46,17 @@ SOURCES = (
                ('recordings_by_artist_name',), 'musicbrainz', False,
                ttl_seconds=3600, response_bytes=131072, search=True, kind='api'),
     SourceSpec('tmdb_movie', 'https://api.themoviedb.org', ('movie',),
-               ('search_movie',), 'tmdb', True, ttl_seconds=3600, response_bytes=262144, search=True, kind='api'),
+               ('search_movie', 'starter_movie_science'), 'tmdb', True, ttl_seconds=3600, response_bytes=262144,
+               search=True, kind='api', starter_operation='starter_movie_science',
+               starter_label='Exploratory: science fiction films'),
     SourceSpec('tmdb_tv', 'https://api.themoviedb.org', ('tv',),
-               ('search_tv',), 'tmdb', True, ttl_seconds=3600, response_bytes=262144, search=True, kind='api'),
+               ('search_tv', 'starter_tv_fantasy'), 'tmdb', True, ttl_seconds=3600, response_bytes=262144,
+               search=True, kind='api', starter_operation='starter_tv_fantasy',
+               starter_label='Exploratory: science fiction / fantasy series'),
     SourceSpec('hardcover', 'https://api.hardcover.app', ('book',),
-               ('book_search', 'book_details'), 'hardcover', True,
-               ttl_seconds=3600, response_bytes=262144, search=True, kind='api'),
+               ('book_search', 'book_details', 'starter_books'), 'hardcover', True,
+               ttl_seconds=3600, response_bytes=262144, search=True, kind='api', starter_operation='starter_books',
+               starter_label='Exploratory: popular books from Hardcover'),
     SourceSpec('moshtix', 'https://api.moshtix.com', ('event',), ('events',), 'moshtix', kind='api'),
     SourceSpec('rrr', 'https://www.rrr.org.au', ('event', 'community'), ('rrr',), 'rrr'),
     SourceSpec('beat', 'https://beat.com.au', ('event',), ('beat',), 'beat', response_bytes=262144),
@@ -88,7 +99,8 @@ class SourceRequest:
         require(all(type(value) is int and 0 < value <= 2147483647 for value in self.ids))
         require(len(set(self.ids)) == len(self.ids))
         require((self.operation == 'book_details') == bool(self.ids))
-        require(not spec.search or bool(self.terms))
+        require(not spec.requires_terms(self.operation) or bool(self.terms))
+        require(self.operation != spec.starter_operation or not self.terms)
 
     @property
     def request_digest(self):
@@ -98,6 +110,23 @@ class SourceRequest:
     def material(self):
         return {'source': self.source, 'category': self.category, 'operation': self.operation,
                 'terms': list(self.terms), 'ids': list(self.ids)}
+
+
+def initial_source_request(source, category, terms):
+    """Select normal search, declared empty-plan starter, or an explicit denial.
+
+    ``terms`` are already purpose/category-filtered by the sole disclosure codec.
+    No denied node or personal note is consulted here; a search failure cannot
+    change this decision and cause an unpreviewed fallback.
+    """
+    spec = registered_source(source)
+    require(type(terms) is tuple)
+    for term in terms:
+        text(term)
+    if spec.search and not terms:
+        require(spec.starter_operation is not None, 'NO_GROUNDED_CANDIDATES')
+        return SourceRequest(source, category, spec.starter_operation)
+    return SourceRequest(source, category, spec.operations[0], terms[:1] if spec.search else ())
 
 
 @dataclass(frozen=True, repr=False)
@@ -127,7 +156,12 @@ class SourcePermit:
         require(request.category in plan.categories, 'AUTHORITY_DENIED')
         approved = next(query['terms'] for query in read_json(plan.body)['queries']
                         if query['category'] == request.category)
-        require(not spec.search or list(request.terms) == approved[:1], 'AUTHORITY_DENIED')
+        if request.operation == spec.starter_operation:
+            # Editorial is the declared EMPTY-plan operation, never an escape
+            # after denied/failed search or a way to hide an available term.
+            require(not approved and not request.terms, 'AUTHORITY_DENIED')
+        else:
+            require(not spec.search or list(request.terms) == approved[:1], 'AUTHORITY_DENIED')
         for value in (self.source_config_revision, self.source_revision, self.policy_revision):
             require(type(value) is int and 0 <= value < 2**53)
         text(self.policy_ref)
@@ -271,7 +305,8 @@ def _normalize(spec, request, reply, *, now):
                         and all(type(i) is int and 0 < i <= 2147483647 for i in ids))
                 return ParsedReply((), tuple(dict.fromkeys(ids)))
             rows, provider, medium = document.get('books'), 'hardcover', 'book'
-            require(type(rows) is list and len(rows) <= 9, 'SOURCE_UNAVAILABLE')
+            starter = request.operation == spec.starter_operation
+            require(type(rows) is list and len(rows) <= (6 if starter else 9), 'SOURCE_UNAVAILABLE')
             seen = set()
             for index, row in enumerate(rows):
                 # Native details deliberately do NOT enter legacy metadata
@@ -280,7 +315,7 @@ def _normalize(spec, request, reply, *, now):
                 require(type(row) is dict and set(row) == {'id', 'title', 'slug'}, 'SOURCE_UNAVAILABLE')
                 source_id, title, slug = row['id'], row['title'], row['slug']
                 require(type(source_id) is int and 0 < source_id <= 2147483647
-                        and source_id in request.ids and source_id not in seen, 'SOURCE_UNAVAILABLE')
+                        and (starter or source_id in request.ids) and source_id not in seen, 'SOURCE_UNAVAILABLE')
                 require(type(title) is str and 0 < len(title) <= 300 and title.strip(), 'SOURCE_UNAVAILABLE')
                 require(type(slug) is str and len(slug) <= 200
                         and re.fullmatch(r'[a-z0-9]+(?:-[a-z0-9]+)*', slug, re.ASCII), 'SOURCE_UNAVAILABLE')
@@ -289,12 +324,13 @@ def _normalize(spec, request, reply, *, now):
                     str(source_id), 'https://hardcover.app/books/' + slug, f'normalized-source-row:{index}'))
             # A disappeared requested ID is an incomplete enrichment, never
             # evidence that the earlier successful search found no inventory.
-            require(seen == set(request.ids), 'SOURCE_UNAVAILABLE')
+            require(starter or seen == set(request.ids), 'SOURCE_UNAVAILABLE')
             return ParsedReply(tuple(cards))
         else:
             rows, provider, medium = document.get('results'), 'tmdb', request.category
         projected = parse_candidates(provider, medium, rows,
-            lane='source-collection', lane_label='Bounded source collection', limit=9)
+            lane='source-collection', lane_label='Bounded source collection',
+            limit=6 if request.operation == spec.starter_operation else 9)
         dates = (_native_tv_first_air_dates(rows)
                  if spec.key == 'tmdb_tv' and request.operation == 'search_tv' else {})
         # The old helper stamps parsing time. Evidence uses the actual supplied
