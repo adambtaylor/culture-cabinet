@@ -24,6 +24,10 @@ import time
 import uuid
 
 VERSION = 'cabinet-secret-service/v1'
+# Producer guarantee only, no new RPC field/operation. Native may persist its
+# no-effect proof only for a completed direct delete with LOCKED/null/null and
+# no prior uncertain invocation. Reconcile/status LOCKED never supplies proof.
+DELETE_NO_EFFECT_GUARANTEE = 'direct-delete-locked/v1'
 MAX_FRAME = 65536
 MAX_SECRET = 8192
 TIMEOUT = 10.0
@@ -334,6 +338,10 @@ def invoke(request, *, timeout=TIMEOUT):
         require(result['version'] == VERSION and result['operation_id'] == request['operation_id']
                 and result['status'] in STATUS)
         require(result['record'] is None or request['operation'] == 'read' and result['status'] == 'AVAILABLE')
+        if result['status'] not in ('AVAILABLE', 'REMOVED'):
+            require(result['revision'] is None and result['record'] is None)
+        if request['operation'] == 'availability':
+            require(result['revision'] is None and result['record'] is None)
         if result['status'] == 'AVAILABLE' and request['operation'] != 'availability':
             require(result['revision'] is not None)
         if request['operation'] == 'read' and result['status'] == 'AVAILABLE':
@@ -436,6 +444,9 @@ class Store:
         try:
             return self._execute(request)
         except Refused as error:
+            # Mutations below fence *every* intent/target write attempt. Thus a
+            # direct-delete LOCKED escaping here is definitive for this call's
+            # pre-intent phase, not for any earlier invocation of the same UUID.
             return response(request, error.status)
 
     def _execute(self, request):
@@ -500,6 +511,9 @@ class Store:
             'operation': operation, 'operation_id': request['operation_id'], 'revision': revision,
             'previous_revision': current, 'request_digest': request_digest, 'status': 'PENDING'}
         try:
+            # direct-delete-locked/v1 boundary: after this first write may start,
+            # even an underlying LOCKED exception must become UNKNOWN. It must
+            # never be misused as a safe original-operation continuation token.
             self._write(kind, binding_digest, 'receipt', cipher, intent)
             if operation == 'put':
                 target = {'schema': 'cabinet-record/v1', 'kind': kind, 'binding': binding,
