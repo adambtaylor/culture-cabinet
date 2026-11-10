@@ -37,6 +37,11 @@ SELECTION = '/home/tang/.local/state/culture-cabinet-key-store/selection.json'
 KEYRING_DIRECTORY = '/home/tang/.local/share/keyrings'
 ENCRYPTED_PREFIX = bytes.fromhex('476e6f6d654b657972696e670a0d000a00000000')
 HELPER = str(Path(__file__).resolve())
+COLLECTION_ROOT = '/org/freedesktop/secrets/collection/'
+OLD_DUMMY_ID = 'CultureCabinetb6a176add3874980b388e8e1dd41cdd0'
+OLD_DUMMY_OPERATION = 'f6ed3437-1f93-4564-8a6d-e558e5dd6462'
+OLD_SELECTION_SHA = '384b0aa2ef88f682086451516b80a491da3c26b04a2c7213c4cb3b9d61f28e9c'
+OLD_FAILURE_SHA = '08ef534d4cc1b403de94724bfc2dca880fb45731cf45c6ddca8b97cf2b2f3752'
 STATUS = frozenset(('AVAILABLE', 'LOCKED', 'MISSING', 'UNAVAILABLE', 'CONFLICT',
                     'CORRUPT', 'UNKNOWN', 'REMOVED'))
 REQUEST_FIELDS = frozenset(('version', 'operation', 'record_kind', 'binding',
@@ -596,22 +601,177 @@ class _Async:
             timer.destroy()
             context.pop_thread_default()
 
+    def prompt(self, connection, owner, path, *, capture=None):
+        """Subscribe and invoke once on the same connection AND main context.
+
+        Completed may arrive before the Prompt method acknowledgement. Both are
+        required, and neither a different sender/path nor a malformed result can
+        supply a collection reference. No polling or second Prompt is allowed.
+        """
+        remaining = self.deadline - time.monotonic()
+        require(remaining > 0)
+        _object_ref(path)
+        context = self.GLib.MainContext.new()
+        context.push_thread_default()
+        loop = self.GLib.MainLoop.new(context, False)
+        cancel, outcome = self.Gio.Cancellable.new(), {}
+        subscription = None
+        def completed(conn, sender, object_path, interface, signal, parameters, *_):
+            if (conn != connection or sender != owner or object_path != path
+                    or interface != 'org.freedesktop.Secret.Prompt' or signal != 'Completed'):
+                return
+            try:
+                require('path' not in outcome)
+                returned = _prompt_collection_result(parameters)
+                # Completed can precede a lost method acknowledgement. Retain
+                # the observed identity NOW even if this call later fails.
+                if capture is not None:
+                    capture(returned)
+                outcome['path'] = returned
+            except Exception:
+                outcome['error'] = True
+            if 'error' in outcome or outcome.get('ack'):
+                loop.quit()
+        def acknowledged(source, result, *_):
+            try:
+                require(source.call_finish(result).get_type_string() == '()')
+                outcome['ack'] = True
+            except Exception:
+                outcome['error'] = True
+            if 'error' in outcome or 'path' in outcome:
+                loop.quit()
+        def expired(*_):
+            outcome['error'] = True
+            cancel.cancel(); loop.quit()
+            return False
+        timer = self.GLib.timeout_source_new(max(1, int(remaining * 1000)))
+        timer.set_callback(expired); timer.attach(context)
+        try:
+            subscription = connection.signal_subscribe(owner, 'org.freedesktop.Secret.Prompt',
+                'Completed', path, None, self.Gio.DBusSignalFlags.NONE, completed, None)
+            connection.call(owner, path, 'org.freedesktop.Secret.Prompt', 'Prompt',
+                self.GLib.Variant('(s)', ('',)), None, self.Gio.DBusCallFlags.NO_AUTO_START,
+                max(1, int(remaining * 1000)), cancel, acknowledged, None)
+            if 'error' not in outcome and not (outcome.get('ack') and 'path' in outcome):
+                loop.run()
+            require('error' not in outcome and outcome.get('ack') and 'path' in outcome)
+            return outcome['path']
+        finally:
+            cancel.cancel()
+            if subscription is not None:
+                connection.signal_unsubscribe(subscription)
+            timer.destroy(); context.pop_thread_default()
+
+
+def _prompt_collection_result(parameters):
+    require(parameters.get_type_string() == '(bv)')
+    require(parameters.get_child_value(0).get_boolean() is False)
+    result = parameters.get_child_value(1).get_variant()
+    require(result.get_type_string() == 'o')
+    path = result.get_string()
+    _object_ref(path)
+    return path
+
+
+def _object_ref(value):
+    require(type(value) is str and len(value) <= 512 and value != '/'
+            and re.fullmatch(r'(?:/[A-Za-z0-9_]+)+', value) is not None)
+
+
+def _decode_collection_ref(path):
+    """Decode GNOME's returned component, never derive an ID from its label."""
+    _object_ref(path)
+    require(path.startswith(COLLECTION_ROOT))
+    component = path[len(COLLECTION_ROOT):]
+    require('/' not in component)
+    raw, offset = bytearray(), 0
+    while offset < len(component):
+        char = component[offset]
+        if char == '_':
+            pair = component[offset + 1:offset + 3]
+            require(len(pair) == 2 and re.fullmatch('[0-9a-f]{2}', pair) is not None)
+            raw.append(int(pair, 16)); offset += 3
+        else:
+            require(char.isascii() and char.isalnum())
+            raw.append(ord(char)); offset += 1
+    encoded = ''.join(chr(byte) if 48 <= byte <= 57 or 65 <= byte <= 90 or 97 <= byte <= 122
+                      else '_%02x' % byte for byte in raw)
+    require(encoded == component)
+    try:
+        identifier = raw.decode('ascii')
+    except UnicodeError:
+        raise Refused() from None
+    require(re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9._-]{0,127}', identifier) is not None
+            and '..' not in identifier and identifier.casefold() not in ('login', 'session', 'default'))
+    return identifier
+
+
+def _new_selection(operation_id, backend, continuation_archive):
+    return {'schema': 'cabinet-key-store-selection/v2', 'state': 'CREATE_PENDING',
+        'requested_label': 'CultureCabinet' + uuid.uuid4().hex,
+        'creation_operation_id': operation_id, 'keyring_directory': KEYRING_DIRECTORY,
+        'service_provenance': {'service_owner': backend.owner, 'service_uid': UID,
+            'implementation': 'gnome-keyring-51.1', 'caller': backend.connection.get_unique_name()},
+        'returned_prompt_ref': None, 'returned_collection_ref': None,
+        'decoded_identifier': None, 'verified_filename': None, 'canary_ref': None,
+        'canary_prompt_ref': None, 'canary_state': 'NOT_STARTED', 'file_binding': None,
+        'master_phase': 'NOT_STARTED', 'terminal_fact': None,
+        'continuation_archive': continuation_archive}
+
 
 def _selection_shape(value, *, allow_pending=False):
-    _shape(value, ('schema', 'identifier', 'collection_ref', 'keyring_directory', 'provisioning', 'state'))
-    require(value['schema'] == 'cabinet-key-store-selection/v1')
-    require(value['state'] == 'ACTIVE' or allow_pending and value['state'] == 'PROVISIONING')
-    identifier = value['identifier']
-    require(type(identifier) is str and re.fullmatch('CultureCabinet[0-9a-f]{32}', identifier) is not None)
-    require(value['collection_ref'] == '/org/freedesktop/secrets/collection/' + identifier)
+    _shape(value, ('schema', 'state', 'requested_label', 'creation_operation_id',
+        'keyring_directory', 'service_provenance', 'returned_prompt_ref',
+        'returned_collection_ref', 'decoded_identifier', 'verified_filename',
+        'canary_ref', 'canary_prompt_ref', 'canary_state', 'file_binding',
+        'master_phase', 'terminal_fact', 'continuation_archive'))
+    require(value['schema'] == 'cabinet-key-store-selection/v2')
+    stages = ('CREATE_PENDING', 'PROMPT_PENDING', 'CREATED_UNVERIFIED', 'FILE_BOUND', 'ACTIVE')
+    require(value['state'] in stages and (allow_pending or value['state'] == 'ACTIVE'))
+    require(type(value['requested_label']) is str
+            and re.fullmatch('CultureCabinet[0-9a-f]{32}', value['requested_label']) is not None)
+    _uuid(value['creation_operation_id'])
     require(value['keyring_directory'] == KEYRING_DIRECTORY)
-    proof = value['provisioning']
-    _shape(proof, ('operation_id', 'service_owner', 'service_uid', 'implementation', 'absent_before_creation'))
-    _uuid(proof['operation_id'])
+    proof = value['service_provenance']
+    _shape(proof, ('service_owner', 'service_uid', 'implementation', 'caller'))
     require(type(proof['service_uid']) is int and proof['service_uid'] == UID
-            and proof['implementation'] == 'gnome-keyring-51.1'
-            and proof['absent_before_creation'] is True)
-    require(type(proof['service_owner']) is str and re.fullmatch(r':[0-9]+\.[0-9]+', proof['service_owner']) is not None)
+            and proof['implementation'] == 'gnome-keyring-51.1')
+    for field in ('service_owner', 'caller'):
+        require(type(proof[field]) is str and re.fullmatch(r':[0-9]+\.[0-9]+', proof[field]) is not None)
+    for field in ('returned_prompt_ref', 'returned_collection_ref', 'canary_ref', 'canary_prompt_ref'):
+        if value[field] is not None:
+            _object_ref(value[field])
+    if value['continuation_archive'] is not None:
+        require(value['continuation_archive'] == OLD_DUMMY_OPERATION)
+    require(value['terminal_fact'] in (None, 'UNCERTAIN_OR_REFUSED'))
+    require(value['canary_state'] in ('NOT_STARTED', 'CREATE_PENDING', 'CREATED', 'DELETE_PENDING', 'DELETED'))
+    require(value['master_phase'] in ('NOT_STARTED', 'WRITE_PENDING', 'PRESENT'))
+    if value['decoded_identifier'] is not None:
+        require(value['decoded_identifier'] == _decode_collection_ref(value['returned_collection_ref']))
+    if value['verified_filename'] is not None:
+        require(value['decoded_identifier'] is not None
+                and value['verified_filename'] == value['decoded_identifier'] + '.keyring')
+    if value['state'] == 'PROMPT_PENDING':
+        require(value['returned_prompt_ref'] is not None)
+    if value['state'] in ('CREATED_UNVERIFIED', 'FILE_BOUND', 'ACTIVE'):
+        require(value['returned_collection_ref'] is not None)
+    if value['file_binding'] is not None:
+        _shape(value['file_binding'], ('before', 'created', 'deleted'))
+        for identity in value['file_binding'].values():
+            require(identity is None or type(identity) is list and len(identity) == 9
+                    and all(type(part) is int for part in identity))
+    if value['state'] in ('FILE_BOUND', 'ACTIVE'):
+        require(value['verified_filename'] is not None and value['canary_ref'] is not None
+                and value['canary_ref'].startswith(value['returned_collection_ref'] + '/')
+                and value['canary_prompt_ref'] is None
+                and value['canary_state'] == 'DELETED' and value['file_binding'] is not None)
+        binding = value['file_binding']
+        require(binding['created'] is not None and binding['deleted'] is not None
+                and binding['before'] != binding['created'] != binding['deleted'])
+    else:
+        require(value['master_phase'] == 'NOT_STARTED')
+    if value['state'] == 'ACTIVE':
+        require(value['master_phase'] == 'PRESENT' and value['terminal_fact'] is None)
 
 
 def _open_checked_directory(path):
@@ -636,7 +796,7 @@ def _file_identity(info):
             info.st_nlink, info.st_size, info.st_mtime_ns, info.st_ctime_ns)
 
 
-def _probe_protection(selection):
+def _observe_file(name, *, protected=False, absent_allowed=False):
     """Read exactly <=20 public format bytes of the one registered new file.
 
     The prefix establishes the supported GNOME51.1 nonempty-password writer
@@ -644,22 +804,26 @@ def _probe_protection(selection):
     Locked=false is not protection evidence. Atomic replacement between separate
     observations is normal; replacement during this observation is refused.
     """
-    _selection_shape(selection, allow_pending=True)
+    require(type(name) is str and re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9._-]{0,127}\.keyring', name) is not None)
     directory = leaf = None
     try:
         directory = _open_checked_directory(KEYRING_DIRECTORY)
-        name = selection['identifier'] + '.keyring'
-        before = os.stat(name, dir_fd=directory, follow_symlinks=False)
+        try:
+            before = os.stat(name, dir_fd=directory, follow_symlinks=False)
+        except FileNotFoundError:
+            require(absent_allowed)
+            return None
         require(stat.S_ISREG(before.st_mode) and before.st_uid == UID and before.st_nlink == 1
                 and stat.S_IMODE(before.st_mode) == 0o600)
         leaf = os.open(name, os.O_RDONLY | os.O_NOFOLLOW, dir_fd=directory)
         opened = os.fstat(leaf)
         require(_file_identity(before) == _file_identity(opened))
-        prefix = os.pread(leaf, 20, 0)
+        prefix = os.pread(leaf, 20, 0) if protected else None
         after = os.fstat(leaf)
         path_after = os.stat(name, dir_fd=directory, follow_symlinks=False)
         require(_file_identity(opened) == _file_identity(after) == _file_identity(path_after)
-                and prefix == ENCRYPTED_PREFIX)
+                and (not protected or prefix == ENCRYPTED_PREFIX))
+        return list(_file_identity(after))
     except OSError:
         raise Refused() from None
     finally:
@@ -667,6 +831,12 @@ def _probe_protection(selection):
             os.close(leaf)
         if directory is not None:
             os.close(directory)
+
+
+def _probe_protection(selection):
+    _selection_shape(selection, allow_pending=True)
+    require(selection['state'] in ('FILE_BOUND', 'ACTIVE'))
+    return _observe_file(selection['verified_filename'], protected=True)
 
 
 def _read_selection():
@@ -705,7 +875,7 @@ def _read_selection():
 def _publish_selection(value, *, previous=None):
     """One nonsecret setup intent, then exact-CAS publication. No secret file.
 
-    A cancelled/uncertain OS creation leaves PROVISIONING: ordinary operations
+    A cancelled/uncertain OS creation leaves a pending stage: ordinary operations
     refuse it, and another creation cannot silently adopt or replace it.
     """
     _selection_shape(value, allow_pending=True)
@@ -767,7 +937,7 @@ class _SecretBackend:
     def __init__(self, deadline):
         self.selection = _read_selection()
         self._connect(deadline)
-        self.path = self.selection['collection_ref']
+        self.path = self.selection['returned_collection_ref']
         self._open_collection()
 
     def _connect(self, deadline):
@@ -811,7 +981,7 @@ class _SecretBackend:
             g_interface_name='org.freedesktop.Secret.Collection',
             g_flags=self.Gio.DBusProxyFlags.DO_NOT_AUTO_START, flags=self.Secret.CollectionFlags.NONE)
         self._initialize(self.collection)
-        require(self.collection.get_label() == self.selection['identifier'])
+        require(self.collection.get_label() == self.selection['requested_label'])
         self._prove()
 
     def _verify_service(self):
@@ -850,6 +1020,26 @@ class _SecretBackend:
             method, parameters, None, self.Gio.DBusCallFlags.NO_AUTO_START,
             max(1, int((self.async_.deadline - time.monotonic()) * 1000)), cancel, done, None),
             lambda source, result: source.call_finish(result))
+
+    def _predicted_dummy_unresolved(self):
+        """Only the pinned old prediction; never infer its actual OS identity."""
+        self._verify_service()
+        def finish(source, result):
+            try:
+                source.call_finish(result)
+                return False
+            except self.GLib.Error as error:
+                remote = self.Gio.DBusError.get_remote_error(error)
+                require(remote in ('org.freedesktop.DBus.Error.UnknownObject',
+                    'org.freedesktop.DBus.Error.UnknownMethod', 'org.freedesktop.Secret.Error.NoSuchObject'))
+                return True
+        absent = self.async_.call(lambda cancel, done: self.connection.call(self.owner,
+            COLLECTION_ROOT + OLD_DUMMY_ID, 'org.freedesktop.DBus.Properties', 'Get',
+            self.GLib.Variant('(ss)', ('org.freedesktop.Secret.Collection', 'Label')),
+            None, self.Gio.DBusCallFlags.NO_AUTO_START,
+            max(1, int((self.async_.deadline - time.monotonic()) * 1000)), cancel, done, None), finish)
+        self._verify_service()
+        return absent
 
     def _unlocked(self):
         self._prove()
@@ -932,13 +1122,103 @@ class _SecretBackend:
         self._unlocked()
 
 
-def _provision_worker(operation_id, deadline):
-    """Explicit host-only GNOME prompt; never read the collection password.
+class _Creation:
+    """Durable nonsecret receipts precede all inspection of returned objects."""
+    def __init__(self, backend, operation_id, continuation_archive):
+        self.backend = backend
+        self.selection = _new_selection(operation_id, backend, continuation_archive)
+        self.identity = _publish_selection(self.selection)
 
-    Do not retry uncertain collection creation. Its nonsecret exact selection
-    intent survives for the custodian, rather than losing which object we made.
-    Master generation follows actual file-format proof, never prompt success.
-    """
+    def save(self, **changes):
+        candidate = {**self.selection, **changes}
+        identity = _publish_selection(candidate, previous=self.identity)
+        self.selection, self.identity = candidate, identity
+        self.backend.selection = candidate
+
+    def create(self):
+        backend, variant = self.backend, self.backend.GLib.Variant
+        result = backend._dbus(backend.owner, '/org/freedesktop/secrets',
+            'org.freedesktop.Secret.Service', 'CreateCollection',
+            variant('(a{sv}s)', ({'org.freedesktop.Secret.Collection.Label':
+                variant('s', self.selection['requested_label'])}, '')))
+        require(result.get_type_string() == '(oo)')
+        collection, prompt = result.unpack()
+        # Preserve even an unexpected combination before applying semantic
+        # checks. No proxy construction can erase the only creation receipt.
+        self.save(returned_collection_ref=None if collection == '/' else collection,
+                  returned_prompt_ref=None if prompt == '/' else prompt,
+                  state='CREATED_UNVERIFIED' if collection != '/' else
+                        'PROMPT_PENDING' if prompt != '/' else 'CREATE_PENDING')
+        require((collection == '/') != (prompt == '/'))
+        if collection == '/':
+            collection = backend.async_.prompt(backend.connection, backend.owner, prompt,
+                capture=lambda path: self.save(returned_collection_ref=path, state='CREATED_UNVERIFIED'))
+        identifier = _decode_collection_ref(collection)
+        label = backend._dbus(backend.owner, collection, 'org.freedesktop.DBus.Properties',
+            'Get', variant('(ss)', ('org.freedesktop.Secret.Collection', 'Label')))
+        require(label.get_type_string() == '(v)' and label.unpack()[0] == self.selection['requested_label'])
+        self.save(decoded_identifier=identifier)
+        backend.path = collection
+
+    def _items(self):
+        backend = self.backend
+        result = backend._dbus(backend.owner, backend.path, 'org.freedesktop.DBus.Properties',
+            'Get', backend.GLib.Variant('(ss)', ('org.freedesktop.Secret.Collection', 'Items')))
+        require(result.get_type_string() == '(v)')
+        items = result.get_child_value(0).get_variant()
+        require(items.get_type_string() == 'ao')
+        return items.unpack()
+
+    def bind_file(self):
+        backend, variant = self.backend, self.backend.GLib.Variant
+        name = self.selection['decoded_identifier'] + '.keyring'
+        before = _observe_file(name, absent_allowed=True)
+        require(self._items() == [])
+        backend._verify_service()
+        # This standard plain Secret Service session contains ONLY the public
+        # canary. Credential/master operations still use libsecret's session.
+        session_reply = backend._dbus(backend.owner, '/org/freedesktop/secrets',
+            'org.freedesktop.Secret.Service', 'OpenSession', variant('(sv)', ('plain', variant('s', ''))))
+        require(session_reply.get_type_string() == '(vo)')
+        session = session_reply.unpack()[1]
+        _object_ref(session)
+        attrs = {'application': 'culture-cabinet', 'schema': 'cabinet-key-store/canary-v1',
+                 'operation': self.selection['creation_operation_id']}
+        properties = {'org.freedesktop.Secret.Item.Label': variant('s', 'Culture Cabinet public canary'),
+                      'org.freedesktop.Secret.Item.Attributes': variant('a{ss}', attrs)}
+        self.save(canary_state='CREATE_PENDING', file_binding={'before': before, 'created': None, 'deleted': None})
+        result = backend._dbus(backend.owner, backend.path, 'org.freedesktop.Secret.Collection',
+            'CreateItem', variant('(a{sv}(oayays)b)', (properties,
+                (session, [], list(('Culture Cabinet PUBLIC NONSECRET canary ' +
+                  self.selection['creation_operation_id']).encode('ascii')), 'text/plain'), False)))
+        require(result.get_type_string() == '(oo)')
+        item, prompt = result.unpack()
+        self.save(canary_ref=None if item == '/' else item,
+                  canary_prompt_ref=None if prompt == '/' else prompt)
+        # Uncertain creation leaves its references intact. Do not invoke an
+        # unexpected item prompt, repeat the write or initialize a master.
+        require(prompt == '/' and item.startswith(backend.path + '/') and self._items() == [item])
+        created = _observe_file(name, protected=True)
+        require(created != before)
+        self.save(canary_state='CREATED', file_binding={'before': before, 'created': created, 'deleted': None})
+        self.save(canary_state='DELETE_PENDING')
+        result = backend._dbus(backend.owner, item, 'org.freedesktop.Secret.Item', 'Delete', None)
+        require(result.get_type_string() == '(o)')
+        delete_prompt = result.unpack()[0]
+        if delete_prompt != '/':
+            self.save(canary_prompt_ref=delete_prompt)
+            raise Refused()
+        require(self._items() == [])
+        deleted = _observe_file(name, protected=True)
+        require(deleted != created)
+        backend._dbus(backend.owner, session, 'org.freedesktop.Secret.Session', 'Close', None)
+        backend._verify_service()
+        self.save(canary_state='DELETED', verified_filename=name, state='FILE_BOUND',
+                  file_binding={'before': before, 'created': created, 'deleted': deleted})
+
+
+def _provision_worker(operation_id, deadline, continuation_archive=None):
+    """Host-only, one creation; no adoption, inferred filename or uncertain retry."""
     _uuid(operation_id)
     require(os.getuid() == UID and os.isatty(0))
     with mutation_lock(deadline):
@@ -947,9 +1227,7 @@ def _provision_worker(operation_id, deadline):
         except FileNotFoundError:
             pass
         else:
-            # Explicit host re-entry may unlock only the already registered,
-            # protected ACTIVE selection. It cannot adopt an arbitrary existing
-            # collection, finish an uncertain creation or regenerate a lost key.
+            require(continuation_archive is None)
             backend = _SecretBackend(deadline)
             backend._prove()
             backend.async_.call(lambda cancel, done: backend.service.unlock(
@@ -959,71 +1237,159 @@ def _provision_worker(operation_id, deadline):
             Store(backend)._crypt()
             backend._prove()
             return
+        _check_continuation(continuation_archive)
         backend = object.__new__(_SecretBackend)
         backend._connect(deadline)
         backend._verify_service()
-        identifier = 'CultureCabinet' + uuid.uuid4().hex
-        directory = _open_checked_directory(KEYRING_DIRECTORY)
+        creation = _Creation(backend, operation_id, continuation_archive)
         try:
+            creation.create()
+            creation.bind_file()
+            backend._open_collection()
+            backend._unlocked()
+            require(backend._item('master', '0' * 64, 'master') is None)
+            # Persist the point after which retirement/regeneration is forbidden
+            # BEFORE any generated private value can reach the service.
+            creation.save(master_phase='WRITE_PENDING')
+            from cryptography.fernet import Fernet
+            key = Fernet.generate_key()
+            value = backend.Secret.Value.new(key.decode('ascii'), -1, 'text/plain')
+            backend.async_.call(lambda cancel, done: backend.Secret.Item.create(backend.collection, None,
+                backend._attrs('master', '0' * 64, 'master'), 'Culture Cabinet record encryption key', value,
+                backend.Secret.ItemCreateFlags.NONE, cancel, done, None),
+                lambda source, result: backend.Secret.Item.create_finish(result))
+            backend._prove()
+            require(backend.master_key() == key)
+            creation.save(master_phase='PRESENT', state='ACTIVE')
+            backend._prove()
+        except Exception:
+            # Preserve the last acknowledged references and stage. A failed
+            # receipt write must not be papered over with a fresh OS operation.
             try:
-                os.stat(identifier + '.keyring', dir_fd=directory, follow_symlinks=False)
-            except FileNotFoundError:
+                creation.save(terminal_fact='UNCERTAIN_OR_REFUSED')
+            except Exception:
                 pass
-            else:
-                raise Refused()
-        finally:
-            os.close(directory)
-        selection = {'schema': 'cabinet-key-store-selection/v1', 'state': 'PROVISIONING',
-            'identifier': identifier, 'collection_ref': '/org/freedesktop/secrets/collection/' + identifier,
-            'keyring_directory': KEYRING_DIRECTORY,
-            'provisioning': {'operation_id': operation_id, 'service_owner': backend.owner,
-                'service_uid': UID, 'implementation': 'gnome-keyring-51.1', 'absent_before_creation': True}}
-        intent_identity = _publish_selection(selection)
-        backend.selection, backend.path = selection, selection['collection_ref']
-        collection = backend.async_.call(lambda cancel, done: backend.Secret.Collection.create(
-            backend.service, identifier, None, backend.Secret.CollectionCreateFlags.NONE, cancel, done, None),
-            lambda source, result: backend.Secret.Collection.create_finish(result))
-        require(collection is not None and collection.get_object_path() == backend.path
-                and collection.get_label() == identifier)
-        backend.collection = collection
-        canary = None
-        directory = _open_checked_directory(KEYRING_DIRECTORY)
+            raise Refused() from None
+
+
+def _read_private_at(directory, name, limit=32768):
+    fd = os.open(name, os.O_RDONLY | os.O_NOFOLLOW, dir_fd=directory)
+    try:
+        before = os.fstat(fd)
+        require(stat.S_ISREG(before.st_mode) and before.st_uid == UID and before.st_nlink == 1
+                and stat.S_IMODE(before.st_mode) in (0o400, 0o600) and before.st_size <= limit)
+        raw = os.read(fd, limit + 1)
+        require(len(raw) == before.st_size and _file_identity(before) == _file_identity(os.fstat(fd))
+                == _file_identity(os.stat(name, dir_fd=directory, follow_symlinks=False)))
+        return raw, _file_identity(before)
+    finally:
+        os.close(fd)
+
+
+def _archive_name():
+    return 'abandoned-' + OLD_DUMMY_OPERATION + '.json'
+
+
+def _validate_archive(raw):
+    archive = strict_json(raw)
+    _shape(archive, ('schema', 'operation_id', 'original_selection', 'failure_receipt',
+        'predicted_collection_ref', 'predicted_collection_resolvable', 'predicted_file_absent',
+        'disposition', 'os_orphan_deleted'))
+    require(archive['schema'] == 'cabinet-abandoned-dummy/v1'
+            and archive['operation_id'] == OLD_DUMMY_OPERATION
+            and archive['disposition'] == 'ABANDONED_UNRESOLVED_POSSIBLE_DUMMY_ORPHAN'
+            and archive['os_orphan_deleted'] is False
+            and archive['predicted_collection_ref'] == COLLECTION_ROOT + OLD_DUMMY_ID
+            and archive['predicted_collection_resolvable'] is False
+            and archive['predicted_file_absent'] is True)
+    for field, expected in (('original_selection', OLD_SELECTION_SHA), ('failure_receipt', OLD_FAILURE_SHA)):
+        require(type(archive[field]) is str
+                and hashlib.sha256(archive[field].encode('utf-8')).hexdigest() == expected)
+    return archive
+
+
+def _check_continuation(reference):
+    if reference is not None:
+        require(reference == OLD_DUMMY_OPERATION)
+    try:
+        directory = _open_checked_directory(str(Path(SELECTION).parent))
+    except FileNotFoundError:
+        require(reference is None)
+        return
+    try:
         try:
+            raw, _ = _read_private_at(directory, _archive_name())
+        except FileNotFoundError:
+            require(reference is None)
+            return
+        _validate_archive(raw)
+        # The archive is a prerequisite, never an automatic retry trigger.
+        require(reference == OLD_DUMMY_OPERATION)
+    finally:
+        os.close(directory)
+
+
+def retire_known_dummy(failure_receipt, *, timeout=10.0):
+    """Explicit terminal-only disposition of ONE pinned pre-master failure.
+
+    This removes only its matching local pointer. The unknown OS collection is
+    neither located nor deleted. A new creation requires a separate explicit
+    provision(continuation_archive=returned_uuid) call after source acceptance.
+    """
+    require(os.getuid() == UID and os.isatty(0) and type(failure_receipt) is bytes
+            and hashlib.sha256(failure_receipt).hexdigest() == OLD_FAILURE_SHA
+            and type(timeout) in (int, float) and 0 < timeout <= 10)
+    deadline = time.monotonic() + timeout
+    with mutation_lock(deadline):
+        directory = _open_checked_directory(str(Path(SELECTION).parent))
+        try:
+            original, identity = _read_private_at(directory, 'selection.json', 4096)
+            require(hashlib.sha256(original).hexdigest() == OLD_SELECTION_SHA)
+            value = strict_json(original)
+            require(value['schema'] == 'cabinet-key-store-selection/v1' and value['state'] == 'PROVISIONING'
+                    and value['identifier'] == OLD_DUMMY_ID
+                    and value['collection_ref'] == COLLECTION_ROOT + OLD_DUMMY_ID
+                    and value['provisioning']['operation_id'] == OLD_DUMMY_OPERATION)
+            # The exact immutable receipt/hash identifies the old source guard
+            # that failed before master generation, not a generic pending setup.
+            backend = object.__new__(_SecretBackend)
+            backend._connect(deadline)
+            require(backend._predicted_dummy_unresolved())
+            require(_observe_file(OLD_DUMMY_ID + '.keyring', absent_allowed=True) is None)
+            archive = {'schema': 'cabinet-abandoned-dummy/v1', 'operation_id': OLD_DUMMY_OPERATION,
+                'original_selection': original.decode('utf-8'), 'failure_receipt': failure_receipt.decode('utf-8'),
+                'predicted_collection_ref': COLLECTION_ROOT + OLD_DUMMY_ID,
+                'predicted_collection_resolvable': False, 'predicted_file_absent': True,
+                'disposition': 'ABANDONED_UNRESOLVED_POSSIBLE_DUMMY_ORPHAN', 'os_orphan_deleted': False}
+            raw = canonical(archive)
+            _validate_archive(raw)
             try:
-                os.stat(identifier + '.keyring', dir_fd=directory, follow_symlinks=False)
-            except FileNotFoundError:
-                # The only value permitted before protection proof is a fixed
-                # public canary, solely to materialize this exact new file.
-                attrs = {'application': 'culture-cabinet', 'schema': 'cabinet-key-store/canary-v1',
-                         'kind': 'canary', 'binding': '0' * 64}
-                value = backend.Secret.Value.new('Culture Cabinet public provisioning canary/v1', -1, 'text/plain')
-                canary = backend.async_.call(lambda cancel, done: backend.Secret.Item.create(collection,
-                    None, attrs, 'Culture Cabinet public provisioning canary', value,
-                    backend.Secret.ItemCreateFlags.NONE, cancel, done, None),
-                    lambda source, result: backend.Secret.Item.create_finish(result))
+                fd = os.open(_archive_name(), os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
+                             0o600, dir_fd=directory)
+            except FileExistsError:
+                # A previous archive fsync may have succeeded before a crash.
+                # Reuse only identical retained facts, never overwrite them.
+                existing, _ = _read_private_at(directory, _archive_name())
+                require(existing == raw)
+            else:
+                try:
+                    offset = 0
+                    while offset < len(raw):
+                        offset += os.write(fd, raw[offset:])
+                    os.fchmod(fd, 0o400); os.fsync(fd)
+                finally:
+                    os.close(fd)
+            os.fsync(directory)
+            current, current_identity = _read_private_at(directory, 'selection.json', 4096)
+            require(current == original and current_identity == identity)
+            os.unlink('selection.json', dir_fd=directory)
+            os.fsync(directory)
+            return OLD_DUMMY_OPERATION
         finally:
             os.close(directory)
-        backend._prove()
-        backend._unlocked()
-        require(backend._item('master', '0' * 64, 'master') is None)
-        from cryptography.fernet import Fernet
-        key = Fernet.generate_key()
-        value = backend.Secret.Value.new(key.decode('ascii'), -1, 'text/plain')
-        backend.async_.call(lambda cancel, done: backend.Secret.Item.create(collection, None,
-            backend._attrs('master', '0' * 64, 'master'), 'Culture Cabinet record encryption key', value,
-            backend.Secret.ItemCreateFlags.NONE, cancel, done, None),
-            lambda source, result: backend.Secret.Item.create_finish(result))
-        backend._prove()
-        require(backend.master_key() == key)
-        if canary is not None:
-            backend.async_.call(lambda cancel, done: canary.delete(cancel, done, None),
-                               lambda source, result: source.delete_finish(result))
-        backend._prove()
-        _publish_selection({**selection, 'state': 'ACTIVE'}, previous=intent_identity)
-        backend._prove()
 
 
-def provision(*, timeout=120.0):
+def provision(*, timeout=120.0, continuation_archive=None):
     """Trusted terminal custodian only; no normal web command can request this.
 
     GNOME alone collects the password. This function returns only status and the
@@ -1031,14 +1397,18 @@ def provision(*, timeout=120.0):
     A pending setup intent is not implicitly retried or adopted.
     """
     require(os.isatty(0) and type(timeout) in (int, float) and 0 < timeout <= 120)
+    require(continuation_archive is None or continuation_archive == OLD_DUMMY_OPERATION)
     operation_id = str(uuid.uuid4())
     result = {'status': 'UNAVAILABLE', 'collection_ref': None}
     read_fd, write_fd = os.pipe()
     process = None
     deadline = time.monotonic() + timeout
     try:
-        process = subprocess.Popen(['/usr/bin/python3', '-I', '-B', HELPER, '--provision',
-            '--operation-id', operation_id, '--response-fd', str(write_fd)],
+        command = ['/usr/bin/python3', '-I', '-B', HELPER, '--provision',
+                   '--operation-id', operation_id, '--response-fd', str(write_fd)]
+        if continuation_archive is not None:
+            command.extend(['--continuation-archive', continuation_archive])
+        process = subprocess.Popen(command,
             stdin=0, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, close_fds=True,
             pass_fds=(write_fd,), env={'PATH': '/usr/bin:/bin', 'LANG': 'C.UTF-8',
                                      'DBUS_SESSION_BUS_ADDRESS': 'unix:path=/run/user/1000/bus'})
@@ -1050,7 +1420,7 @@ def provision(*, timeout=120.0):
         process.wait(timeout=max(.001, deadline - time.monotonic()))
         require(process.returncode == 0)
         if reply['status'] == 'AVAILABLE':
-            result = {'status': 'AVAILABLE', 'collection_ref': _read_selection()['collection_ref']}
+            result = {'status': 'AVAILABLE', 'collection_ref': _read_selection()['returned_collection_ref']}
         else:
             result['status'] = reply['status']
         return result
@@ -1113,12 +1483,16 @@ def _main(argv):
     # No argparse/traceback can accidentally echo input: argv contains only pipe
     # numbers. Malformed input returns no plaintext diagnostics on standard fds.
     _protect_process()
-    if len(argv) == 6 and argv[1:3] == ['--provision', '--operation-id'] and argv[4] == '--response-fd':
+    if len(argv) in (6, 8) and argv[1:3] == ['--provision', '--operation-id'] and argv[4] == '--response-fd':
         operation_id, response_fd = _uuid(argv[3]), int(argv[5])
+        continuation = None
+        if len(argv) == 8:
+            require(argv[6] == '--continuation-archive' and argv[7] == OLD_DUMMY_OPERATION)
+            continuation = argv[7]
         _check_pipe(response_fd, os.O_WRONLY)
         deadline = time.monotonic() + 120
         try:
-            _provision_worker(operation_id, deadline)
+            _provision_worker(operation_id, deadline, continuation)
             status = 'AVAILABLE'
         except Exception:
             status = 'UNAVAILABLE'

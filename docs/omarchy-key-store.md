@@ -15,11 +15,25 @@ Saving a key performs no provider request and does not validate that key.
 
 ## One explicit collection, with observed protection
 
-Host-only provisioning creates a new name `CultureCabinet` followed by a UUID's
-32 lowercase hex characters. It does not adopt a pre-existing collection, use
-`login`/`session`/default aliases, scan collections or guess a suffixed filename.
-The selected object path must exactly match the new identifier and the exact
-formerly absent file in `/home/tang/.local/share/keyrings`.
+Host-only provisioning requests a fresh unique label: `CultureCabinet` followed
+by a UUID's 32 lowercase hex characters. A label is not a collection identifier.
+The helper calls standard D-Bus `CreateCollection` on its already verified
+same-UID connection, with only that Label property and an empty alias. It saves
+the actual returned collection reference, or the exact returned prompt reference
+before invoking Prompt once. Completed is subscribed on the same connection and
+main context, filtered to the unique service sender and exact prompt path. Only
+a nondismissed object-path result qualifies. That path is durably retained even
+if the method acknowledgement is subsequently lost, before any Collection proxy
+or metadata/file check. An unavailable GI convenience binding is not required.
+
+The actual returned collection component is decoded with GNOME's `_hh` escaping
+and must canonically re-encode to the identical path. Its bounded ASCII filename
+leaf must be safe and nonreserved. The exact object's Label must match the fresh
+nonce; ownership comes from the retained creation receipt, not Label alone.
+Only the decoded identifier plus `.keyring` in the registered directory becomes
+a candidate. No collection scan, default/session alias, lowercasing, suffix
+probe, adoption or guessed filename is permitted. A returned suffix is accepted
+only as part of the actual returned canonical identifier.
 
 GNOME alone displays the collection-password prompt. Cabinet never accepts that
 password in a form, pipe, argument, environment variable or configuration. Normal
@@ -38,9 +52,18 @@ bytes from offset zero of **only the registered file**. It checks owner, mode,
 link count, no-follow path and stable metadata around that read. GNOME's supported
 encrypted binary prefix is required; empty-password textual, short, foreign or
 changed files are unavailable. This follows the pinned GNOME 51.1 writer, not a
-permanent `protected=true` setting. If an empty collection is not materialized,
-provisioning may first store a fixed public canary; no generated master/API key is
-stored until the protection check passes. The canary is deleted afterward.
+permanent `protected=true` setting. Before generating a master, setup observes
+metadata of only the returned candidate, then writes one unique **public,
+nonsecret** canary without replacement. Its exact returned item and unexpected
+prompt references are retained before further inspection. The candidate must
+appear/change metadata and have the supported 20-byte encrypted prefix. Setup
+then deletes only that retained canary, confirms its absence through the new
+owned collection's Items property, and requires a second metadata change and
+the encrypted prefix again. An unrelated existing encrypted header alone cannot
+satisfy this association proof. Only then is the filename verified and the stage
+`FILE_BOUND`; master generation/write follows. Canary uncertainty, no observed
+change, lost reply, unexpected prompt or plaintext leaves setup unavailable and
+cannot trigger another canary write, master or collection creation.
 
 Checks repeat after mutations and reads, before a private result is released.
 Completed atomic file replacement is supported by reopening the same path; a
@@ -51,11 +74,41 @@ whole-file authenticity evidence.
 
 The nonsecret selection and setup provenance live in
 `/home/tang/.local/state/culture-cabinet-key-store/selection.json`, owned0600 in
-an owned0700 directory. An explicit `PROVISIONING` intent precedes the OS prompt;
-only completed setup publishes `ACTIVE`. Cancellation or uncertainty leaves the
-intent unavailable. Do not hand-edit it, stamp it protected, remove it to force a
-new collection, or retry uncertain provisioning automatically. The custodian must
-reconcile that exact named setup, with no unrelated collection discovery.
+an owned0700 directory. Selection schema `cabinet-key-store-selection/v2` separates
+requested label, operation UUID, unique service/caller provenance, actual prompt
+and collection references, decoded identifier, verified filename and canary
+reference. Unobserved values are null. Stages are `CREATE_PENDING`,
+`PROMPT_PENDING`, `CREATED_UNVERIFIED`, `FILE_BOUND`, `ACTIVE`. File-transition
+receipts and master phase are separate. A durable pending intent precedes each
+OS side effect. Only verified completed setup is ACTIVE; ordinary helper
+requests reject every pending stage and old v1 selections. Neither process death
+nor another terminal action resumes an uncertain setup or regenerates a master.
+The ordinary request/result protocol is unchanged.
+
+### The one abandoned pre-master dummy
+
+The failed operation `f6ed3437-1f93-4564-8a6d-e558e5dd6462` requested Label
+`CultureCabinetb6a176add3874980b388e8e1dd41cdd0`; its old source lost the actual
+returned path. The predicted path is unresolved. Its disposition is
+`ABANDONED_UNRESOLVED_POSSIBLE_DUMMY_ORPHAN`, not successful OS cleanup.
+
+After focused source acceptance and an explicit routed continuation, trusted
+terminal-only `retire_known_dummy(failure_receipt_bytes)` may archive **only**
+this pinned original v1 PROVISIONING file and exact failure receipt, matched by
+hard-coded SHA256 and operation UUID. It rechecks the one predicted object's
+negative observation and exact predicted file absence, writes/fsyncs a private
+read-only, never-overwritten archive, and CAS-retires only the unchanged local
+selection pointer. A changed pointer, post-master state, different receipt or
+resolvable prediction is refused. No OS collection/file is deleted, located,
+adopted or unlocked, and no real-key-bearing setup can use this disposition.
+The archive retains exact original bytes/UUID and both negative observations.
+
+A separate explicit `provision(continuation_archive=returned_uuid)` links one new
+nonce/operation to that archive. Merely finding the archive never triggers a new
+creation; missing/mismatched links are refused. No automatic retry exists. The
+normal `provision(timeout=120)` call and ordinary private RPC keep their existing
+behavior for installations without this failed-attempt archive. This source
+change does not itself execute retirement or another GNOME operation.
 
 ## Terminal closure, lock and restart
 

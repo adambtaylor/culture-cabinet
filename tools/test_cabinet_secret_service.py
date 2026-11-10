@@ -394,13 +394,14 @@ class ProtectionTests(unittest.TestCase):
         self.file = self.directory / (self.identifier + '.keyring')
         self.file.write_bytes(store.ENCRYPTED_PREFIX + b'OWNED DUMMY BODY MUST NOT BE READ')
         self.file.chmod(0o600)
-        self.selection = {'schema': 'cabinet-key-store-selection/v1', 'state': 'ACTIVE',
-            'identifier': self.identifier,
-            'collection_ref': '/org/freedesktop/secrets/collection/' + self.identifier,
-            'keyring_directory': str(self.directory),
-            'provisioning': {'operation_id': '10000000-0000-4000-8000-000000000001',
-                'service_owner': ':1.2', 'service_uid': 1000,
-                'implementation': 'gnome-keyring-51.1', 'absent_before_creation': True}}
+        self.selection = store._new_selection('10000000-0000-4000-8000-000000000001',
+            SimpleNamespace(owner=':1.2', connection=SimpleNamespace(get_unique_name=lambda: ':1.3')), None)
+        self.selection.update(state='ACTIVE', requested_label='CultureCabinet' + '2' * 32,
+            returned_collection_ref=store.COLLECTION_ROOT + self.identifier,
+            decoded_identifier=self.identifier, verified_filename=self.identifier + '.keyring',
+            canary_ref=store.COLLECTION_ROOT + self.identifier + '/1', canary_state='DELETED',
+            master_phase='PRESENT', keyring_directory=str(self.directory),
+            file_binding={'before': None, 'created': list(range(9)), 'deleted': list(range(1, 10))})
         self.enterContext(patch.object(store, 'KEYRING_DIRECTORY', str(self.directory)))
         # Temporary fixture parents are intentionally not a host trust path.
         # Only this unit fixture substitutes the checked directory opener.
@@ -429,14 +430,14 @@ class ProtectionTests(unittest.TestCase):
                 self.assertEqual(error.exception.status, 'UNAVAILABLE')
 
     def test_selection_requires_new_exact_mapping_and_provisioning_provenance(self):
-        for changes in ({'identifier': 'login'}, {'collection_ref': self.selection['collection_ref'] + '_1'},
+        for changes in ({'decoded_identifier': 'login'}, {'returned_collection_ref': self.selection['returned_collection_ref'] + '_1'},
                         {'keyring_directory': '/foreign'}, {'protection': True}, {'state': 'UNPROVED'}):
             with self.subTest(changes=changes), self.assertRaises(store.Refused):
                 store._probe_protection({**self.selection, **changes})
-        for changes in ({'absent_before_creation': False}, {'service_uid': 0},
+        for changes in ({'caller': 'not-unique'}, {'service_uid': 0},
                         {'implementation': 'gnome-keyring-foreign'}, {'service_owner': 'not-unique'}):
             altered = deepcopy(self.selection)
-            altered['provisioning'].update(changes)
+            altered['service_provenance'].update(changes)
             with self.subTest(changes=changes), self.assertRaises(store.Refused):
                 store._probe_protection(altered)
 
@@ -596,14 +597,14 @@ class CollectionProxyInterfaceTests(unittest.TestCase):
         backend = object.__new__(store._SecretBackend)
         backend.connection, backend.owner = object(), ':1.2'
         backend.service, backend.path = object(), '/org/freedesktop/secrets/collection/CultureCabinet' + '1' * 32
-        backend.selection = {'identifier': 'CultureCabinet' + '1' * 32}
+        backend.selection = {'requested_label': 'CultureCabinet' + '1' * 32}
         parameters = []
         def collection(**kwargs):
             parameters.append(kwargs)
             # The real raw GI proxy lacks a default interface; omitting it sent
             # NULL as the GetAll interface in the actual owned OS regression.
             store.require(kwargs.get('g_interface_name') == 'org.freedesktop.Secret.Collection')
-            return SimpleNamespace(get_label=lambda: backend.selection['identifier'])
+            return SimpleNamespace(get_label=lambda: backend.selection['requested_label'])
         backend.Secret = SimpleNamespace(Collection=collection, CollectionFlags=SimpleNamespace(NONE=0))
         backend.Gio = SimpleNamespace(DBusProxyFlags=SimpleNamespace(DO_NOT_AUTO_START=4))
         backend._initialize = lambda proxy: None
@@ -694,21 +695,386 @@ class HostProvisionTests(unittest.TestCase):
                 return original_stat(path, *args, **kwargs)
             def connect(backend, deadline):
                 backend.owner = ':1.2'
+                backend.connection = SimpleNamespace(get_unique_name=lambda: ':1.3')
+                from gi.repository import GLib
+                backend.GLib = GLib
+                backend._dbus = lambda *args: (_ for _ in ()).throw(store.Refused())
                 backend.async_ = SimpleNamespace(call=lambda *args: (_ for _ in ()).throw(store.Refused()))
             with patch.object(store.os, 'isatty', return_value=True), \
                  patch.object(store.os, 'stat', side_effect=no_existing_selection), \
                  patch.object(store, 'mutation_lock', side_effect=lambda deadline: nullcontext()), \
                  patch.object(store._SecretBackend, '_connect', connect), \
                  patch.object(store._SecretBackend, '_verify_service'), \
+                 patch.object(store, '_check_continuation'), \
                  patch.object(store, '_open_checked_directory', side_effect=lambda path: os.open(directory, os.O_RDONLY)), \
                  patch.object(store, '_publish_selection', return_value=()) as publish, \
                  patch.object(store, '_probe_protection') as probe, \
                  patch.object(Fernet, 'generate_key') as generate, self.assertRaises(store.Refused):
                 store._provision_worker('10000000-0000-4000-8000-000000000001', time.monotonic() + 1)
-            self.assertEqual(publish.call_args.args[0]['state'], 'PROVISIONING')
-            self.assertTrue(publish.call_args.args[0]['provisioning']['absent_before_creation'])
+            self.assertEqual(publish.call_args.args[0]['state'], 'CREATE_PENDING')
+            self.assertIsNone(publish.call_args.args[0]['returned_collection_ref'])
+            self.assertEqual(publish.call_args.args[0]['terminal_fact'], 'UNCERTAIN_OR_REFUSED')
             probe.assert_not_called()
             generate.assert_not_called()
+
+
+class CreationProvenanceTests(unittest.TestCase):
+    """Real GLib variants and owned format files; no Secret Service connection."""
+    def setUp(self):
+        from gi.repository import GLib
+        self.GLib = GLib
+        self.temporary = tempfile.TemporaryDirectory(prefix='cabinet-DUMMY-PROVENANCE-')
+        self.addCleanup(self.temporary.cleanup)
+        self.directory = Path(self.temporary.name)
+        self.path = store.COLLECTION_ROOT + 'returned_5fid_2d7'
+        self.file = self.directory / 'returned_id-7.keyring'
+        self.item = self.path + '/1'
+        self.calls, self.receipts = [], []
+        self.creation_reply = (self.path, '/')
+        self.item_reply = (self.item, '/')
+        self.delete_reply = '/'
+        self.items = []
+        self.change_create, self.change_delete, self.plaintext = True, True, False
+        self.backend = object.__new__(store._SecretBackend)
+        self.backend.owner = ':1.2'
+        self.backend.connection = SimpleNamespace(get_unique_name=lambda: ':1.3')
+        self.backend.GLib = GLib
+        self.backend._verify_service = lambda: None
+        self.backend._dbus = self.dbus
+        self.backend.async_ = SimpleNamespace(prompt=lambda *args: self.path)
+        self.enterContext(patch.object(store, 'KEYRING_DIRECTORY', str(self.directory)))
+        self.enterContext(patch.object(store, '_open_checked_directory',
+            side_effect=lambda path: os.open(self.directory, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)))
+        def publish(value, **kwargs):
+            store._selection_shape(value, allow_pending=True)
+            self.receipts.append(deepcopy(value))
+            return (len(self.receipts),)
+        self.enterContext(patch.object(store, '_publish_selection', side_effect=publish))
+        self.creation = store._Creation(self.backend, '10000000-0000-4000-8000-000000000001', None)
+
+    def write(self, suffix):
+        self.file.write_bytes((b'[keyring]\n' if self.plaintext else store.ENCRYPTED_PREFIX) + suffix)
+        self.file.chmod(0o600)
+
+    def dbus(self, owner, path, interface, method, parameters):
+        self.calls.append((owner, path, interface, method, parameters))
+        V = self.GLib.Variant
+        if method == 'CreateCollection':
+            self.assertEqual(parameters.unpack(),
+                ({'org.freedesktop.Secret.Collection.Label': self.creation.selection['requested_label']}, ''))
+            return V('(oo)', self.creation_reply)
+        if method == 'Get':
+            prop = parameters.unpack()[1]
+            if prop == 'Label':
+                # Returned identity MUST already be durable before metadata.
+                self.assertEqual(self.receipts[-1]['returned_collection_ref'], self.path)
+                return V('(v)', (V('s', self.creation.selection['requested_label']),))
+            self.assertEqual(path, self.path)
+            return V('(v)', (V('ao', self.items),))
+        if method == 'OpenSession':
+            return V('(vo)', (V('s', ''), '/org/freedesktop/secrets/session/owned'))
+        if method == 'CreateItem':
+            self.assertFalse(parameters.unpack()[-1])
+            self.items = [self.item]
+            if self.change_create:
+                self.write(b'PUBLIC CANARY CREATED')
+            return V('(oo)', self.item_reply)
+        if method == 'Delete':
+            self.assertEqual(path, self.item)
+            self.assertEqual(self.receipts[-1]['canary_ref'], self.item)
+            self.assertEqual(self.receipts[-1]['canary_state'], 'DELETE_PENDING')
+            self.items = []
+            if self.change_delete:
+                self.write(b'PUBLIC CANARY DELETED DIFFERENT SIZE')
+            return V('(o)', (self.delete_reply,))
+        if method == 'Close':
+            return V('()', ())
+        raise AssertionError(method)
+
+    def test_returned_identifier_differs_from_label_and_actual_canary_binds_file(self):
+        self.creation.create()
+        self.assertNotEqual(self.creation.selection['requested_label'], 'returned_id-7')
+        self.assertEqual(self.creation.selection['decoded_identifier'], 'returned_id-7')
+        with patch.object(store.os, 'pread', wraps=os.pread) as reads:
+            self.creation.bind_file()
+            store._probe_protection(self.creation.selection)
+        self.assertEqual(self.creation.selection['state'], 'FILE_BOUND')
+        self.assertEqual(self.creation.selection['master_phase'], 'NOT_STARTED')
+        self.assertTrue(all(call.args[1:] == (20, 0) for call in reads.call_args_list))
+        self.assertEqual([call[1] for call in self.calls if call[3] == 'Delete'], [self.item])
+
+    def test_capture_precedes_label_or_proxy_failure_and_never_derives_filename(self):
+        original = self.backend._dbus
+        def fail_label(*args):
+            if args[3] == 'Get':
+                raise store.Refused()
+            return original(*args)
+        self.backend._dbus = fail_label
+        with self.assertRaises(store.Refused):
+            self.creation.create()
+        self.assertEqual(self.receipts[-1]['returned_collection_ref'], self.path)
+        self.assertIsNone(self.receipts[-1]['decoded_identifier'])
+        self.assertFalse(self.file.exists())
+
+    def test_prompt_reference_precedes_one_prompt_and_result_precedes_metadata(self):
+        prompt = '/org/freedesktop/secrets/prompt/owned'
+        self.creation_reply = ('/', prompt)
+        observed = []
+        def run_prompt(connection, owner, path, *, capture):
+            self.assertEqual((connection, owner, path), (self.backend.connection, ':1.2', prompt))
+            self.assertEqual(self.receipts[-1]['state'], 'PROMPT_PENDING')
+            self.assertEqual(self.receipts[-1]['returned_prompt_ref'], prompt)
+            observed.append(path)
+            capture(self.path)
+            return self.path
+        self.backend.async_.prompt = run_prompt
+        self.creation.create()
+        self.assertEqual(observed, [prompt])
+        self.assertEqual(self.receipts[-1]['returned_collection_ref'], self.path)
+
+    def test_lost_prompt_retains_pending_without_another_create(self):
+        self.creation_reply = ('/', '/org/freedesktop/secrets/prompt/owned')
+        self.backend.async_.prompt = lambda *args, **kwargs: (_ for _ in ()).throw(store.Refused())
+        with self.assertRaises(store.Refused):
+            self.creation.create()
+        self.assertEqual(self.receipts[-1]['state'], 'PROMPT_PENDING')
+        self.assertIsNone(self.receipts[-1]['returned_collection_ref'])
+        self.assertEqual([call[3] for call in self.calls], ['CreateCollection'])
+
+    def test_header_without_create_transition_cannot_bind_or_initialize_master(self):
+        self.creation.create()
+        self.write(b'EXISTING ENCRYPTED HEADER')
+        self.change_create = False
+        with patch.object(Fernet, 'generate_key') as generate, self.assertRaises(store.Refused):
+            self.creation.bind_file()
+        generate.assert_not_called()
+        self.assertEqual(self.receipts[-1]['canary_ref'], self.item)
+        self.assertEqual(self.receipts[-1]['state'], 'CREATED_UNVERIFIED')
+        self.assertNotIn('Delete', [call[3] for call in self.calls])
+
+    def test_real_provisioning_flow_never_generates_master_when_canary_association_fails(self):
+        from contextlib import nullcontext
+        self.write(b'UNRELATED ENCRYPTED FILE')
+        self.change_create = False
+        original_stat, creation_type = os.stat, store._Creation
+        def stat_without_selection(path, *args, **kwargs):
+            if path == store.SELECTION:
+                raise FileNotFoundError()
+            return original_stat(path, *args, **kwargs)
+        def connect(backend, deadline):
+            backend.__dict__.update(self.backend.__dict__)
+            self.backend = backend
+        def create(backend, operation_id, continuation):
+            self.creation = creation_type(backend, operation_id, continuation)
+            return self.creation
+        with patch.object(store.os, 'isatty', return_value=True), \
+             patch.object(store.os, 'stat', side_effect=stat_without_selection), \
+             patch.object(store, 'mutation_lock', side_effect=lambda deadline: nullcontext()), \
+             patch.object(store, '_check_continuation'), \
+             patch.object(store, '_Creation', side_effect=create), \
+             patch.object(store._SecretBackend, '_connect', connect), \
+             patch.object(store._SecretBackend, '_open_collection') as open_proxy, \
+             patch.object(Fernet, 'generate_key') as generate, self.assertRaises(store.Refused):
+            store._provision_worker('10000000-0000-4000-8000-000000000002', time.monotonic() + 1)
+        generate.assert_not_called()
+        open_proxy.assert_not_called()
+        self.assertEqual(self.receipts[-1]['terminal_fact'], 'UNCERTAIN_OR_REFUSED')
+        self.assertEqual(self.receipts[-1]['canary_ref'], self.item)
+        self.assertEqual(self.receipts[-1]['master_phase'], 'NOT_STARTED')
+
+    def assert_bind_refused_once(self):
+        with self.assertRaises(store.Refused):
+            self.creation.bind_file()
+        self.assertEqual(self.creation.selection['state'], 'CREATED_UNVERIFIED')
+        self.assertEqual(self.creation.selection['master_phase'], 'NOT_STARTED')
+        self.assertEqual(sum(call[3] == 'CreateItem' for call in self.calls), 1)
+
+    def test_delete_prompt_prevents_file_bound(self):
+        self.creation.create()
+        self.delete_reply = '/org/freedesktop/secrets/prompt/delete'
+        self.assert_bind_refused_once()
+        self.assertEqual(self.creation.selection['canary_prompt_ref'], self.delete_reply)
+
+    def test_delete_without_file_transition_prevents_file_bound(self):
+        self.creation.create()
+        self.change_delete = False
+        self.assert_bind_refused_once()
+
+    def test_plaintext_after_canary_prevents_file_bound(self):
+        self.creation.create()
+        self.plaintext = True
+        self.assert_bind_refused_once()
+
+    def test_unexpected_canary_prompt_retains_both_refs_without_delete_or_retry(self):
+        self.creation.create()
+        self.item_reply = (self.item, '/org/freedesktop/secrets/prompt/canary')
+        with self.assertRaises(store.Refused):
+            self.creation.bind_file()
+        self.assertEqual(self.receipts[-1]['canary_ref'], self.item)
+        self.assertEqual(self.receipts[-1]['canary_prompt_ref'], self.item_reply[1])
+        self.assertEqual(sum(call[3] == 'CreateItem' for call in self.calls), 1)
+        self.assertNotIn('Delete', [call[3] for call in self.calls])
+
+    def test_canonical_decoder_refuses_alias_traversal_noncanonical_and_unsafe_leaves(self):
+        for component in ('login', 'session', 'default', '_2ehidden', 'a_2fescape', 'a_5cescape',
+                          'a_00b', 'a_2e_2eb', 'a_41', 'a_5Fid', 'a_', 'x' * 129, 'a/b'):
+            with self.subTest(component=component), self.assertRaises(store.Refused):
+                store._decode_collection_ref(store.COLLECTION_ROOT + component)
+        self.assertEqual(store._decode_collection_ref(self.path), 'returned_id-7')
+
+
+class PromptSignalTests(unittest.TestCase):
+    def test_completed_identity_is_captured_even_when_method_acknowledgement_is_lost(self):
+        worker = store._Async(time.monotonic() + .02)
+        V = worker.GLib.Variant
+        returned = store.COLLECTION_ROOT + 'owned'
+        captured = []
+        class LostAcknowledgement:
+            def signal_subscribe(self, *args):
+                self.callback = args[-2]
+                return 1
+            def call(self, owner, path, interface, method, *args):
+                self.callback(self, owner, path, interface, 'Completed',
+                              V('(bv)', (False, V('o', returned))))
+            def signal_unsubscribe(self, subscription):
+                pass
+        with self.assertRaises(store.Refused):
+            worker.prompt(LostAcknowledgement(), ':1.2', '/org/freedesktop/secrets/prompt/owned',
+                          capture=captured.append)
+        self.assertEqual(captured, [returned])
+
+    def test_exact_sender_path_subscription_precedes_prompt_and_accepts_both_reply_orders(self):
+        for completed_first in (True, False):
+            worker = store._Async(time.monotonic() + 1)
+            GLib = worker.GLib
+            path = '/org/freedesktop/secrets/prompt/owned'
+            result_path = store.COLLECTION_ROOT + 'returned'
+            events = []
+            class Connection:
+                def signal_subscribe(self, sender, interface, signal, object_path, arg, flags, callback, data):
+                    self.callback = callback
+                    self.context = GLib.MainContext.get_thread_default()
+                    events.append(('subscribe', sender, object_path))
+                    return 7
+                def call(self, owner, target, interface, method, parameters, *args):
+                    done = args[-2]
+                    events.append(('call', method))
+                    valid = GLib.Variant('(bv)', (False, GLib.Variant('o', result_path)))
+                    # A forged sender/path cannot supply the selected identity.
+                    self.callback(self, ':9.9', path, interface, 'Completed', valid)
+                    self.callback(self, owner, path + 'Other', interface, 'Completed', valid)
+                    actions = [lambda: self.callback(self, owner, target, interface, 'Completed', valid),
+                               lambda: done(self, object())]
+                    if not completed_first:
+                        actions.reverse()
+                    for action in actions:
+                        source = GLib.idle_source_new()
+                        source.set_callback(lambda *args, action=action: (action(), False)[1])
+                        source.attach(self.context)
+                def call_finish(self, reply):
+                    return GLib.Variant('()', ())
+                def signal_unsubscribe(self, subscription):
+                    events.append(('unsubscribe', subscription))
+            connection = Connection()
+            self.assertEqual(worker.prompt(connection, ':1.2', path), result_path)
+            self.assertEqual(events, [('subscribe', ':1.2', path), ('call', 'Prompt'), ('unsubscribe', 7)])
+
+    def test_dismissed_wrong_type_root_and_missing_completion_are_unavailable(self):
+        worker = store._Async(time.monotonic() + .02)
+        V = worker.GLib.Variant
+        for reply in (V('(bv)', (True, V('o', store.COLLECTION_ROOT + 'owned'))),
+                      V('(bv)', (False, V('s', store.COLLECTION_ROOT + 'owned'))),
+                      V('(bv)', (False, V('o', '/'))), V('(s)', ('wrong',))):
+            with self.assertRaises(store.Refused):
+                store._prompt_collection_result(reply)
+        class NeverCompletes:
+            def signal_subscribe(self, *args):
+                return 1
+            def call(self, *args):
+                self.cancel = args[-3]
+            def signal_unsubscribe(self, subscription):
+                self.unsubscribed = subscription
+        connection = NeverCompletes()
+        with self.assertRaises(store.Refused):
+            worker.prompt(connection, ':1.2', '/org/freedesktop/secrets/prompt/owned')
+        self.assertTrue(connection.cancel.is_cancelled())
+        self.assertEqual(connection.unsubscribed, 1)
+
+
+class DummyRetirementTests(unittest.TestCase):
+    def setUp(self):
+        from contextlib import nullcontext
+        self.temp = tempfile.TemporaryDirectory(prefix='cabinet-DUMMY-RETIRE-')
+        self.addCleanup(self.temp.cleanup)
+        self.directory = Path(self.temp.name)
+        self.pointer = self.directory / 'selection.json'
+        self.original = store.canonical({'schema': 'cabinet-key-store-selection/v1', 'state': 'PROVISIONING',
+            'identifier': store.OLD_DUMMY_ID, 'collection_ref': store.COLLECTION_ROOT + store.OLD_DUMMY_ID,
+            'provisioning': {'operation_id': store.OLD_DUMMY_OPERATION}})
+        self.failure = b'{"status":"UNAVAILABLE","master_stored":false}\n'
+        self.pointer.write_bytes(self.original); self.pointer.chmod(0o600)
+        for name, value in (('SELECTION', str(self.pointer)),
+                            ('OLD_SELECTION_SHA', hashlib.sha256(self.original).hexdigest()),
+                            ('OLD_FAILURE_SHA', hashlib.sha256(self.failure).hexdigest())):
+            self.enterContext(patch.object(store, name, value))
+        self.enterContext(patch.object(store.os, 'isatty', return_value=True))
+        self.enterContext(patch.object(store, 'mutation_lock', side_effect=lambda deadline: nullcontext()))
+        self.enterContext(patch.object(store, '_open_checked_directory',
+            side_effect=lambda path: os.open(self.directory, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)))
+        self.enterContext(patch.object(store._SecretBackend, '_connect'))
+        self.unresolved = self.enterContext(patch.object(store._SecretBackend, '_predicted_dummy_unresolved', return_value=True))
+        self.enterContext(patch.object(store, '_observe_file', return_value=None))
+
+    def test_exact_pre_master_archive_preserves_bytes_and_requires_explicit_link_for_next_setup(self):
+        reference = store.retire_known_dummy(self.failure)
+        self.assertEqual(reference, store.OLD_DUMMY_OPERATION)
+        self.assertFalse(self.pointer.exists())
+        archive_file = self.directory / store._archive_name()
+        self.assertEqual(archive_file.stat().st_mode & 0o777, 0o400)
+        archive = store._validate_archive(archive_file.read_bytes())
+        self.assertEqual(archive['original_selection'].encode(), self.original)
+        self.assertEqual(archive['failure_receipt'].encode(), self.failure)
+        self.assertFalse(archive['os_orphan_deleted'])
+        with self.assertRaises(store.Refused):
+            store._check_continuation(None)
+        store._check_continuation(reference)
+
+    def assert_retirement_refused(self, failure=None):
+        with self.assertRaises(store.Refused):
+            store.retire_known_dummy(self.failure if failure is None else failure)
+        self.assertTrue(self.pointer.exists())
+        self.assertFalse((self.directory / store._archive_name()).exists())
+
+    def test_changed_pointer_cannot_retire(self):
+        self.pointer.write_bytes(self.original + b' ')
+        self.assert_retirement_refused()
+
+    def test_post_master_cannot_retire_even_with_matching_test_hash(self):
+        changed = json.loads(self.original); changed['state'] = 'ACTIVE'
+        raw = store.canonical(changed); self.pointer.write_bytes(raw)
+        with patch.object(store, 'OLD_SELECTION_SHA', hashlib.sha256(raw).hexdigest()):
+            self.assert_retirement_refused()
+
+    def test_resolvable_prediction_cannot_retire(self):
+        self.unresolved.return_value = False
+        self.assert_retirement_refused()
+
+    def test_wrong_failure_receipt_cannot_retire(self):
+        self.assert_retirement_refused(b'wrong')
+
+    def test_pointer_change_after_archive_is_not_unlinked_and_archive_is_retained(self):
+        read = store._read_private_at
+        calls = []
+        def race(directory, name, *args):
+            if name == 'selection.json':
+                calls.append(name)
+                if len(calls) == 2:
+                    self.pointer.write_bytes(self.original + b' ')
+            return read(directory, name, *args)
+        with patch.object(store, '_read_private_at', side_effect=race), self.assertRaises(store.Refused):
+            store.retire_known_dummy(self.failure)
+        self.assertEqual(self.pointer.read_bytes(), self.original + b' ')
+        self.assertTrue((self.directory / store._archive_name()).exists())
 
 
 class FileDummyCollection(DummyCollection):
