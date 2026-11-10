@@ -45,12 +45,15 @@ def parse_listing(raw, *, retrieved_at, provenance):
         if clocks:
             date_label = label(date_label + ' ' + _one(clocks).text())
         local_start = node.find(css='event-time-localized-start')
+        ambiguous_clock = False
         if local_start and start and re.fullmatch(r'\d{4}-\d{2}-\d{2}', start):
             clock = _one(local_start).text()
             match = re.fullmatch(r'(1[0-2]|[1-9]):([0-5][0-9])\s*([AP]M)', clock, re.I)
             if match:
                 hour = int(match[1]) % 12 + (12 if match[3].upper() == 'PM' else 0)
                 start = f'{start}T{hour:02}:{match[2]}:00'
+            else:
+                ambiguous_clock = True
         notices = node.find(css='eventlist-meta-status')
         notice = label(_one(notices).text()) if notices else ''
         url = urljoin(LISTING_URL, anchor.attrs.get('href', ''))
@@ -61,8 +64,17 @@ def parse_listing(raw, *, retrieved_at, provenance):
                'status': {'cancelled': 'cancelled', 'postponed': 'postponed'}.get(notice.casefold())}
         base = _official_event(row, 'venue303', SOURCES['venue303'], retrieved_at,
                                provenance, digest, position, False)
-        event = occurrence_event(ListingEvent(**base.__dict__, listed_date=date_label, source_notice=notice))
+        event = occurrence_event(ListingEvent(**base.__dict__, listed_date=date_label, source_notice=notice),
+                                 unresolved=ambiguous_clock)
         events.append(event)
+    # Repeated day-only cards sharing a show URL cannot prove one session on
+    # that day. Retain separate observations rather than merge or guess clocks.
+    day_counts = {}
+    for event in events:
+        if event.occurrence_basis in ('explicit_date', 'explicit_range'):
+            day_counts[event.occurrence_ref] = day_counts.get(event.occurrence_ref, 0) + 1
+    events = [occurrence_event(event, unresolved=True) if day_counts.get(event.occurrence_ref, 0) > 1
+              else event for event in events]
     # Reconcile cancellations/updates before the local date-window projection.
     today = now.astimezone(MELBOURNE).date()
     latest = today + timedelta(weeks=8)

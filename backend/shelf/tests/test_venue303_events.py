@@ -64,3 +64,10 @@ class Venue303Tests(TestCase):
                     listing(card(url='https://evil.invalid/event'))):
             with self.subTest(raw=raw[:25]), self.assertRaises((SourceError, UnicodeError)):
                 self.parse(raw)
+
+    def test_day_only_or_unrecognized_clock_duplicates_stay_unresolved_observations(self):
+        for raw in (listing(card(), card()), listing(card(clock='late'), card(clock='later'))):
+            events = self.parse(raw)
+            self.assertEqual(len(events), 2)
+            self.assertNotEqual(events[0].key, events[1].key)
+            self.assertTrue(all(e.occurrence_basis == 'unresolved_observation' for e in events))

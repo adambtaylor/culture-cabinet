@@ -57,3 +57,17 @@ class ListingTransportTests(TestCase):
         with patch.object(transport, '_reserve'), \
              patch.object(transport, '_send', return_value=(200, b'<html>challenge</html>')):
             with self.assertRaises(SourceError): transport.observe_robots('venue303')
+
+    def test_stricter_policy_is_visible_to_a_fresh_process(self):
+        import subprocess, sys
+        with patch.dict(transport._DELAYS, {'venue303': 10}), patch.object(transport, '_send',
+                return_value=(200, b'User-agent: *\nCrawl-delay: 20\n')):
+            transport.observe_robots('venue303')
+        code = ('import sys\nsys.path.insert(0,sys.argv[1])\n'
+                'from shelf import event_listing_transport as t\nt._RATE_DIRECTORY=sys.argv[2]\n'
+                'try:t._reserve("venue303")\nexcept t.ListingIntervalPending:sys.exit(0)\n'
+                'else:sys.exit(9)\n')
+        run = subprocess.run([sys.executable, '-B', '-c', code,
+            str(Path(transport.__file__).resolve().parents[1]), self.directory.name],
+            capture_output=True, timeout=5)
+        self.assertEqual(run.returncode, 0, run.stderr.decode())

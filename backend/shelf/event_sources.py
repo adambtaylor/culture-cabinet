@@ -146,14 +146,17 @@ class ListingEvent(EventCandidate):
         return f'Source lists {self.listed_date or "unknown date"}; {precision}; {scope}.{notice}'
 
 
-def occurrence_event(event, *, session_id=None):
+def occurrence_event(event, *, session_id=None, unresolved=False):
     """Bind one explicitly observed occurrence, never a show URL alias.
 
     Local clocks may distinguish labelled sessions even if their timezone is
     unknown. Unresolved dates instead identify only this snapshot/position.
     """
     evidence, = event.evidence
-    if session_id is not None:
+    if unresolved:
+        basis = 'unresolved_observation'
+        discriminator = f'{evidence.snapshot_sha256}\0{evidence.position}'
+    elif session_id is not None:
         basis, discriminator = 'source_session_id', label(session_id)
     elif event.source_start:
         basis = ('explicit_range' if event.source_end else
