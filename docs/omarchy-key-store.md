@@ -132,6 +132,22 @@ pending receipt precedes replace/delete so failure cannot silently reuse the old
 key. Deletion retains an encrypted operation receipt; explicit re-enrollment must
 CAS against its tombstone revision, not pretend the record never existed.
 
+The producer exports `DELETE_NO_EFFECT_GUARANTEE = direct-delete-locked/v1`.
+A completed, validated **direct delete** result `LOCKED/null/null` means this
+invocation did not attempt an intent or target write. After a write may start,
+even a LOCKED-labelled error returns UNKNOWN. This does not establish that an
+earlier invocation of the same UUID had no effect.
+
+Only the native layer, with no prior uncertain invocation, may durably record the
+matching nonsecret proof (schema, original operation UUID, canonical complete
+delete-request SHA256, helper guarantee). A later explicit Remove command must
+recheck current authority and atomically consume that proof **before IPC**, then
+send the identical original binding/UUID/predecessor. Another verified direct
+LOCKED may restore it. UNKNOWN, missing/malformed replies, receipt absence,
+reconcile/status/read LOCKED or historical logs are never proof and never permit
+a blind retry. Old pending rows are not backfilled. These native transitions are
+separate from the helper's unchanged five-field response and RPC version.
+
 Mutations and reads share the checked empty0600 `control.lock` inside
 `/run/user/1000/culture-cabinet-key-store` (owned0700). This is only a writer lock,
 not another credential file. Same-UID malicious processes and OS administrators

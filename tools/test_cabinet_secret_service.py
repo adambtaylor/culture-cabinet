@@ -33,6 +33,7 @@ class DummyCollection:
         self.key, self.items = Fernet.generate_key(), {}
         self.state, self.loads = 'AVAILABLE', 0
         self.sets, self.deletes, self.fail_after_set, self.fail_after_delete = 0, 0, None, False
+        self.failure_status = 'UNAVAILABLE'
 
     def available(self):
         store.require(self.state == 'AVAILABLE', self.state)
@@ -57,14 +58,14 @@ class DummyCollection:
         self.items[kind, binding, slot] = value
         self.sets += 1
         if self.sets == self.fail_after_set:
-            raise store.Refused()
+            raise store.Refused(self.failure_status)
 
     def delete(self, kind, binding, slot):
         self.available()
         self.items.pop((kind, binding, slot), None)
         self.deletes += 1
         if self.fail_after_delete:
-            raise store.Refused()
+            raise store.Refused(self.failure_status)
 
 
 def request(operation='put', *, previous=None, operation_id='10000000-0000-4000-8000-000000000001'):
@@ -201,6 +202,65 @@ class SecretStoreTests(unittest.TestCase):
         self.collection.state = 'LOCKED'
         self.assertEqual(self.execute(request('availability'))['status'], 'LOCKED')
 
+    def test_direct_delete_locked_is_pre_intent_zero_effect_for_this_invocation_only(self):
+        saved = self.execute(request())
+        before, writes, deletes = dict(self.collection.items), self.collection.sets, self.collection.deletes
+        self.collection.state = 'LOCKED'
+        deletion = request('delete', previous=saved['revision'],
+                           operation_id='10000000-0000-4000-8000-000000000002')
+        result = self.execute(deletion)
+        self.assertEqual(result, {'version': store.VERSION, 'operation_id': deletion['operation_id'],
+                                  'status': 'LOCKED', 'revision': None, 'record': None})
+        self.assertEqual(self.collection.items, before)
+        self.assertEqual((self.collection.sets, self.collection.deletes), (writes, deletes))
+        self.assertEqual(store.DELETE_NO_EFFECT_GUARANTEE, 'direct-delete-locked/v1')
+        # The native layer owns current authority and consume-before-IPC proof.
+        # Only that explicit later command may send this exact request again.
+        self.collection.state = 'AVAILABLE'
+        removed = self.execute(deletion)
+        self.assertEqual(removed['status'], 'REMOVED')
+        self.assertEqual(self.collection.deletes, deletes + 1)
+        self.assertEqual(self.execute({**deletion, 'operation': 'reconcile'}), removed)
+        self.assertEqual(self.collection.deletes, deletes + 1)
+
+    def test_post_intent_locked_label_is_unknown_including_delete_after_effect(self):
+        saved = self.execute(request())
+        deletion = request('delete', previous=saved['revision'],
+                           operation_id='10000000-0000-4000-8000-000000000002')
+        self.collection.failure_status = 'LOCKED'
+        self.collection.fail_after_set = self.collection.sets + 1
+        result = self.execute(deletion)
+        self.assertEqual((result['status'], result['revision'], result['record']), ('UNKNOWN', None, None))
+        self.assertEqual(self.execute({**deletion, 'operation': 'reconcile'})['status'], 'UNKNOWN')
+        self.assertEqual(self.collection.deletes, 0)
+        # A separate fixture covers a LOCKED-labelled failure after target
+        # deletion. It still cannot supply a no-effect token.
+        self.collection = DummyCollection(); self.engine = store.Store(self.collection)
+        saved = self.execute(request())
+        deletion['expected_revision'] = saved['revision']
+        self.collection.failure_status, self.collection.fail_after_delete = 'LOCKED', True
+        result = self.execute(deletion)
+        self.assertEqual((result['status'], result['revision'], result['record']), ('UNKNOWN', None, None))
+        self.assertEqual(self.collection.deletes, 1)
+        self.assertEqual(self.execute({**deletion, 'operation': 'reconcile'})['status'], 'REMOVED')
+        self.assertEqual(self.collection.deletes, 1)
+
+    def test_later_direct_locked_does_not_erase_an_earlier_unknown_intent(self):
+        saved = self.execute(request())
+        deletion = request('delete', previous=saved['revision'],
+                           operation_id='10000000-0000-4000-8000-000000000002')
+        self.collection.fail_after_set = self.collection.sets + 1
+        self.assertEqual(self.execute(deletion)['status'], 'UNKNOWN')
+        writes = self.collection.sets
+        self.collection.state = 'LOCKED'
+        self.assertEqual(self.execute(deletion)['status'], 'LOCKED')
+        self.assertEqual(self.collection.sets, writes)
+        self.collection.state = 'AVAILABLE'
+        # Native must not manufacture proof from that later locked result: the
+        # original uncertain lineage remains pending, and reconcile is UNKNOWN.
+        self.assertEqual(self.execute({**deletion, 'operation': 'reconcile'})['status'], 'UNKNOWN')
+        self.assertEqual(self.collection.deletes, 0)
+
     def test_strict_frame_schema_and_utf8_secret_byte_limit(self):
         valid = request()
         frame = store.encode_frame(valid)
@@ -309,6 +369,19 @@ raw=json.dumps(reply).encode();os.write(write_fd,struct.pack('!I',len(raw))+raw)
         for fd in allocated:
             with self.assertRaises(OSError):
                 os.fstat(fd)
+
+    def test_malformed_locked_or_lost_direct_delete_reply_is_unknown_never_proof(self):
+        deletion = request('delete', previous='50000000-0000-4000-8000-000000000001')
+        suffix = '''reply={'version':value['version'],'operation_id':value['operation_id'],
+ 'status':'LOCKED','revision':'60000000-0000-4000-8000-000000000001','record':None}
+raw=json.dumps(reply).encode();os.write(write_fd,struct.pack('!I',len(raw))+raw)
+'''
+        with self.fake_child(suffix):
+            result = store.invoke(deletion)
+        self.assertEqual((result['status'], result['revision'], result['record']), ('UNKNOWN', None, None))
+        with self.fake_child('os._exit(1)\n'):
+            result = store.invoke(deletion)
+        self.assertEqual((result['status'], result['revision'], result['record']), ('UNKNOWN', None, None))
 
 
 class ProtectionTests(unittest.TestCase):
