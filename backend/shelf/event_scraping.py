@@ -6,8 +6,9 @@ Site parsers retain their own identity, date and coverage semantics.
 from datetime import datetime
 
 from shelf.discovery_sources import Outcome, SourceError
+from shelf.discovery_transport import PBSIntervalPending
 
-IMPLEMENTED_SOURCES = frozenset({'rrr'})
+IMPLEMENTED_SOURCES = frozenset({'rrr', 'pbs'})
 
 
 def collect(source_id, *, now):
@@ -24,9 +25,20 @@ def collect(source_id, *, now):
         # Resolve existing fixed seams at call time: tests can replace transport
         # without adding an arbitrary URL/credential interface to production.
         from shelf import discovery_transport
-        from shelf.rrr_events import parse_listing
+        if source_id == 'rrr':
+            from shelf.rrr_events import parse_listing
+            read = discovery_transport.rrr
+            message = ('Partial coverage: up to nine cards from one Triple R listing page. '
+                       'Source dates omit the year; upcoming status and ticket availability unverified.')
+        else:
+            from shelf.pbs_events import parse_listing
+            # pbs() owns the shared host reservation. Bypassing it here would
+            # permit another source action/process to violate the crawl delay.
+            read = discovery_transport.pbs
+            message = ('Partial PBS coverage: up to nine upcoming-section leads within eight weeks; '
+                       'unknown dates are labelled. Exact sessions and ticket availability unverified.')
 
-        status, raw = discovery_transport.rrr()
+        status, raw = read()
         if status == 429:
             return Outcome('rate-limited', message='Source rate limited; no retry attempted.')
         if status in (401, 403):
@@ -34,12 +46,15 @@ def collect(source_id, *, now):
         if type(status) is not int or status != 200:
             return Outcome('error', message='Source request failed; no retry attempted.')
 
-        # Do not apply upcoming_events here. RRR omits years: these are useful
-        # unknown-date leads, not verified upcoming inventory to be filtered.
+        # Do not apply upcoming_events here. RRR omits years; PBS alone owns
+        # its visible-year/window filtering. Both can retain unknown-date leads.
         cards = parse_listing(raw, retrieved_at=now.isoformat())
-        return Outcome('ready', cards,
-            'Partial coverage: up to nine cards from one Triple R listing page. '
-            'Source dates omit the year; upcoming status and ticket availability unverified.')
+        if source_id == 'pbs' and not cards:
+            return Outcome('empty', cards,
+                'No eligible dated PBS leads in this bounded page; this does not establish no events or tickets.')
+        return Outcome('ready', cards, message)
+    except PBSIntervalPending:
+        return Outcome('rate-limited', message='PBS requires ten seconds between shared requests; try again later.')
     except TimeoutError:
         return Outcome('timeout', message='Source timed out; no retry attempted.')
     except (SourceError, KeyError, TypeError, ValueError, RecursionError, AttributeError, OSError):

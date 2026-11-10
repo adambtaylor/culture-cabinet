@@ -1,7 +1,7 @@
 # Shared bounded event acquisition
 
 `shelf.event_scraping.collect(source_id, *, now)` returns the existing
-`discovery_sources.Outcome`. Its first implemented source is `rrr`. The ID is
+`discovery_sources.Outcome`. Implemented sources are `rrr` and `pbs`. The ID is
 fixed application configuration; URLs, selectors, credentials and callbacks are
 not accepted. An unsupported ID or a missing/naive observation clock fails before
 I/O. `now` is this action's aware observation time, not a publisher update time.
@@ -33,7 +33,7 @@ displayed and no retry is attempted.
 This reuses RRR's existing private factual-link reader scope. Public readability
 and robots access do not establish broader redistribution or model-input rights.
 No new store, scheduler, listener, schema, browser, inference or account access is
-part of this slice. PBS is the next separately tested adapter; gallery subclasses,
+part of this slice. The PBS adapter shares this driver; gallery subclasses,
 Moshtix's distinct one/nine-row contracts and unavailable sources remain unchanged.
 
 Affected checks cover engine/parser behavior and the real Django POST caller with
@@ -41,3 +41,13 @@ mocked transport, including replay, CSRF, revocation, cache expiry, escaping and
 cross-source failure isolation. A separate bounded real-source observation records
 its actual request count and result; mocked checks cannot establish live coverage
 or browser/native Enhance acceptance.
+
+PBS's normal explicit POST and its `pbs_events.fetch_listing(now)` compatibility
+caller both delegate to the driver. Acquisition still calls the existing
+`discovery_transport.pbs()`, including the shared ten-second host reservation
+before network I/O. Local interval refusal returns `rate-limited` without a read.
+The unchanged pure PBS parser alone applies the visible-year/eight-week rules,
+keeps date ranges rather than fabricating sessions, and retains source notices
+without turning them into ticket availability. Recognized out-of-window cards
+yield a bounded `empty`; missing/challenge markup remains `invalid`. Unknown-date
+leads remain useful. No PBS real-source call is implied by deterministic checks.
