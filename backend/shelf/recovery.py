@@ -1,7 +1,8 @@
-"""Same-host recovery with an uninterrupted live witness, never disk freshness.
+"""Recovery through a retained witness or one authenticated native CLEAN anchor.
 
-The baseline constructor never opens existing disk. A lost witness blocks even
-an intact, correctly checksummed journal. Lock order is coordinator then SQLite.
+The baseline constructor never opens existing disk. The separate native path
+consumes an independent keyring checkpoint before SQL writers reopen. Disk
+checksums alone never establish freshness. Lock order is coordinator then SQLite.
 The separate trusted_restart_fixture has an explicit synthetic root-trust gate;
 it verifies disk consistency, never rollback freshness or host-loss recovery.
 """
@@ -59,6 +60,16 @@ def native_first_start_matches(coordinator, boundary):
     issued = _NATIVE_FIRST_STARTS.get(coordinator)
     return (issued is not None and issued[0] is boundary
             and not coordinator.closed and not coordinator.blocked and boundary.active)
+
+
+_NATIVE_CLEAN_STARTS = weakref.WeakKeyDictionary()
+
+
+def native_clean_start_matches(coordinator, boundary):
+    issued = _NATIVE_CLEAN_STARTS.get(coordinator)
+    return (type(coordinator) is CurrentRecoveryCoordinator and issued is not None
+            and issued[0] is boundary and boundary.active
+            and not coordinator.closed and not coordinator.blocked)
 
 
 def _verify_native_first_start(coordinator):
@@ -258,6 +269,14 @@ class CurrentRecoveryCoordinator:
         try:
             if self in _NATIVE_FIRST_STARTS:
                 _verify_native_first_start(self)
+            if self in _NATIVE_CLEAN_STARTS:
+                boundary, raw, paths, fds, identities = _NATIVE_CLEAN_STARTS[self]
+                _trusted_boundary(boundary)
+                for index, path in enumerate(paths):
+                    if _store_identity(path, fds[index], directory=index != 0, private=index != 2) != identities[index]:
+                        self._block()
+                if self.bound_db is not raw or not self.matches_connection(raw):
+                    self._block()
             if getattr(self, '_trusted_restart_seal', None) is _TRUSTED_RESTART_SEAL:
                 _trusted_boundary(self.trusted_boundary)
                 _trusted_journal_binding(self.trusted_boundary, self.bound_db, self.store_fds, self)
@@ -1313,3 +1332,286 @@ def trusted_restart_fixture(boundary, *, confirmed, fresh=False):
         if obj is None or not obj.owns_control:
             for fd in fds.values():
                 os.close(fd)
+
+
+class NativeCleanCheckpoint:
+    """Independent authenticated CLEAN/ACTIVE record for one native installation.
+
+    The local locator contains only a store UUID and opaque revision. It cannot
+    bless a database: the protected keyring record and original root lock must
+    agree before any native authority writer is constructed.
+    """
+    def __init__(self, boundary, request):
+        self.boundary, self.request = boundary, request
+        self.locator = boundary.root / '.portable-clean-restart.json'
+        self.revision = self.binding = self.coordinator = None
+        self.enrolled = self.clean_stop = False
+        self.pending_operation = self.pending_record = None
+        self.writers_stopped = None
+
+    def _call(self, operation, *, record=None, operation_id=None):
+        identifier = str(operation_id or uuid.uuid4())
+        value = {'version': 'cabinet-secret-service/v1', 'operation': operation,
+            'record_kind': 'clean_restart_anchor', 'binding': self.binding,
+            'expected_revision': self.revision, 'operation_id': identifier, 'record_if_put': record}
+        try:
+            reply = self.request(value)
+            if (type(reply) is not dict or set(reply) != {'version', 'operation_id', 'status', 'revision', 'record'}
+                    or reply['version'] != value['version'] or reply['operation_id'] != identifier
+                    or reply['status'] != 'AVAILABLE' or type(reply['revision']) is not str
+                    or str(uuid.UUID(reply['revision'])) != reply['revision']):
+                raise ValueError
+            return reply
+        except Exception:
+            raise RecoveryBlocked() from None
+
+    def _locator_write(self):
+        value = canonical({'schema': 1, 'store_id': self.binding['store_id'], 'revision': self.revision})
+        name = self.locator.name + '.' + uuid.uuid4().hex + '.tmp'
+        directory = os.open(self.boundary.root, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+        fd = None
+        try:
+            fd = os.open(name, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600, dir_fd=directory)
+            if os.write(fd, value) != len(value):
+                raise RecoveryBlocked()
+            os.fsync(fd)
+            os.close(fd); fd = None
+            os.replace(name, self.locator.name, src_dir_fd=directory, dst_dir_fd=directory)
+            os.fsync(directory)
+        finally:
+            if fd is not None:
+                os.close(fd)
+            try:
+                os.unlink(name, dir_fd=directory)
+            except FileNotFoundError:
+                pass
+            os.close(directory)
+
+    def _put(self, record):
+        # Keep the exact operation in RAM through a lost acknowledgement. No
+        # subsequent call repeats its mutation; reconciliation observes it only.
+        if self.pending_operation is None:
+            self.pending_operation, self.pending_record = str(uuid.uuid4()), record
+            reply = self._call('put', record=record, operation_id=self.pending_operation)
+        else:
+            if self.pending_record != record:
+                raise RecoveryBlocked()
+            reply = self._call('reconcile', operation_id=self.pending_operation)
+        revision = reply['revision']
+        old = self.revision
+        self.revision = revision
+        try:
+            read = self._call('read')
+            if read['revision'] != revision or read['record'] != record:
+                raise RecoveryBlocked()
+            self._locator_write()
+        except BaseException:
+            self.revision = old
+            raise
+        self.pending_operation = self.pending_record = None
+
+    def _bind(self, store_id):
+        self.binding = {'os_uid': os.getuid(), 'installation_id': str(self.boundary.installation_id),
+            'store_id': store_id, 'root_identity': self.boundary.root_identity}
+
+    def _database_identity(self):
+        fd = os.open(self.boundary.database_name, os.O_RDONLY | os.O_NOFOLLOW)
+        try:
+            return hashlib.sha256(canonical(identity(Path(self.boundary.database_name), fd))).hexdigest()
+        finally:
+            os.close(fd)
+
+    def _database_digest(self):
+        fd = os.open(self.boundary.database_name, os.O_RDONLY | os.O_NOFOLLOW)
+        try:
+            identity(Path(self.boundary.database_name), fd)
+            value = hashlib.sha256()
+            while data := os.read(fd, 1024 * 1024):
+                value.update(data)
+            return value.hexdigest()
+        finally:
+            os.close(fd)
+
+    def _record(self, state):
+        obj = self.coordinator
+        return {'schema': 'cabinet-clean-restart/v1', **{key: self.binding[key] for key in
+            ('installation_id', 'store_id', 'root_identity')}, 'database_identity': self._database_identity(),
+            'checkpoint_id': str(uuid.uuid4()), 'database_digest': self._database_digest(),
+            'journal_path': str(obj.directory), 'journal_length': obj.length, 'journal_digest': obj.digest,
+            'journal_head': hashlib.sha256(canonical({'head': obj.head_id, 'sequence': obj.sequence})).hexdigest(),
+            'state': state}
+
+    def enroll(self):
+        if self.enrolled:
+            return
+        obj = installed_coordinator()
+        if not native_first_start_matches(obj, self.boundary):
+            raise RecoveryBlocked()
+        obj.verify_current(); obj.verify_mirror(obj.bound_db)
+        if obj.pending is not None or self.locator.exists():
+            raise RecoveryBlocked()
+        self.coordinator = obj
+        self._bind(obj.store_id)
+        record = self.pending_record or self._record('ACTIVE')
+        self._put(record)
+        self.enrolled = True
+
+    def seal(self):
+        if not self.enrolled or not self.clean_stop:
+            return
+        if self.writers_stopped is None or self.writers_stopped() is not True:
+            raise RecoveryBlocked()
+        obj = self.coordinator
+        # ExitStack has already stopped the selected workers and accepting
+        # socket. Close every Django writer before sealing the last raw handle.
+        from django.db import connections
+        connections.close_all()
+        obj.verify_current(); obj.verify_mirror(obj.bound_db)
+        if obj.pending is not None or obj.bound_db.in_transaction:
+            raise RecoveryBlocked()
+        semantic_check(obj.bound_db)
+        if obj.bound_db.execute('PRAGMA wal_checkpoint(TRUNCATE)').fetchone()[0] != 0:
+            raise RecoveryBlocked()
+        obj.bound_db.close()
+        database = os.open(self.boundary.database_name, os.O_RDONLY | os.O_NOFOLLOW)
+        try:
+            os.fsync(database)
+        finally:
+            os.close(database)
+        directory = os.open(self.boundary.root, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+        try:
+            os.fsync(directory)
+        finally:
+            os.close(directory)
+        # CLEAN is last. A failed/uncertain store update leaves no admitted
+        # restart and never trades database continuity for key availability.
+        self._put(self._record('CLEAN'))
+
+    def load_clean(self, raw):
+        _trusted_boundary(self.boundary)
+        self._bind(raw_store(raw))
+        fd = os.open(self.locator, os.O_RDONLY | os.O_NOFOLLOW)
+        try:
+            identity(self.locator, fd)
+            value = json.loads(os.read(fd, 1025))
+            if (set(value) != {'schema', 'store_id', 'revision'} or value['schema'] != 1
+                    or value['store_id'] != self.binding['store_id']
+                    or str(uuid.UUID(value['revision'])) != value['revision']):
+                raise RecoveryBlocked()
+            self.revision = value['revision']
+        finally:
+            os.close(fd)
+        reply = self._call('read')
+        record = reply['record']
+        required = {'schema','installation_id','store_id','root_identity','database_identity','checkpoint_id',
+                    'database_digest','journal_path','journal_length','journal_digest','journal_head','state'}
+        if (reply['revision'] != self.revision or type(record) is not dict or set(record) != required
+                or record['schema'] != 'cabinet-clean-restart/v1' or record['state'] != 'CLEAN'
+                or any(record[key] != self.binding[key] for key in ('installation_id','store_id','root_identity'))
+                or record['database_identity'] != self._database_identity()
+                or record['database_digest'] != self._database_digest()):
+            raise RecoveryBlocked()
+        # WAL must have been fully checkpointed by the prior owned writer.
+        wal = Path(self.boundary.database_name + '-wal')
+        if wal.exists() and wal.stat().st_size:
+            raise RecoveryBlocked()
+        return record
+
+
+def _invalidate_native_restart(raw):
+    """Retain data/reactions, expire all process-old sessions and sending proofs."""
+    from shelf.models import _content_digest
+    raw.create_function('cabinet_disclosure_write', 0, lambda: 1)
+    raw.create_function('cabinet_content_digest', -1, _content_digest)
+    raw.execute('BEGIN IMMEDIATE')
+    try:
+        raw.execute('DELETE FROM django_session')
+        raw.execute("UPDATE shelf_portabledisclosurepreview SET state='stale' WHERE state='preview'")
+        raw.execute('DELETE FROM shelf_portablevalidation')
+        raw.execute('UPDATE shelf_portableconnection SET credential_generation=credential_generation+1,validation_generation=validation_generation+1')
+        raw.execute("UPDATE shelf_portableprobeattempt SET state='unknown',outcome='unknown' WHERE state IN ('prepared','sending')")
+        raw.execute("UPDATE shelf_synthesisrun SET state='unknown',portable_stage='unknown',revision=revision+1 WHERE contract_version='enhance/v1' AND attempts=1 AND state='running'")
+        now = datetime.now(utc_timezone.utc).isoformat()
+        affected = {row[0] for row in raw.execute("SELECT profile_id FROM shelf_synthesisrun WHERE contract_version='enhance/v1' AND content_redacted_at IS NULL AND julianday(portable_expires_at)<=julianday(?)", (now,))}
+        affected.update(row[0] for row in raw.execute("SELECT cabinet_id FROM shelf_portablecabinetmanifest WHERE content_redacted_at IS NULL AND julianday(expires_at)<=julianday(?)", (now,)))
+        raw.execute("UPDATE shelf_portablecabinetmanifest SET content_digest=cabinet_content_digest(manifest),manifest='{}',content_redacted_at=? WHERE content_redacted_at IS NULL AND julianday(expires_at)<=julianday(?)", (now, now))
+        raw.execute("UPDATE shelf_synthesisrun SET content_digest=cabinet_content_digest(output,evidence),output='{}',evidence='{}',content_redacted_at=?,revision=revision+1 WHERE contract_version='enhance/v1' AND content_redacted_at IS NULL AND julianday(portable_expires_at)<=julianday(?)", (now, now))
+        for profile in affected:
+            raw.execute('UPDATE shelf_profilecabinetstate SET policy_epoch=policy_epoch+1,restriction_watermark=restriction_watermark+1 WHERE profile_id=?', (profile,))
+        raw.execute('COMMIT')
+    except BaseException:
+        if raw.in_transaction:
+            raw.execute('ROLLBACK')
+        raise
+    finally:
+        raw.create_function('cabinet_disclosure_write', 0, lambda: 0)
+
+
+@contextmanager
+def native_clean_restart(boundary, checkpoint):
+    """Consume one authenticated CLEAN checkpoint before any authority DB write."""
+    if installed_coordinator() is not None or checkpoint.boundary is not boundary:
+        raise RecoveryBlocked()
+    root = _trusted_boundary(boundary)
+    raw = obj = None
+    fds = {}
+    try:
+        paths = (Path(boundary.database_name), root, root.parent)
+        for index, path in enumerate(paths):
+            fds[index] = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | (os.O_DIRECTORY if index else 0))
+        identities = tuple(_store_identity(path, fds[index], directory=index != 0, private=index != 2)
+                           for index, path in enumerate(paths))
+        raw = sqlite3.connect(paths[0].as_uri() + '?mode=ro', uri=True, isolation_level=None, timeout=0.05)
+        _closed_sql_guards(raw)
+        record = checkpoint.load_clean(raw)
+        _effective_guards(raw); semantic_check(raw)
+        journal = Path(record['journal_path'])
+        prefix = '.native-recovery-' + boundary.installation_id.hex + '-'
+        if journal.parent != root.parent or not journal.name.startswith(prefix):
+            raise RecoveryBlocked()
+        if len(journal.name[len(prefix):]) != 32 or str(uuid.UUID(journal.name[len(prefix):])).replace('-', '') != journal.name[len(prefix):]:
+            raise RecoveryBlocked()
+        safe_directory(journal)
+        obj = object.__new__(CurrentRecoveryCoordinator)
+        obj.store_id, obj.directory, obj.mutex = raw_store(raw), journal, threading.RLock()
+        obj.closed = obj.blocked = False
+        obj.owns_control = False
+        obj.bound_db, obj.bound_path, obj.bound_identity = raw, paths[0], identities[0]
+        obj.fds, obj.identities, obj.store_fds = {}, {}, {}
+        obj.directory_fd = None
+        obj.directory_fd = os.open(journal, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+        info = os.fstat(obj.directory_fd)
+        obj.directory_identity = (info.st_dev, info.st_ino)
+        for name in ('lock', 'journal'):
+            fd = os.open(journal / name, os.O_RDWR | os.O_NOFOLLOW)
+            obj.fds[name], obj.identities[name] = fd, identity(journal / name, fd)
+        fcntl.flock(obj.fds['lock'], fcntl.LOCK_EX | fcntl.LOCK_NB)
+        _load_trusted_journal(obj)
+        if (obj.pending is not None or obj.length != record['journal_length'] or obj.digest != record['journal_digest']
+                or hashlib.sha256(canonical({'head':obj.head_id,'sequence':obj.sequence})).hexdigest() != record['journal_head']):
+            raise RecoveryBlocked()
+        # Atomically consume CLEAN in the independent store before opening the
+        # write connection. Replaying old DB/locator bytes cannot regain it.
+        checkpoint.coordinator = obj
+        checkpoint._put({**record, 'state':'ACTIVE', 'checkpoint_id':str(uuid.uuid4())})
+        checkpoint.enrolled = True
+        raw.close()
+        raw = sqlite3.connect(paths[0].as_uri() + '?mode=rw', uri=True, isolation_level=None, timeout=0.05)
+        _closed_sql_guards(raw)
+        raw.execute('PRAGMA foreign_keys=ON'); raw.execute('PRAGMA synchronous=FULL')
+        obj.bound_db = raw
+        _NATIVE_CLEAN_STARTS[obj] = (boundary, raw, paths, fds, identities)
+        obj.verify_current(); obj.verify_mirror(raw)
+        _invalidate_native_restart(raw)
+        with using_recovery(obj):
+            yield obj
+    except (OSError, sqlite3.Error, ValueError, KeyError, TypeError):
+        raise RecoveryBlocked() from None
+    finally:
+        if obj is not None:
+            _NATIVE_CLEAN_STARTS.pop(obj, None)
+            obj.close()
+        if raw is not None:
+            raw.close()
+        for fd in fds.values():
+            os.close(fd)
