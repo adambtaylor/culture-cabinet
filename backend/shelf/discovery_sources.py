@@ -334,12 +334,13 @@ def fetch_public(operation, seed, mode, now):
         if operation == 'pbs' and not seed and not mode:
             from shelf.pbs_events import fetch_listing
             return fetch_listing(now)
+        if operation == 'rrr' and not seed and not mode:
+            from shelf.event_scraping import collect
+            return collect('rrr', now=now)
         if operation == 'radio':
             status, raw = transport.radio(seed, mode)
         elif operation == 'events' and not seed and not mode:
             status, raw = transport.events(now)
-        elif operation == 'rrr' and not seed and not mode:
-            status, raw = transport.rrr()
         elif operation == 'beat' and not seed and not mode:
             status, raw = transport.beat()
         else:
@@ -352,10 +353,6 @@ def fetch_public(operation, seed, mode, now):
             from shelf.beat_events import parse_listing
             cards = parse_listing(raw, retrieved_at=now.isoformat())
             return Outcome('ready' if cards else 'empty', cards, 'Partial coverage: up to nine single-date Beat leads within 14 days from the first 48 cards. Multi-day runs omitted; times, status and tickets need confirmation.')
-        if operation == 'rrr':
-            from shelf.rrr_events import parse_listing
-            cards = parse_listing(raw, retrieved_at=now.isoformat())
-            return Outcome('ready', cards, 'Partial coverage: up to nine cards from one Triple R listing page. Source dates omit the year; upcoming status and ticket availability unverified.')
         document = strict_json(raw)
         if operation == 'radio':
             cards = parse_radio(document, seed, now.isoformat())
