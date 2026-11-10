@@ -61,7 +61,16 @@ def _rotate_session(request, ref):
 def _rotate(request, ref):
     # JSON and HTML must share fixation protection and old-vault revocation.
     _rotate_session(request, ref)
+    _hydrate_saved(request)
     return JsonResponse({'ok': True, 'code': 'OK'})
+
+
+def _hydrate_saved(request):
+    """Only a completed authenticated login/claim may eagerly load saved bytes."""
+    vault = getattr(request.portable_authority, '_source_vault', None)
+    saved = getattr(vault, '_saved_credentials', None)
+    if saved is not None:
+        saved.hydrate_owner(request.session.get('portable_session'))
 
 
 @require_GET
@@ -119,7 +128,7 @@ def logout(request):
 
 
 _SUCCESS_NOTICES = frozenset({'OWNER_CREATED', 'OWNER_UNLOCKED', 'SIGNED_OUT',
-    'CONFIG_SAVED', 'KEY_ADDED', 'KEY_REMOVED', 'TEST_PASSED'})
+    'CONFIG_SAVED', 'KEY_ADDED', 'KEY_SAVED', 'KEY_REMOVED', 'KEY_REMOVAL_PENDING', 'TEST_PASSED'})
 _FLASH = '_portable_notice'
 
 
@@ -166,6 +175,7 @@ def setup_context(request, *, notice='', preview=None, selected=None):
             notice = stored_notice
     context = dict(state='claim' if authority._installation().owner_id is None else 'login',
         configured=False, credential_configured=False, connection_ready=False, run_ready=False,
+        credential_saved=False, credential_available=False, credential_store_state='absent',
         connection_ref='', revision=0, adapter='openai_responses', model='gpt-6-astra', reasoning='high',
         connections=[], outcome='missing_credential', notice=notice, preview=None,
         reauthentication_required=False,
@@ -207,6 +217,7 @@ def setup_context(request, *, notice='', preview=None, selected=None):
     except AuthorityFault as fault:
         context['notice'] = fault.code
     allowed = {'state', 'configured', 'credential_configured', 'connection_ready', 'run_ready',
+        'credential_saved', 'credential_available', 'credential_store_state',
         'connection_ref', 'revision', 'adapter', 'model', 'reasoning', 'connections', 'outcome',
         'notice', 'preview', 'csrf_token', 'actions', 'reauthentication_required'}
     return {k: v for k, v in context.items() if k in allowed}
@@ -269,6 +280,7 @@ def html_claim(request):
 def html_login(request):
     value = _form(request, {'passphrase'})
     _rotate_session(request, request.portable_authority.login(value['passphrase']))
+    _hydrate_saved(request)
     return _after_success(request, notice='OWNER_UNLOCKED')
 
 
