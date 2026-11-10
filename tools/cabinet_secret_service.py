@@ -60,6 +60,23 @@ class Refused(Exception):
         super().__init__(self.status)
 
 
+def _protect_process():
+    """Private worker only: refuse secrets unless native crashes cannot dump it.
+
+    Linux can route cores to a pipe collector independently of RLIMIT_CORE.
+    PR_SET_DUMPABLE=0 closes that path before GI/Fernet/request bytes are loaded;
+    this changes only this process, never global coredump or system settings.
+    """
+    import ctypes
+    resource.setrlimit(resource.RLIMIT_CORE, (0, 0))
+    libc = ctypes.CDLL(None, use_errno=True)
+    prctl = libc.prctl
+    prctl.argtypes = (ctypes.c_int, ctypes.c_ulong, ctypes.c_ulong, ctypes.c_ulong, ctypes.c_ulong)
+    prctl.restype = ctypes.c_int
+    require(prctl(4, 0, 0, 0, 0) == 0 and prctl(3, 0, 0, 0, 0) == 0)
+    require(resource.getrlimit(resource.RLIMIT_CORE) == (0, 0))
+
+
 def require(value, status='UNAVAILABLE'):
     if not value:
         raise Refused(status)
@@ -1080,7 +1097,7 @@ def _pipe_write(fd, value, deadline):
 def _main(argv):
     # No argparse/traceback can accidentally echo input: argv contains only pipe
     # numbers. Malformed input returns no plaintext diagnostics on standard fds.
-    resource.setrlimit(resource.RLIMIT_CORE, (0, 0))
+    _protect_process()
     if len(argv) == 6 and argv[1:3] == ['--provision', '--operation-id'] and argv[4] == '--response-fd':
         operation_id, response_fd = _uuid(argv[3]), int(argv[5])
         _check_pipe(response_fd, os.O_WRONLY)

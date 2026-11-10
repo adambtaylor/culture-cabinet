@@ -85,6 +85,10 @@ EOF is required. Duplicate/unknown fields, trailing/truncated frames and nonfini
 values are refused. Secrets are UTF-8 strings, limited to8192 encoded bytes.
 No secret travels in command arguments or environment variables. The client
 kills/reaps a timed-out child; it never retries a mutation.
+Before reading a request or loading GI/crypto, the private worker sets its core
+limits to zero and Linux dumpability to zero, verifying both. This contains
+native-library abort dumps locally, including pipe-based core collectors; no
+global system/coredump setting is changed.
 The worker pins libsecret's nonsecret service-name setting to the observed unique
 bus owner and uses libsecret's asynchronous factory. Supplying a ready connection
 to its raw constructor conflicts with the C constructor's own bus initialization.
