@@ -9,6 +9,7 @@ from pathlib import Path
 from types import SimpleNamespace
 import struct
 import subprocess
+import signal
 import sys
 import tempfile
 import time
@@ -517,6 +518,39 @@ class AsyncDeadlineTests(unittest.TestCase):
         self.assertTrue(cancellations[0].is_cancelled())
 
 
+class PrivateCrashContainmentTests(unittest.TestCase):
+    def test_own_native_abort_is_nondumpable_before_loading_any_secret(self):
+        code = '''import ctypes,importlib.util,json,os,resource,sys
+spec=importlib.util.spec_from_file_location('owned_helper',sys.argv[1])
+m=importlib.util.module_from_spec(spec);spec.loader.exec_module(m)
+m._protect_process()
+libc=ctypes.CDLL(None)
+dumpable=libc.prctl(3,0,0,0,0)
+os.write(int(sys.argv[2]),json.dumps({'core_limits':list(resource.getrlimit(resource.RLIMIT_CORE)),
+                                  'dumpable':dumpable}).encode())
+os.abort()
+'''
+        reader, writer = os.pipe()
+        pid = None
+        try:
+            pid = os.posix_spawn('/usr/bin/python3', ['/usr/bin/python3', '-I', '-B', '-c', code,
+                store.HELPER, str(writer)], {'PATH': '/usr/bin:/bin', 'LANG': 'C.UTF-8'},
+                file_actions=[(os.POSIX_SPAWN_DUP2, writer, writer), (os.POSIX_SPAWN_CLOSE, reader)])
+            os.close(writer); writer = None
+            profile = json.loads(os.read(reader, 4096))
+            _, status = os.waitpid(pid, 0); pid = None
+            self.assertEqual(profile, {'core_limits': [0, 0], 'dumpable': 0})
+            self.assertTrue(os.WIFSIGNALED(status))
+            self.assertEqual(os.WTERMSIG(status), signal.SIGABRT)
+            self.assertFalse(os.WCOREDUMP(status))
+        finally:
+            os.close(reader)
+            if writer is not None:
+                os.close(writer)
+            if pid is not None:
+                os.kill(pid, signal.SIGKILL); os.waitpid(pid, 0)
+
+
 class HostProvisionTests(unittest.TestCase):
     def test_nonterminal_provision_and_web_unlock_selector_never_start_a_child(self):
         with patch.object(store.os, 'isatty', return_value=False), \
@@ -640,7 +674,21 @@ class FreshHelperTests(unittest.TestCase):
 
 
 if __name__ == '__main__':
-    if len(sys.argv) == 5 and sys.argv[1] == '--dummy-worker':
+    if sys.argv[1:] == ['--metadata-connect']:
+        # Explicit, non-mutating platform regression. No collection object,
+        # secret session, secret load, keyring file or provisioning is requested.
+        store._protect_process()
+        backend = object.__new__(store._SecretBackend)
+        backend._connect(time.monotonic() + store.TIMEOUT)
+        assert backend.service.get_name() == backend.owner
+        assert backend.service.get_name_owner() == backend.owner
+        assert not backend.service.get_flags() & backend.Secret.ServiceFlags.LOAD_COLLECTIONS
+        assert not backend.service.get_flags() & backend.Secret.ServiceFlags.OPEN_SESSION
+        print(json.dumps({'metadata_connection': 'PASS', 'pid': os.getpid(),
+            'unique_owner_pinned': True, 'same_user_bus': True,
+            'collections_loaded': False, 'secret_session_opened': False,
+            'collection_created': False, 'secret_read': False, 'private_worker_nondumpable': True}))
+    elif len(sys.argv) == 5 and sys.argv[1] == '--dummy-worker':
         # Full production worker/codec, but a test-only owned backend/lock. This
         # is not GNOME/protected-collection evidence or a production option.
         from contextlib import nullcontext

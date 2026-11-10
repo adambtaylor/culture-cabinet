@@ -60,6 +60,23 @@ class Refused(Exception):
         super().__init__(self.status)
 
 
+def _protect_process():
+    """Private worker only: refuse secrets unless native crashes cannot dump it.
+
+    Linux can route cores to a pipe collector independently of RLIMIT_CORE.
+    PR_SET_DUMPABLE=0 closes that path before GI/Fernet/request bytes are loaded;
+    this changes only this process, never global coredump or system settings.
+    """
+    import ctypes
+    resource.setrlimit(resource.RLIMIT_CORE, (0, 0))
+    libc = ctypes.CDLL(None, use_errno=True)
+    prctl = libc.prctl
+    prctl.argtypes = (ctypes.c_int, ctypes.c_ulong, ctypes.c_ulong, ctypes.c_ulong, ctypes.c_ulong)
+    prctl.restype = ctypes.c_int
+    require(prctl(4, 0, 0, 0, 0) == 0 and prctl(3, 0, 0, 0, 0) == 0)
+    require(resource.getrlimit(resource.RLIMIT_CORE) == (0, 0))
+
+
 def require(value, status='UNAVAILABLE'):
     if not value:
         raise Refused(status)
@@ -758,12 +775,20 @@ class _SecretBackend:
             'org.freedesktop.DBus', 'GetNameOwner', self.GLib.Variant('(s)', ('org.freedesktop.secrets',)))
         self.owner = owner.unpack()[0]
         require(self.owner.startswith(':'))
-        # The unique bus name and DO_NOT_AUTO_START also close the race where
-        # the existing provider exits between NameHasOwner and proxy creation.
-        self.service = self.Secret.Service(g_connection=self.connection, g_name=self.owner,
-            g_object_path='/org/freedesktop/secrets',
-            g_flags=self.Gio.DBusProxyFlags.DO_NOT_AUTO_START, flags=self.Secret.ServiceFlags.NONE)
-        self._initialize(self.service)
+        # libsecret's C constructor sets its own session-bus properties; passing
+        # a ready g-connection then calling init_async aborts inside GDBusProxy.
+        # Use its supported asynchronous factory instead. The installed client
+        # resolves its bus-name setting during construction, so pin that
+        # NONSECRET setting to the already observed unique owner. Unique names
+        # cannot activate a daemon, including if this owner exits during open.
+        # These two values are constructed here, never inherited or user input.
+        os.environ['DBUS_SESSION_BUS_ADDRESS'] = 'unix:path=/run/user/1000/bus'
+        os.environ['SECRET_SERVICE_BUS_NAME'] = self.owner
+        self.service = self.async_.call(lambda cancel, done: self.Secret.Service.open(
+            self.Secret.Service.__gtype__, self.owner, self.Secret.ServiceFlags.NONE,
+            cancel, done, None), lambda source, result: self.Secret.Service.open_finish(result))
+        require(self.service.get_name() == self.owner and self.service.get_name_owner() == self.owner
+                and self.service.get_connection().get_guid() == self.connection.get_guid())
         self._verify_service()
 
     def _open_collection(self):
@@ -1072,7 +1097,7 @@ def _pipe_write(fd, value, deadline):
 def _main(argv):
     # No argparse/traceback can accidentally echo input: argv contains only pipe
     # numbers. Malformed input returns no plaintext diagnostics on standard fds.
-    resource.setrlimit(resource.RLIMIT_CORE, (0, 0))
+    _protect_process()
     if len(argv) == 6 and argv[1:3] == ['--provision', '--operation-id'] and argv[4] == '--response-fd':
         operation_id, response_fd = _uuid(argv[3]), int(argv[5])
         _check_pipe(response_fd, os.O_WRONLY)
