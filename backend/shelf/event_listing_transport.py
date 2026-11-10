@@ -21,10 +21,18 @@ TARGETS = MappingProxyType({
 })
 _DELAYS = {'venue303': 10, 'forum': 10}
 _RATE_DIRECTORY = '/tmp'
+# Initial bounded observations: 303 robots allowed this path; Forum returned
+# unrecognized content. Keep Forum's live listing closed while its pure adapter
+# and synthetic caller remain testable. This is not model/republication consent.
+LISTING_ACCESS = MappingProxyType({'venue303': True, 'forum': False})
 
 
 class ListingIntervalPending(SourceError):
     """No request was sent: another action owns the current origin interval."""
+
+
+class ListingPolicyUnavailable(SourceError):
+    """No listing request: exact source access conditions are unresolved."""
 
 
 def _reserve(source_id, *, policy_delay=None):
@@ -77,6 +85,8 @@ def _reserve(source_id, *, policy_delay=None):
 def _read(source_id, *, robots=False):
     if type(source_id) is not str or source_id not in TARGETS:
         raise SourceError('Unapproved listing source.')
+    if not robots and not LISTING_ACCESS[source_id]:
+        raise ListingPolicyUnavailable
     _reserve(source_id)
     command = _base(MAX_BYTES)
     command[command.index('Accept: application/json')] = 'Accept: text/plain' if robots else 'Accept: text/html'

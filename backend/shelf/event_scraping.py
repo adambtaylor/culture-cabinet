@@ -7,7 +7,7 @@ from datetime import datetime
 
 from shelf.discovery_sources import Outcome, SourceError
 from shelf.discovery_transport import PBSIntervalPending
-from shelf.event_listing_transport import ListingIntervalPending
+from shelf.event_listing_transport import ListingIntervalPending, ListingPolicyUnavailable
 
 IMPLEMENTED_SOURCES = frozenset({'rrr', 'pbs', 'venue303', 'forum'})
 
@@ -70,6 +70,8 @@ def collect(source_id, *, now):
             return Outcome('empty', cards,
                 'No eligible leads in this bounded page; this does not establish no events or tickets.')
         return Outcome('ready', cards, message)
+    except ListingPolicyUnavailable:
+        return Outcome('permission-required', message='Source access policy is unverified; no listing request sent.')
     except ListingIntervalPending:
         return Outcome('rate-limited', message='Source requires a shared origin interval; no request sent.')
     except PBSIntervalPending:

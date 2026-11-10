@@ -19,7 +19,7 @@ class ListingTransportTests(TestCase):
             transport.venue303()
             with self.assertRaises(transport.ListingIntervalPending):
                 transport.venue303()
-            transport.forum()
+            transport._read('forum', robots=True)
         self.assertEqual(send.call_count, 2)
         command = send.call_args_list[0].args[0]
         self.assertEqual(command[-1], 'https://303.net.au/gigs-events')
@@ -71,3 +71,11 @@ class ListingTransportTests(TestCase):
             str(Path(transport.__file__).resolve().parents[1]), self.directory.name],
             capture_output=True, timeout=5)
         self.assertEqual(run.returncode, 0, run.stderr.decode())
+
+    def test_unverified_forum_policy_refuses_before_reservation_or_network(self):
+        from shelf.event_scraping import collect
+        from shelf.tests.test_event_sources import NOW
+        with patch.object(transport, '_send') as send, patch.object(transport, '_reserve') as reserve:
+            self.assertEqual(collect('forum', now=NOW).status, 'permission-required')
+        send.assert_not_called()
+        reserve.assert_not_called()

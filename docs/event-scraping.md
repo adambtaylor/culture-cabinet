@@ -104,3 +104,11 @@ a blocked robots/listing read does not validate selectors. Rendering the existin
 card template with a synthetic response does not prove the visible read button,
 real-browser accessibility or portable/native Enhance flow. Experience owns those
 separate controls and affected presentation checks through Orchestration.
+
+The initial Forum robots request returned HTTP 200 with unrecognized content;
+permission was not established and no listing request followed. Its real listing
+transport therefore returns a policy-unavailable exception before reservation or
+I/O; the driver renders `permission-required`. A later exact source-access
+resolution is needed to open that path. Parser/caller fixtures do not change this
+access fact. 303's robots request allowed its fixed listing, whose one integrated
+read then failed in transport; no live parser-shape success is claimed for either.
