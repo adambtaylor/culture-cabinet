@@ -1,6 +1,8 @@
 """Native saved-key intents and authenticated hydration; never a secret response."""
 from datetime import datetime, timezone
 import importlib.util
+import hashlib
+import json
 from pathlib import Path
 import uuid
 
@@ -12,6 +14,7 @@ from .portable_authority import AuthorityFault, require_secret_protection
 
 VERSION = 'cabinet-secret-service/v1'
 RECORD_SCHEMA = 'cabinet-credential/v1'
+DELETE_NO_EFFECT = 'direct-delete-locked/v1'
 STATES = frozenset(('AVAILABLE', 'LOCKED', 'MISSING', 'UNAVAILABLE', 'CONFLICT',
                     'CORRUPT', 'UNKNOWN', 'REMOVED'))
 _PROVIDERS = {'openai_responses': ('openai', 'inference'),
@@ -24,7 +27,7 @@ def timestamp(value):
     return value.astimezone(timezone.utc).isoformat().replace('+00:00', 'Z')
 
 
-def packaged_client():
+def packaged_adapter():
     """Only the reviewed packaged helper is executable; HTTP selects no path."""
     path = Path(__file__).resolve().parents[2] / 'tools' / 'cabinet_secret_service.py'
     spec = importlib.util.spec_from_file_location('cabinet_packaged_secret_service', path)
@@ -32,7 +35,11 @@ def packaged_client():
         raise AuthorityFault('CREDENTIAL_STORE_UNAVAILABLE', 503)
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
-    return module.invoke
+    return module
+
+
+def packaged_client():
+    return packaged_adapter().invoke
 
 
 @sensitive_variables()
@@ -41,11 +48,12 @@ def secret_service_request(request):
 
 
 class SavedCredentials:
-    def __init__(self, authority, vault, *, request, before_save=None):
+    def __init__(self, authority, vault, *, request, before_save=None, delete_guarantee=None):
         if vault.authority is not authority or not callable(request):
             raise AuthorityFault('CAPABILITY_UNAVAILABLE', 503)
         self.authority, self.vault, self.request = authority, vault, request
         self.before_save = before_save
+        self.delete_guarantee = delete_guarantee
         vault._saved_credentials = self
 
     def _binding(self, session, row):
@@ -58,11 +66,16 @@ class SavedCredentials:
             'connection_id_or_null': str(row.pk), 'legacy_account_actor_profile_or_null': None}
 
     @sensitive_variables()
-    def _call(self, operation, saved, *, record=None, operation_id=None):
+    def _request_value(self, operation, saved, *, record=None, operation_id=None):
         identifier = str(operation_id or saved.operation_id)
-        request = {'version': VERSION, 'operation': operation, 'record_kind': 'credential',
+        return {'version': VERSION, 'operation': operation, 'record_kind': 'credential',
             'binding': saved.binding, 'expected_revision': saved.store_revision,
             'operation_id': identifier, 'record_if_put': record}
+
+    @sensitive_variables()
+    def _call(self, operation, saved, *, record=None, operation_id=None):
+        request = self._request_value(operation, saved, record=record, operation_id=operation_id)
+        identifier = request['operation_id']
         try:
             reply = self.request(request)
             if (type(reply) is not dict or set(reply) != {'version', 'operation_id', 'status', 'revision', 'record'}
@@ -126,8 +139,29 @@ class SavedCredentials:
             # against its encrypted receipt rather than pretend first creation.
             return SavedCredentialBinding.objects.filter(pk=saved.pk, state='PENDING_DELETE',
                 operation_id=saved.operation_id).update(state='UNAVAILABLE', removed=True,
-                    remove_requested=False, store_revision=reply['revision']) == 1
+                    remove_requested=False, delete_no_effect_proof=None, store_revision=reply['revision']) == 1
         return False
+
+    def _delete_proof(self, saved):
+        request = self._request_value('delete', saved)
+        digest = hashlib.sha256(json.dumps(request, sort_keys=True, separators=(',', ':'),
+                                          ensure_ascii=False, allow_nan=False).encode()).hexdigest()
+        return {'schema': DELETE_NO_EFFECT, 'operation_id': str(saved.operation_id),
+                'delete_request_sha256': digest, 'helper_guarantee': DELETE_NO_EFFECT}
+
+    def _supports_delete_proof(self):
+        # This capability is supplied only by the trusted packaged adapter (or
+        # an explicit owned test port), never by a request or a status label.
+        try:
+            if self.delete_guarantee is not None:
+                return self.delete_guarantee() == DELETE_NO_EFFECT
+            if self.request is secret_service_request:
+                module = packaged_adapter()
+                return (module.VERSION == VERSION
+                        and getattr(module, 'DELETE_NO_EFFECT_GUARANTEE', None) == DELETE_NO_EFFECT)
+            return False
+        except Exception:
+            return False
 
     @sensitive_variables()
     def save(self, ref, connection_id, revision, secret):
@@ -159,7 +193,8 @@ class SavedCredentials:
                         'generation': uuid.uuid4(), 'operation_id': uuid.uuid4(),
                         'store_revision': previous.store_revision if previous else None,
                         'entered_at': now, 'updated_at': now, 'expires_at': None,
-                        'scopes': [binding['purpose']], 'removed': False, 'remove_requested': False})
+                        'scopes': [binding['purpose']], 'removed': False, 'remove_requested': False,
+                        'delete_no_effect_proof': None})
             # SQLite's intent is committed before the external mutation. Keep
             # the recovery/owner barrier but never its SQL transaction over IPC.
             reply = self._call('put', saved, record=self._record(saved, secret))
@@ -260,13 +295,29 @@ class SavedCredentials:
                 if saved.state != 'PENDING_DELETE':
                     saved.state, saved.operation_id = 'PENDING_DELETE', uuid.uuid4()
                     saved.remove_requested = True
-                    saved.save(update_fields=['state', 'operation_id', 'remove_requested'])
+                    saved.delete_no_effect_proof = None
+                    saved.save(update_fields=['state', 'operation_id', 'remove_requested', 'delete_no_effect_proof'])
+                    operation = 'delete'
+                elif (self._supports_delete_proof() and saved.delete_no_effect_proof == self._delete_proof(saved)
+                        and SavedCredentialBinding.objects.filter(pk=saved.pk, state='PENDING_DELETE',
+                            operation_id=saved.operation_id, store_revision=saved.store_revision,
+                            delete_no_effect_proof=saved.delete_no_effect_proof).update(delete_no_effect_proof=None) == 1):
+                    # A distinct explicit Remove command may continue the SAME
+                    # delete only after atomically spending its durable proof.
+                    # Death after this commit is uncertainty, never fresh proof.
                     operation = 'delete'
                 else:
                     operation = 'reconcile'
             result = self._call(operation, saved)
             with ga._checked_transaction(checkpoint):
                 complete = self._finalize(saved, result)
+                if (operation == 'delete' and self._supports_delete_proof()
+                        and result['status'] == 'LOCKED' and result['revision'] is None and result['record'] is None):
+                    # Only a completed direct invocation has this no-effect
+                    # guarantee. Reconcile/status LOCKED and UNKNOWN do not.
+                    SavedCredentialBinding.objects.filter(pk=saved.pk, state='PENDING_DELETE',
+                        operation_id=saved.operation_id, store_revision=saved.store_revision,
+                        delete_no_effect_proof__isnull=True).update(delete_no_effect_proof=self._delete_proof(saved))
             return {'removed': complete, 'removal_pending': not complete, 'revision': row.config_revision}
 
     def reconcile(self, ref, connection_id, revision):
