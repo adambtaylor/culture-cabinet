@@ -1,5 +1,6 @@
 """Changed native saved-key callers with dummy bytes and a bounded store double."""
 from copy import deepcopy
+import json
 from unittest.mock import patch
 import uuid
 
@@ -151,3 +152,38 @@ class SavedCredentialTests(NativeFeedbackCase):
         self.assertEqual(result['revision'], 2)
         self.assertTrue(self.saved.reconcile(self.ref, self.config.pk, 2))
         self.assertTrue(SavedCredentialBinding.objects.get().removed)
+
+    def native_tombstone_with_ram_replacement(self):
+        fields = dict(connection_ref=str(self.config.pk), revision='1', secret=self.dummy)
+        self.assertEqual(self.post('/setup/form/credential', {**fields, 'storage':'persistent'}).status_code,303)
+        removal = dict(connection_ref=str(self.config.pk), revision='1')
+        self.assertEqual(self.post('/setup/form/remove',removal).status_code,303)
+        tombstone = SavedCredentialBinding.objects.get()
+        self.assertTrue(tombstone.removed)
+        self.assertEqual(self.post('/setup/form/credential',
+            {**fields,'secret':'DUMMY-RAM-AFTER-DURABLE-REMOVAL'}).status_code,303)
+        self.assertEqual(self.service.vault.resolve(self.ref,self.config.pk,1),
+                         b'DUMMY-RAM-AFTER-DURABLE-REMOVAL')
+        return removal,tombstone.store_revision
+
+    def test_native_remove_tombstone_still_revokes_later_ram_replacement(self):
+        fields,revision = self.native_tombstone_with_ram_replacement()
+        self.assertEqual(self.post('/setup/form/remove',fields).status_code,303)
+        self.fault('CREDENTIAL_REQUIRED',self.service.vault.resolve,self.ref,self.config.pk,1)
+        self.assertFalse(self.service.vault._leases)
+        self.assertEqual(SavedCredentialBinding.objects.get().store_revision,revision)
+        self.assertEqual(sum(c['operation']=='delete' for c in self.store.calls),1)
+
+    def test_json_disable_tombstone_revokes_ram_and_disables_connection(self):
+        _,revision = self.native_tombstone_with_ram_replacement()
+        response=self.http.post('/setup/connections/remove',json.dumps({
+            'connection_ref':str(self.config.pk),'revision':1,'disable':True}),
+            content_type='application/json',HTTP_X_CSRFTOKEN=self.csrf(),**self.headers)
+        self.assertEqual(response.status_code,200)
+        self.config.refresh_from_db()
+        self.assertTrue(self.config.removed)
+        self.assertEqual(self.config.config_revision,2)
+        self.assertFalse(self.service.vault._leases)
+        self.fault('REVISION_CONFLICT',self.service.vault.resolve,self.ref,self.config.pk,2)
+        self.assertEqual(SavedCredentialBinding.objects.get().store_revision,revision)
+        self.assertEqual(sum(c['operation']=='delete' for c in self.store.calls),1)
