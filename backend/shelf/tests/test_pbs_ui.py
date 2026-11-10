@@ -6,6 +6,7 @@ from unittest.mock import patch
 from django.test import Client, TestCase, override_settings
 
 from shelf import discovery_sources as sources, discovery_transport as transport, discovery_views as views
+from shelf import event_scraping
 from shelf.models import DiscoveryState
 from shelf.tests import test_discovery_public_ui as existing
 from shelf.tests.test_discovery_transport import NOW, event_document
@@ -19,7 +20,8 @@ class PBSUITests(TestCase):
     form = existing.PublicDiscoveryUITests.form
 
     def test_explicit_read_replay_attribution_and_no_inferred_choice(self):
-        with patch.object(transport, 'pbs', return_value=(200, listing())) as read:
+        with patch.object(transport, 'pbs', return_value=(200, listing())) as read, \
+             patch.object(event_scraping, 'collect', wraps=event_scraping.collect) as collect:
             page = self.client.get(self.url)
             self.assertContains(page, 'Read PBS Events')
             self.client.get('/recommendations/')
@@ -29,6 +31,7 @@ class PBSUITests(TestCase):
             self.assertEqual(self.client.post(self.action, data).status_code, 302)
             self.assertEqual(self.client.post(self.action, data).status_code, 302)
             read.assert_called_once()
+            collect.assert_called_once_with('pbs', now=NOW)
         self.assertEqual(DiscoveryState.objects.get().history, [])
         for url in (self.url, '/recommendations/'):
             response = self.client.get(url)

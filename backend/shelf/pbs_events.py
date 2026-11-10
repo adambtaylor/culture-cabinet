@@ -8,7 +8,7 @@ from datetime import date, timedelta
 from hashlib import sha256
 import re
 
-from shelf.discovery_sources import MAX_BYTES, Outcome, SourceError, identity, label, timestamp
+from shelf.discovery_sources import MAX_BYTES, SourceError, identity, label, timestamp
 from shelf.event_sources import EventCandidate, EventEvidence, MELBOURNE, SOURCES, official_url
 from shelf.rrr_events import _Listing, _one
 
@@ -149,22 +149,6 @@ def parse_listing(raw, *, retrieved_at):
 
 
 def fetch_listing(now):
-    from shelf.discovery_transport import PBSIntervalPending, pbs
-    try:
-        code, raw = pbs()
-        if code == 429:
-            return Outcome('rate-limited', message='PBS rate limited this read; no retry attempted.')
-        if code != 200:
-            return Outcome('error', message='PBS listing unavailable; no retry or alternate route attempted.')
-        cards = parse_listing(raw, retrieved_at=now.isoformat())
-        message = ('Partial PBS coverage: up to nine upcoming-section leads within eight weeks; '
-                   'unknown dates are labelled. Exact sessions and ticket availability unverified.')
-        if not cards:
-            message = 'No eligible dated PBS leads in this bounded page; this does not establish no events or tickets.'
-        return Outcome('ready' if cards else 'empty', cards, message)
-    except PBSIntervalPending:
-        return Outcome('rate-limited', message='PBS requires ten seconds between shared requests; try again later.')
-    except TimeoutError:
-        return Outcome('timeout', message='PBS read timed out; no retry attempted.')
-    except (SourceError, UnicodeError, ValueError, TypeError, OSError, RecursionError):
-        return Outcome('invalid', message='PBS response or access interval could not be verified; coverage unknown.')
+    """Compatibility caller; the parser's date and notice rules stay local."""
+    from shelf.event_scraping import collect
+    return collect('pbs', now=now)

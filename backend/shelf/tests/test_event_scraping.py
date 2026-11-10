@@ -13,7 +13,7 @@ from shelf.tests.test_rrr_events import card, listing
 class EventScrapingTests(TestCase):
     def test_fixed_source_and_aware_clock_required_before_io(self):
         with patch.object(discovery_transport, 'rrr') as send:
-            for source in ('pbs', 'halftix', 'https://www.rrr.org.au/events', '', [], None):
+            for source in ('forum', 'halftix', 'https://www.rrr.org.au/events', '', [], None):
                 with self.subTest(source=source):
                     self.assertEqual(event_scraping.collect(source, now=NOW).status, 'invalid')
             for clock in (None, '2026-10-28', datetime(2026, 10, 28)):
@@ -74,3 +74,52 @@ class EventScrapingTests(TestCase):
                 self.assertEqual(result.candidates, ())
                 self.assertNotIn('CANARY', repr(result))
                 send.assert_called_once_with()
+
+class PBSEventScrapingTests(TestCase):
+    def test_pbs_uses_its_parser_for_ranges_notices_and_missing_visible_year(self):
+        from shelf.tests.test_pbs_events import card as pbs_card, listing as pbs_listing
+        raw = pbs_listing([
+            pbs_card('range', when='Fri 30 Oct 2026', machine='2026-10-30T00:00:00+11:00',
+                     end=('Sun 1 Nov 2026', '2026-11-01T00:00:00+11:00'), notice='Sold Out'),
+            pbs_card('yearless', when='15 November')])
+        with patch.object(discovery_transport, 'pbs', return_value=(200, raw)) as send, \
+             patch.object(discovery_transport, 'rrr') as other:
+            result = event_scraping.collect('pbs', now=NOW)
+        send.assert_called_once_with()
+        other.assert_not_called()
+        self.assertEqual(result.status, 'ready')
+        dated, unknown = result.candidates
+        self.assertEqual((dated.starts_at, dated.ends_at), ('2026-10-30', '2026-11-01'))
+        self.assertEqual(dated.source_notice, 'Sold Out')
+        self.assertIsNone(dated.event_timezone)
+        self.assertIsNone(dated.entry_fee)
+        self.assertIsNone(unknown.starts_at)
+        self.assertEqual(unknown.date_precision, 'unknown')
+        self.assertIn('ticket availability unverified', result.message)
+
+    def test_pbs_recognized_outside_window_is_empty_but_shell_is_invalid(self):
+        from shelf.tests.test_pbs_events import card as pbs_card, listing as pbs_listing
+        past = pbs_listing([pbs_card(when='Mon 26 Oct 2026', machine='2026-10-26T00:00:00+11:00')])
+        for raw, expected in ((past, 'empty'), (b'<html>CANARY shell</html>', 'invalid')):
+            with self.subTest(expected=expected), patch.object(discovery_transport, 'pbs',
+                    return_value=(200, raw)) as send:
+                result = event_scraping.collect('pbs', now=NOW)
+                self.assertEqual(result.status, expected)
+                self.assertEqual(result.candidates, ())
+                self.assertNotIn('CANARY', repr(result))
+                send.assert_called_once_with()
+
+    def test_real_shared_reservation_refuses_second_read_before_transport(self):
+        import tempfile
+        from pathlib import Path
+        from shelf.tests.test_pbs_events import listing as pbs_listing
+        with tempfile.TemporaryDirectory() as directory, \
+             patch.object(discovery_transport, '_PBS_RATE_FILE', str(Path(directory) / 'pbs.rate')), \
+             patch.object(discovery_transport, '_send', return_value=(200, pbs_listing())) as send:
+            first = event_scraping.collect('pbs', now=NOW)
+            second = event_scraping.collect('pbs', now=NOW)
+        self.assertEqual(first.status, 'ready')
+        self.assertEqual(second.status, 'rate-limited')
+        self.assertEqual(second.candidates, ())
+        self.assertIn('ten seconds', second.message)
+        send.assert_called_once()
