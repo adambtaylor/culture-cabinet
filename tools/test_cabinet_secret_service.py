@@ -518,6 +518,28 @@ class AsyncDeadlineTests(unittest.TestCase):
         self.assertTrue(cancellations[0].is_cancelled())
 
 
+class CollectionProxyInterfaceTests(unittest.TestCase):
+    def test_raw_collection_constructor_requires_explicit_dbus_interface(self):
+        backend = object.__new__(store._SecretBackend)
+        backend.connection, backend.owner = object(), ':1.2'
+        backend.service, backend.path = object(), '/org/freedesktop/secrets/collection/CultureCabinet' + '1' * 32
+        backend.selection = {'identifier': 'CultureCabinet' + '1' * 32}
+        parameters = []
+        def collection(**kwargs):
+            parameters.append(kwargs)
+            # The real raw GI proxy lacks a default interface; omitting it sent
+            # NULL as the GetAll interface in the actual owned OS regression.
+            store.require(kwargs.get('g_interface_name') == 'org.freedesktop.Secret.Collection')
+            return SimpleNamespace(get_label=lambda: backend.selection['identifier'])
+        backend.Secret = SimpleNamespace(Collection=collection, CollectionFlags=SimpleNamespace(NONE=0))
+        backend.Gio = SimpleNamespace(DBusProxyFlags=SimpleNamespace(DO_NOT_AUTO_START=4))
+        backend._initialize = lambda proxy: None
+        backend._prove = lambda: None
+        backend._open_collection()
+        self.assertEqual(parameters[0]['g_name'], backend.owner)
+        self.assertEqual(parameters[0]['g_object_path'], backend.path)
+
+
 class PrivateCrashContainmentTests(unittest.TestCase):
     def test_own_native_abort_is_nondumpable_before_loading_any_secret(self):
         code = '''import ctypes,importlib.util,json,os,resource,sys

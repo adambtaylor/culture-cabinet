@@ -794,6 +794,7 @@ class _SecretBackend:
     def _open_collection(self):
         self.collection = self.Secret.Collection(service=self.service,
             g_connection=self.connection, g_name=self.owner, g_object_path=self.path,
+            g_interface_name='org.freedesktop.Secret.Collection',
             g_flags=self.Gio.DBusProxyFlags.DO_NOT_AUTO_START, flags=self.Secret.CollectionFlags.NONE)
         self._initialize(self.collection)
         require(self.collection.get_label() == self.selection['identifier'])
