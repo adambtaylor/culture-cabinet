@@ -25,6 +25,7 @@ BOOK_SEARCH = 'query Search($q:String!){search(query:$q,per_page:9,page:1){ids e
 BOOK_DETAILS = ('query Details($ids:[Int!]!){books(where:{id:{_in:$ids}},limit:9){'
                 + BOOK_FIELDS + '}}')
 BOOK_DETAILS_MINIMAL = 'query Details($ids:[Int!]!){books(where:{id:{_in:$ids}},limit:9){id title slug}}'
+BOOK_STARTER_MINIMAL = 'query Deck{books(limit:6,order_by:[{users_count:desc}]){id title slug}}'
 BOOK_DECK = ('query Deck{books(limit:6,order_by:[{users_count:desc}]){'
              + BOOK_FIELDS + '}}')
 BOOK_CATEGORY = ('query GraphicNovels($offset:Int!){books('
@@ -151,14 +152,18 @@ class MediaOperation:
     projection: str = 'legacy'
 
     def __post_init__(self):
-        allowed = {'tmdb_movie': ('search_movie',), 'tmdb_tv': ('search_tv',),
-                   'hardcover': ('book_search', 'book_details')}
+        allowed = {'tmdb_movie': ('search_movie', 'starter_movie_science'),
+                   'tmdb_tv': ('search_tv', 'starter_tv_fantasy'),
+                   'hardcover': ('book_search', 'book_details', 'starter_books')}
         if (type(self.source) is not str or self.operation not in allowed.get(self.source, ())
                 or type(self.ids) is not tuple or len(self.ids) > 9
                 or type(self.projection) is not str or self.projection not in ('legacy', 'native_minimal')
                 or self.projection == 'native_minimal' and self.source != 'hardcover'):
             raise CatalogueError(Status.INVALID)
-        if self.operation == 'book_details':
+        if self.operation.startswith('starter_'):
+            if self.term != '' or self.ids or self.source == 'hardcover' and self.projection != 'native_minimal':
+                raise CatalogueError(Status.INVALID)
+        elif self.operation == 'book_details':
             if self.term != '':
                 raise CatalogueError(Status.INVALID)
             for value in self.ids:
@@ -182,17 +187,29 @@ class MediaOperation:
 
     @property
     def path(self):
-        return '/v1/graphql' if self.provider == 'hardcover' else '/3/search/' + self.operation.removeprefix('search_')
+        if self.provider == 'hardcover':
+            return '/v1/graphql'
+        return ('/3/discover/' + ('movie' if self.source == 'tmdb_movie' else 'tv')
+                if self.operation.startswith('starter_')
+                else '/3/search/' + self.operation.removeprefix('search_'))
 
     @property
     def query(self):
-        return '' if self.provider == 'hardcover' else urlencode(
-            {'include_adult': 'false', 'language': 'en-US', 'page': 1, 'query': self.term})
+        if self.provider == 'hardcover':
+            return ''
+        params = {'include_adult': 'false', 'language': 'en-US', 'page': 1}
+        if self.operation.startswith('starter_'):
+            params['with_genres'] = 878 if self.source == 'tmdb_movie' else 10765
+        else:
+            params['query'] = self.term
+        return urlencode(params)
 
     @property
     def body(self):
         if self.provider != 'hardcover':
             return b''
+        if self.operation == 'starter_books':
+            return json.dumps({'query': BOOK_STARTER_MINIMAL, 'variables': {}}, ensure_ascii=True).encode('ascii')
         document = BOOK_DETAILS if self.operation == 'book_details' else BOOK_SEARCH
         if self.operation == 'book_details' and self.projection == 'native_minimal':
             document = BOOK_DETAILS_MINIMAL
@@ -217,6 +234,9 @@ def media_operation(request):
     from .source_adapters import SourceRequest
     if type(request) is not SourceRequest:
         raise CatalogueError(Status.INVALID)
+    if request.operation.startswith('starter_'):
+        return MediaOperation(request.source, request.operation,
+            projection='native_minimal' if request.source == 'hardcover' else 'legacy')
     if request.operation == 'book_details':
         return MediaOperation(request.source, request.operation, ids=request.ids, projection='native_minimal')
     if len(request.terms) != 1:

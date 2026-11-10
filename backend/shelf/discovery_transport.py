@@ -521,15 +521,18 @@ def media_authorized(operation, *, secret, revalidate, limiter, response_bytes=2
     Current credential generation and purpose belong to the trusted callback,
     not a token digest. No caller JSON, legacy key store or default profile can
     create that authority. Neither a successful response nor a retry grants it.
+    The closed nonpersonal source-check descriptor shares this exact I/O path;
+    native check intent/proof accounting remains separate from catalogue permits.
     """
     from .provider_catalogue import MediaOperation, _media_arguments
+    from .source_check_contract import SourceCheckOperation
     child, slot, header = None, None, bytearray()
     status, headers, input_closed = None, (), False
     end = time.monotonic() + (parent_seconds if type(parent_seconds) in (int, float)
                               and 0 < parent_seconds <= 6 else 6)
     try:
         import re
-        if (type(operation) is not MediaOperation or type(secret) is not bytearray
+        if (type(operation) not in (MediaOperation, SourceCheckOperation) or type(secret) is not bytearray
                 or not 1 <= len(secret) <= 4096
                 or not re.fullmatch(rb'[A-Za-z0-9._~+/-]+=*', secret)
                 or not callable(revalidate) or type(limiter) is not MediaHostLimiter

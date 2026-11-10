@@ -236,10 +236,13 @@ class SourceAuthority(SourceAuthorityIssuer):
             return {'source': source, 'query': MOSHTIX_QUERY, 'page_size': 9, 'window_weeks': 8}
         # Bind the same selected documents used by MediaOperation.body; this
         # template changes freshness without adding a second serializer.
-        from .provider_catalogue import BOOK_SEARCH, BOOK_DETAILS_MINIMAL
+        from .provider_catalogue import BOOK_SEARCH, BOOK_DETAILS_MINIMAL, BOOK_STARTER_MINIMAL
+        spec = registered_source(source)
         return {'source': source, 'identity': list(source_identity(source)),
-                'documents': [BOOK_SEARCH, BOOK_DETAILS_MINIMAL] if source == 'hardcover' else [],
-                'operations': list(registered_source(source).operations)}
+                'documents': [BOOK_SEARCH, BOOK_DETAILS_MINIMAL, BOOK_STARTER_MINIMAL] if source == 'hardcover' else [],
+                'operations': list(spec.operations), 'starter_operation': spec.starter_operation,
+                'requires_terms': {operation: spec.requires_terms(operation) for operation in spec.operations}}
+
 
     def _rights(self, now):
         require(isinstance(self.provider, SourcePolicyProvider), 'CAPABILITY_UNAVAILABLE')
@@ -304,8 +307,10 @@ class SourceAuthority(SourceAuthorityIssuer):
                 spec = registered_source(source)
                 if request is None:
                     terms = next(q['terms'] for q in read_json(plan.body)['queries'] if q['category'] == spec.categories[0])
-                    require(bool(terms), 'NO_GROUNDED_CANDIDATES')
-                    request = SourceRequest(source, spec.categories[0], spec.operations[0], tuple(terms[:1]))
+                    from .source_adapters import initial_source_request
+                    # Preview, exact permit and collector select one operation
+                    # from the same permitted terms. No failed search fallback.
+                    request = initial_source_request(source, spec.categories[0], tuple(terms))
                 require(type(request) is SourceRequest and request.source == source, 'AUTHORITY_DENIED')
                 if request.operation == 'book_details':
                     derived = self._derived.get((plan.plan_ref, request.request_digest))

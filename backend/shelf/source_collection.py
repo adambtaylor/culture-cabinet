@@ -17,7 +17,7 @@ from .disclosure import DisclosureError, SCALARS, _sources, canonical_bytes, rea
 from .enhance_contract import (CataloguePlan, CategoryOutcome, CollectionBudget,
     CollectionSeal, EnhanceFault, RegistryView, digest, require, utc)
 from .source_adapters import (SourceBackend, SourcePermit, SourceReply, SourceRequest,
-    normalize, registered_source)
+    initial_source_request, normalize, registered_source)
 from .source_evidence import EvidenceBatch, FieldPolicy, build_evidence, cached_evidence
 
 
@@ -128,18 +128,15 @@ class SourceCollection:
                 selected_plans[name] = selected
                 source_terms = next(row['terms'] for row in read_json(selected.body)['queries']
                                     if row['category'] == category)
-                if spec.search and not source_terms:
-                    allocation_failures[category].append('NO_GROUNDED_CANDIDATES')
-                    continue
-                # Search coverage is explicitly bounded to the first permitted
-                # term per selected source. The full profile/history remains in
-                # the shared plan and later inference; nothing is silently cut.
-                terms = tuple(source_terms[:1]) if spec.search else ()
-                requests.append(SourceRequest(name, category, spec.operations[0], terms))
+                try:
+                    requests.append(initial_source_request(name, category, tuple(source_terms)))
+                except EnhanceFault as error:
+                    allocation_failures[category].append(error.code)
+
             allocations[category] = tuple(requests)
         # Reserve worst-case enrichment capacity for ALL categories before any
         # read. A useful early category must not consume a hidden category's slot.
-        cost = sum(2 if req.source == 'hardcover' else 1
+        cost = sum(2 if req.operation == 'book_search' else 1
                    for requests in allocations.values() for req in requests)
         if cost > budget.initial_sends:
             outcomes = tuple(CategoryOutcome(category, 'unavailable', 0,
@@ -174,7 +171,12 @@ class SourceCollection:
                             'planned_term_count': len(query['terms']),
                             'requested_term_count': len(request.terms),
                             'source_admitted_count': len(material['records']),
-                            'duplicate_count': len(material['records']) - len(fresh)}
+                            'duplicate_count': len(material['records']) - len(fresh),
+                            'operation': request.operation,
+                            'selection_kind': 'editorial_starter' if request.operation ==
+                                registered_source(request.source).starter_operation else 'source_lookup',
+                            'selection_label': registered_source(request.source).starter_label
+                                if request.operation == registered_source(request.source).starter_operation else ''}
                         attempts.append({'category': category, 'source': request.source, 'code': 'OK'})
                     except EnhanceFault as error:
                         if error.code == 'PREVIEW_STALE':
