@@ -188,9 +188,11 @@ def _bound(authority, session_ref, profile_ref, *, sensitive=False):
     return state, session
 
 
-def create_owner_profile(authority, session_ref, *, expected_owner_revision):
+def create_owner_profile(authority, session_ref, *, expected_owner_revision, label='Your cabinet'):
     """Explicit, repeatable fresh-owner binding; existing profiles are never adopted."""
     _revision(expected_owner_revision)
+    _require(type(label) is str and 1 <= len(label) <= 80 and bool(label.strip())
+        and not any(ord(c) < 32 or ord(c) == 127 for c in label), 'CONTRACT_INVALID', 422)
     _require(type(authority) is PortableAuthority)
     with recovery_guard(authority, session_ref) as checkpoint, authority._lock, _checked_transaction(checkpoint):
         installation, session = _owner(authority, session_ref, sensitive=True)
@@ -202,7 +204,7 @@ def create_owner_profile(authority, session_ref, *, expected_owner_revision):
         _require(not Profile.objects.exists() and not ProfileCabinetState.objects.exists())
         checkpoint.check()
         with _write_window():
-            profile = Profile.objects.create(kind='owner', label='Your cabinet', active=True)
+            profile = Profile.objects.create(kind='owner', label=label, active=True)
             Grant.objects.create(user_id=session.owner_id, profile=profile,
                                  can_view=True, can_select=True, can_mutate=True, can_export=True)
             # Only genuinely new cabinets start in the native feedback schema;
@@ -396,7 +398,7 @@ def _synthesis_guards():
     prior = import_module('shelf.migrations.0021_portable_disclosure_authority').TRIGGERS
     broker = import_module('shelf.migrations.0022_portable_enhance_state').TRIGGERS
     normalize = lambda sql: sql.strip().removesuffix(';').rstrip()
-    current = import_module('shelf.migrations.0025_obtain_native_origin')
+    current = import_module('shelf.migrations.0028_guided_owner_journey')
     try:
         definitions = current.effective_inventory(connection.connection)
     except RuntimeError:
@@ -601,7 +603,7 @@ def synthesis_history(state):
     return legacy
 
 
-def _history_revisions(state):
+def _history_revisions(state, *, event_ids=None, feedback_subject_present=None):
     # This is a LOCAL complete revision hash, not another outbound serializer.
     # No notes or this hash are sent. Include all committed row fields so denied
     # note edits, retractions, archives and source-only changes stale a preview.
@@ -620,9 +622,33 @@ def _history_revisions(state):
         'social': SocialDiscoveryState.objects.filter(profile_id=state.profile_id),
         'favourites': SavedItem.objects.filter(profile_id=state.profile_id, list_kind='favorites'),
     }
+    if event_ids is not None:
+        # Reconstruct a committed card-action boundary from actual immutable
+        # feedback history, rather than trusting a receipt's claimed digest.
+        # All other writers remain in the revision and therefore break a chain.
+        from .feedback import reduce_events
+        events = list(FeedbackEvent.objects.filter(profile_id=state.profile_id, pk__in=event_ids)
+                      .order_by('revision', 'id'))
+        groups = {}
+        for event in events:
+            groups.setdefault((event.target_id, event.signal, event.scope), []).append(event)
+        reconstructed = []
+        for key, history in groups.items():
+            row = FeedbackProjection.objects.filter(profile_id=state.profile_id,
+                target_id=key[0], signal=key[1], scope=key[2]).values().first()
+            _require(row is not None, 'PREVIEW_STALE', 409)
+            effective, value, erased = reduce_events(history)
+            reconstructed.append({**row, 'revision': history[-1].revision,
+                                  'effective_event_id': effective, 'value': value, 'erased': erased})
+        queries['feedback_events'] = FeedbackEvent.objects.filter(profile_id=state.profile_id, pk__in=event_ids)
+        queries['feedback_targets'] = FeedbackTarget.objects.filter(pk__in={e.target_id for e in events})
+        queries['feedback_projections'] = sorted(reconstructed, key=lambda row: row['id'])
+        if feedback_subject_present is False:
+            queries['feedback_subjects'] = []
     versions = {}
     for name, queryset in queries.items():
-        rows = synthesis_history(state) if name == 'derived_history' else list(queryset.order_by('pk').values())
+        rows = (synthesis_history(state) if name == 'derived_history' else
+                queryset if type(queryset) is list else list(queryset.order_by('pk').values()))
         try:
             raw = json.dumps(rows, sort_keys=True, separators=(',', ':'), ensure_ascii=False,
                              allow_nan=False, default=_local_default).encode()

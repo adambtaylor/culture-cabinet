@@ -14,7 +14,8 @@ NAMESPACE = 'owner-stated-artist'
 SIGNALS = ('interest', 'enjoyment')
 ITEM_NAMESPACE = 'owner-stated-item'
 NOTE_NAMESPACE = 'owner-stated-category-note'
-NATIVE_NAMESPACES = (NAMESPACE, ITEM_NAMESPACE, NOTE_NAMESPACE)
+FAVOURITE_NAMESPACE = 'owner-stated-favourite'
+NATIVE_NAMESPACES = (NAMESPACE, ITEM_NAMESPACE, NOTE_NAMESPACE, FAVOURITE_NAMESPACE)
 ENTRY_SIGNALS = ('interest', 'enjoyment', 'note')
 MAX_ENTRIES = 100
 
@@ -236,3 +237,30 @@ class PortableTasteInputs:
                 raise AuthorityFault('CAPABILITY_UNAVAILABLE' if error.status == 503 else 'AUTHORITY_DENIED',
                                      503 if error.status == 503 else 403) from None
             return {'entry_ref': entry_ref, 'event_ref': result.event_id, 'revision': result.accepted_revision}
+
+    def mutate_favourite(self, session_ref, profile_ref, *, entry_ref, mutation_id,
+                         base_revision, category, title=None, remove=False):
+        from .category_registry import KEYS
+        ga._require(category in KEYS and type(remove) is bool, 'CONTRACT_INVALID', 422)
+        profile_ref, entry_ref = str(ga._uuid(profile_ref)), str(ga._uuid(entry_ref))
+        mutation_id = str(ga._uuid(mutation_id)); ga._revision(base_revision)
+        ga._require(remove or type(title) is str and 1 <= len(title) <= 200 and bool(title.strip())
+            and not any(ord(c) < 32 or ord(c) == 127 for c in title), 'CONTRACT_INVALID', 422)
+        with ga.current_writer(self.authority, session_ref, profile_ref) as state:
+            actor = get_user_model().objects.get(pk=state.actor_id)
+            with transaction.atomic(), ga.writer_window(actor, state.profile_id):
+                target, created = FeedbackTarget.objects.get_or_create(
+                    source_namespace=FAVOURITE_NAMESPACE, source_key=profile_ref+':'+entry_ref,
+                    defaults=dict(id=uuid.uuid5(ga._uuid(profile_ref), FAVOURITE_NAMESPACE+':'+entry_ref),
+                                  kind='item', category=category, title=title or ''))
+                ga._require(not target.deleted and target.category == category and (remove or target.title == title)
+                    and (not created or not remove), 'REVISION_CONFLICT', 409)
+            events = FeedbackEvent.objects.filter(profile_id=state.profile_id,target=target,
+                signal='saved',scope='item').order_by('revision')
+            receipt = MutationReceipt.objects.filter(actor=actor,mutation_id=mutation_id).first()
+            last = (events.filter(revision=receipt.accepted_revision-1).first() if receipt else events.last())
+            command = MutationCommand(mutation_id,str(target.pk),'item','saved','item','set',base_revision,
+                str(last.pk) if last else None,None if remove else {'value':True})
+            try:result = record_mutation(actor=actor,profile_id=state.profile_id,command=command)
+            except Conflict:raise AuthorityFault('REVISION_CONFLICT',409) from None
+            return {'entry_ref':entry_ref,'event_ref':result.event_id,'revision':result.accepted_revision}

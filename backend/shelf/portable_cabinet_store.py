@@ -362,11 +362,25 @@ class CabinetStore:
                 publication_revision=revision, publication_ref=str(publication.pk)))
             return publication
 
+    def classify_publication(self, cabinet, publication, current):
+        require(publication.content_redacted_at is None and self.authority.now() < publication.expires_at,
+                'PREVIEW_STALE', 409)
+        expected = current.record()
+        if publication.bindings == expected:
+            return 'fresh'
+        from .card_actions import verify_transition_chain
+        verify_transition_chain(cabinet, publication, current, self.authority, self.session_ref)
+        return 'feedback_only'
+
     def read_current(self):
-        # Privacy removal commits in its own owner/recovery transaction before a
-        # failed read can unwind. Raising inside that transaction would resurrect
-        # the payload by rolling the removal back along with the stale read.
+        return self._read_publication(interaction=False)
+
+    def read_for_interaction(self):
+        return self._read_publication(interaction=True)
+
+    def _read_publication(self, *, interaction):
         self.redact_expired()
+        preserve_feedback = False
         try:
             with self.scope() as cabinet:
                 if cabinet.active_manifest_ref is None:
@@ -374,18 +388,26 @@ class CabinetStore:
                 current = self.current()
                 publication = PortableCabinetManifest.objects.filter(pk=cabinet.active_manifest_ref,
                     cabinet=cabinet, publication_revision=cabinet.publication_revision).first()
-                require(publication is not None and publication.content_redacted_at is None
-                    and publication.bindings == current.record()
-                    and self.authority.now() < publication.expires_at, 'PREVIEW_STALE', 409)
+                require(publication is not None, 'PREVIEW_STALE', 409)
+                classification = self.classify_publication(cabinet, publication, current)
+                feedback_only = classification == 'feedback_only'
+                # A proven feedback-only view is display authority only. Strict
+                # send/current paths still refuse without deleting source cards
+                # solely because these exact personal actions changed taste.
+                preserve_feedback = feedback_only and not interaction
+                require(not preserve_feedback, 'PREVIEW_STALE', 409)
                 filtered = self.provider.filter_manifest(current, read_json(canonical_bytes(publication.manifest)))
                 require(filtered is not None, 'AUTHORITY_DENIED', 403)
+                if feedback_only:
+                    filtered = {**filtered, 'for_you': []}
                 stored_cards = [card for row in publication.manifest['categories'] for card in row['cards']]
                 filtered = self.validate_manifest(filtered, current, stored_cards)
                 require(all(reason in publication.manifest['for_you'] for reason in filtered['for_you']),
                         'AUTHORITY_DENIED', 403)
-                return publication, filtered
+                return (publication, filtered, classification) if interaction else (publication, filtered)
         except AuthorityFault:
-            self.redact_profile()
+            if not preserve_feedback:
+                self.redact_profile()
             raise
 
     def redact_expired(self):

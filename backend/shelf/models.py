@@ -806,3 +806,50 @@ def _content_digest(*parts):
 from django.db.backends.signals import connection_created
 connection_created.connect(_closed_enhance_write_guard, weak=False,
                            dispatch_uid='cabinet.closed_enhance_write_guard')
+
+
+class PortableJourneyState(models.Model):
+    """Resumable nonsecret progress; preferences remain in typed feedback."""
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, serialize=False)
+    cabinet = models.OneToOneField(ProfileCabinetState, on_delete=models.PROTECT)
+    revision = models.PositiveBigIntegerField(default=1)
+    step = models.CharField(max_length=16, default='providers')
+    completed = models.JSONField(default=list)
+    skipped = models.JSONField(default=list)
+    slots = models.JSONField(default=dict)
+    connections = models.JSONField(default=dict)
+    run_ref = models.UUIDField(null=True)
+    created_at = models.DateTimeField()
+    updated_at = models.DateTimeField()
+
+
+class PortableJourneyCommand(models.Model):
+    """Replay/transition metadata, never another preference or source store."""
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, serialize=False)
+    cabinet = models.ForeignKey(ProfileCabinetState, on_delete=models.PROTECT)
+    command_id = models.UUIDField()
+    kind = models.CharField(max_length=40)
+    descriptor = models.JSONField()
+    descriptor_digest = models.CharField(max_length=64)
+    state = models.CharField(max_length=16)
+    result = models.JSONField(default=dict)
+    proof = models.JSONField(default=dict)
+    created_at = models.DateTimeField()
+
+    class Meta:
+        constraints = [models.UniqueConstraint(fields=['cabinet', 'command_id'],
+                                               name='journey_owner_command')]
+
+
+class PortableSourceCheckAttempt(models.Model):
+    """One explicit fixed nonpersonal source check; history is not live proof."""
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, serialize=False)
+    cabinet = models.ForeignKey(ProfileCabinetState, on_delete=models.PROTECT)
+    connection = models.ForeignKey(PortableConnection, on_delete=models.PROTECT)
+    command = models.OneToOneField(PortableJourneyCommand, on_delete=models.PROTECT)
+    binding = models.JSONField()
+    operation_digest = models.CharField(max_length=64)
+    state = models.CharField(max_length=16)
+    outcome = models.JSONField(default=dict)
+    created_at = models.DateTimeField()
+    expires_at = models.DateTimeField()

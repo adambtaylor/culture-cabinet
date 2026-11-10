@@ -176,7 +176,10 @@ class PortableSecurityMiddleware:
             if (getattr(match, 'url_name', None) in documents
                     and match.func is documents[match.url_name]
                     and response.get('Content-Type', '').split(';')[0].strip().lower() == 'text/html'):
+                scripts = f'{boundary.origin}/cabinet/obtain/status.js'
+                if match.func is enhancement_views.portable_cabinet:
+                    scripts += f' {boundary.origin}/cabinet/actions/script.js'
                 response['Content-Security-Policy'] += (
-                    f"; script-src {boundary.origin}/cabinet/obtain/status.js; script-src-attr 'none'"
+                    f"; script-src {scripts}; script-src-attr 'none'"
                     f"; connect-src {boundary.origin}/cabinet/obtain/jobs/; worker-src 'none'")
         return response

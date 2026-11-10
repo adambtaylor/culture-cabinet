@@ -66,6 +66,9 @@ _NATIVE_CLEAN_STARTS = weakref.WeakKeyDictionary()
 
 
 def native_clean_start_matches(coordinator, boundary):
+    # An absent witness is a refusal, not a WeakKeyDictionary lookup of None.
+    if type(coordinator) is not CurrentRecoveryCoordinator:
+        return False
     issued = _NATIVE_CLEAN_STARTS.get(coordinator)
     return (type(coordinator) is CurrentRecoveryCoordinator and issued is not None
             and issued[0] is boundary and boundary.active
@@ -883,7 +886,7 @@ def _fictional_target(target):
 def _effective_guards(raw):
     from importlib import import_module
     import re
-    current = import_module('shelf.migrations.0025_obtain_native_origin')
+    current = import_module('shelf.migrations.0028_guided_owner_journey')
     try:
         definitions = current.effective_inventory(raw)
     except RuntimeError:

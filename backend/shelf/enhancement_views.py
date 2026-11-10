@@ -812,7 +812,7 @@ def portable_cabinet(request):
     from .portable_connection_views import _uuid
     from .portable_authority import AuthorityFault
     query = request.GET
-    if (set(query) - {'profile_ref', 'connection_ref', 'category', 'run_ref'} or 'profile_ref' not in query
+    if (set(query) - {'profile_ref', 'connection_ref', 'category', 'run_ref', 'action_receipt'} or 'profile_ref' not in query
             or any(len(query.getlist(k)) != 1 for k in query)):
         raise AuthorityFault('CONTRACT_INVALID', 422)
     choices = cabinet_choices(request)
@@ -839,7 +839,9 @@ def portable_cabinet(request):
         context['inference_consent_url'] = '/cabinet/consent?' + urlencode({'profile_ref': profile_ref, 'connection_ref': connection_ref})
     status = 200
     try:
-        context.update(_cabinet_projection(service.current(session_ref, profile_ref=profile_ref)))
+        interaction = service.current_for_interaction(session_ref, profile_ref=profile_ref)
+        context.update(_cabinet_projection(interaction))
+        context['ranking_state'] = interaction.get('ranking_state','none')
     except AuthorityFault as fault:
         # Render only the refusal. Never keep the last manifest in a session or
         # merge previously displayed cards back into a current-policy failure.
@@ -868,7 +870,7 @@ def portable_cabinet(request):
     for row in context['categories']:
         row['url'] = _cabinet_url(profile_ref, connection_ref, category=row['category'], run_ref=run_ref)
         row['visible'] = not category or row['category'] == category
-    from .portable_feedback_views import card_feedback_context
+    from .card_actions import CardActions
     from .portable_reactions import target_ref as feedback_target_ref
     context['feedback_available'] = True
     context['feedback_url'] = '/cabinet/taste?' + urlencode({'profile_ref': profile_ref,
@@ -881,12 +883,17 @@ def portable_cabinet(request):
             continue
         for card in row['cards']:
             target = feedback_target_ref(profile_ref, card['candidate_key'])
-            feedback = card_feedback_context(request.portable_authority, session_ref,
-                profile_ref, target_ref=target)
-            card['feedback'] = _card_feedback_display(feedback, profile_ref=profile_ref, target_ref=target)
+            from .card_action_presentation import card_action_context
+            card['card_actions'] = card_action_context(CardActions(request.portable_authority,service=service).project(
+                session_ref,profile_ref=profile_ref,target_ref=target))
+            context['card_actions_available'] = True
             from .portable_obtain_views import cabinet_card_obtain_context
             card.update(cabinet_card_obtain_context(request, profile_ref=profile_ref,
                 publication_revision=context.get('publication_revision'), card=card))
+    if 'action_receipt' in query:
+        command_id=str(_uuid(query['action_receipt']))
+        context['action_receipt']=CardActions(request.portable_authority,service=service).receipt(
+            session_ref,profile_ref,command_id)
     from .portable_feedback_views import consume_feedback_outcome
     outcome = consume_feedback_outcome(request, profile_ref=profile_ref)
     if outcome is not None:

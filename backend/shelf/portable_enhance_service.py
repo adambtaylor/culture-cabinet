@@ -776,6 +776,27 @@ class EnhanceService:
             return {'schema': 'cabinet-current/v1', 'published': True, 'reaction_targets': reactions,
                     'publication_revision': publication.publication_revision, 'manifest': manifest, 'code': 'OK'}
 
+    def current_for_interaction(self, session_ref, *, profile_ref):
+        with ga.recovery_guard(self.authority, session_ref, profile_ref=profile_ref):
+            cabinet, _ = ga._bound(self.authority, session_ref, profile_ref)
+            if cabinet.active_manifest_ref is None:
+                return {'schema': 'cabinet-current/v1', 'published': False,
+                        'publication_ref': None, 'publication_revision': None, 'manifest': None,
+                        'ranking_state': 'none', 'code': 'OK'}
+            from .models import PortableCabinetManifest
+            publication = PortableCabinetManifest.objects.select_related('run').filter(
+                pk=cabinet.active_manifest_ref, cabinet=cabinet).first()
+            require(publication is not None, 'PREVIEW_STALE', 409)
+            store = self._store(session_ref, profile_ref, str(publication.run.portable_connection_id))
+            publication, manifest, classification = store.read_for_interaction()
+            from .portable_reactions import target_ref
+            return {'schema': 'cabinet-current/v1', 'published': True,
+                'publication_ref': str(publication.pk), 'publication_revision': publication.publication_revision,
+                'reaction_targets': {card['key']: target_ref(str(profile_ref), card['key'])
+                    for group in manifest['categories'] for card in group['cards']},
+                'manifest': manifest, 'ranking_state': 'feedback_pending' if classification == 'feedback_only' else 'fresh',
+                'code': 'OK'}
+
     def _saved_access(self, session_ref, profile_ref, *, action='save'):
         # Evidence and matching numeric IDs cannot create or replace the live PA1
         # capability. In particular, a refused portable scope never falls back.

@@ -7,8 +7,15 @@ from shelf import enhancement_views as enhance
 from shelf import portable_obtain_views as obtain
 from shelf import portable_source_views as sources
 from shelf import portable_feedback_views as feedback
+from shelf import card_action_views as card_actions
 
 urlpatterns = [
+    path('cabinet/actions/style.css', card_actions.style, name='portable_card_style'),
+    path('cabinet/actions/script.js', card_actions.script, name='portable_card_script'),
+    path('setup/journey/style.css', card_actions.journey_style, name='portable_journey_style'),
+    path('cabinet/actions/', card_actions.action, name='portable_card_action'),
+    path('cabinet/actions/undo/', card_actions.undo, name='portable_card_undo'),
+    path('cabinet/actions/<uuid:command_id>/', card_actions.receipt, name='portable_card_receipt'),
     path('setup/cabinet', views.cabinet_entry),
     path('setup/cabinet/create', views.create_cabinet),
     path('setup/cabinet/bind', views.bind_cabinet),

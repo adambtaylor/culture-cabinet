@@ -100,19 +100,19 @@ class SourceAuthorityTests(AuthorityCase):
     def test_media_identity_cannot_borrow_moshtix_rights_or_inference_purpose(self):
         from shelf.disclosure import read_json
         from shelf.enhance_contract import digest
-        from shelf.provider_catalogue import BOOK_SEARCH, BOOK_DETAILS_MINIMAL
+        from shelf.provider_catalogue import BOOK_SEARCH, BOOK_DETAILS_MINIMAL, BOOK_STARTER_MINIMAL
         from shelf.source_authority import source_identity
 
         # The profile revision hashes this full template with the strict JSON codec.
         # Keep the tuple API for callers, but bind every component on the JSON wire.
         expected = (
             ('tmdb_movie', ['tmdb-movie-fixed-v1', 'https://api.themoviedb.org',
-                            '/3/search/movie'], ['search_movie'], []),
+                            '/3/search/movie'], ['search_movie', 'starter_movie_science'], []),
             ('tmdb_tv', ['tmdb-tv-fixed-v1', 'https://api.themoviedb.org',
-                         '/3/search/tv'], ['search_tv'], []),
+                         '/3/search/tv'], ['search_tv', 'starter_tv_fantasy'], []),
             ('hardcover', ['hardcover-minimal-v2', 'https://api.hardcover.app',
-                           '/v1/graphql'], ['book_search', 'book_details'],
-             [BOOK_SEARCH, BOOK_DETAILS_MINIMAL]),
+                           '/v1/graphql'], ['book_search', 'book_details', 'starter_books'],
+             [BOOK_SEARCH, BOOK_DETAILS_MINIMAL, BOOK_STARTER_MINIMAL]),
         )
         for source, identity, operations, documents in expected:
             with self.subTest(source=source), patch.object(self.issuer, 'source_key', return_value=source):
@@ -121,7 +121,9 @@ class SourceAuthorityTests(AuthorityCase):
                 template = self.issuer.operation_template()
                 encoded = canonical_bytes(template)
                 self.assertEqual(read_json(encoded), {'source': source, 'identity': identity,
-                    'operations': operations, 'documents': documents})
+                    'operations': operations, 'documents': documents,
+                    'starter_operation': operations[-1],
+                    'requires_terms': {op: not op.startswith('starter_') for op in operations}})
                 bound_digest = digest(encoded)
                 for field in ('identity', 'operations', 'documents'):
                     for index in range(len(template[field])):
@@ -147,6 +149,40 @@ class SourceAuthorityTests(AuthorityCase):
         self.assertEqual(issuer._rights(self.authority.now()).source, 'tmdb_movie')
         self.fault('AUTHORITY_DENIED', ga.current_view, self.authority, self.ref,
             profile_ref=self.profile_ref, connection_ref=str(row.pk), purpose='inference')
+
+    def test_empty_native_preview_confirm_and_permit_use_same_registered_starter(self):
+        from shelf.source_adapters import initial_source_request
+        from shelf.provider_catalogue import BOOK_STARTER_MINIMAL
+        for source,category in [('tmdb_movie','movie'),('tmdb_tv','tv'),('hardcover','book')]:
+            with self.subTest(source=source):
+                connection=configure_source(self.authority,self.ref,confirmed=True,adapter=source)
+                row=PortableConnection.objects.get(pk=connection)
+                self.authority._source_vault.replace(self.ref,row.pk,row.config_revision,b'FICTIONAL-SOURCE')
+                ga.change_grant(self.authority,self.ref,profile_ref=self.profile_ref,
+                    expected_revision=0,purpose='catalogue_lookup',connection_ref=connection,
+                    allowed_data_classes=['canonical_seed'],expires_at=self.expires,action='grant')
+                rights=RightsFixture();rights.value=replace(rights.value,source=source)
+                issuer=SourceAuthority(self.authority,self.ref,profile_ref=self.profile_ref,
+                    connection_ref=connection,policy_provider=rights)
+                plan=EnhanceCoordinator(None,now=self.authority.now).plan(
+                    current_binding(self.authority,self.ref,profile_ref=self.profile_ref,connection_ref=connection),
+                    self.registry,run_ref=str(uuid.uuid4()),client_key=str(uuid.uuid4()),refresh_nonce=str(uuid.uuid4())).plan
+                request=initial_source_request(source,category,())
+                preview=issuer.preview(plan)
+                with self.assertRaises(EnhanceFault):
+                    issuer.authorize(request,plan,issuer.operation_for(request,plan,now=self.authority.now()),
+                        now=self.authority.now())
+                issuer.confirm(preview['preview_ref'],plan_digest=preview['plan_digest'],
+                    operation_digest=preview['operation_digest'],confirmed=True)
+                operation=issuer.operation_for(request,plan,now=self.authority.now())
+                permit=issuer.authorize(request,plan,operation,now=self.authority.now())
+                permit.verify(request,plan,self.authority.now())
+                issuer.revalidate(permit,request,plan,operation,now=self.authority.now())
+                template=issuer.operation_template()
+                self.assertEqual(template['starter_operation'],request.operation)
+                self.assertFalse(template['requires_terms'][request.operation])
+                if source=='hardcover':self.assertIn(BOOK_STARTER_MINIMAL,template['documents'])
+        self.assertEqual(self.fake.calls,1)  # Existing neutral fixture only; no source send.
 
     def setUp(self):
         super().setUp()
