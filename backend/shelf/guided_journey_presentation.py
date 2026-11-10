@@ -9,6 +9,7 @@ from urllib.parse import urlsplit, parse_qs
 
 from django.http import HttpResponse
 from django.template.loader import render_to_string
+from .taste_history_presentation import noise_control_context
 
 STEPS = ('identity', 'providers', 'favourites', 'prepare', 'finish')
 CATEGORIES = ('book', 'movie', 'tv', 'artist', 'recording', 'podcast_episode', 'event',
@@ -117,7 +118,8 @@ def _form(value, kind, *, bound, provider=None, step_action=None):
     if type(value) is not dict or type(value.get('fields')) is not dict:
         raise ValueError('Invalid native journey form')
     fields = value['fields']
-    if set(fields) != FIELD_SETS[kind]:
+    expected = FIELD_SETS[kind] | ({'noise'} if kind == 'prepare' and 'noise' in fields else set())
+    if set(fields) != expected:
         raise ValueError('Invalid native journey fields')
     path = '/cabinet/journey/' + ('favourites/' + kind if kind in ('add', 'remove') else kind)
     if provider:
@@ -128,6 +130,9 @@ def _form(value, kind, *, bound, provider=None, step_action=None):
     reason = _text(value.get('disabled_reason', ''))
     hidden = []
     for key, raw in fields.items():
+        if key == 'noise':
+            noise_control_context(raw)
+            continue
         if key in ('secret', 'label', 'title', 'confirmed'):
             # Secret input is always newly entered and never retained as a
             # hidden default, including a failed save or replayed save intent.
@@ -188,6 +193,12 @@ def guided_journey_context(projection):
         raise ValueError('Invalid journey navigation')
     data['name_form'] = _form(actions.get('name'), 'name', bound=bound)
     data['prepare_form'] = _form(actions.get('prepare'), 'prepare', bound=bound)
+    # Only a native producer's admitted default enables the new start field.
+    # Legacy projections remain unchanged until their caller supports Noise.
+    data['noise_control'] = noise_control_context(projection['next_noise']) if 'next_noise' in projection else None
+    prepare_noise = actions['prepare']['fields'].get('noise')
+    if prepare_noise is not None and (data['noise_control'] is None or prepare_noise != data['noise_control']['value']):
+        raise ValueError('Prepare Noise binding differs')
     data['navigation'] = [{**_form(actions['step'][action], 'step', bound=bound, step_action=action),
                            'label': {'back': 'Back', 'skip': 'Skip this step', 'continue': 'Continue'}[action]}
                           for action in ('back', 'skip', 'continue')]
