@@ -32,6 +32,8 @@ dt { color: #4e5749; } dd { margin: 0; overflow-wrap: anywhere; }
 .status, .notice { background: #eeeee2; padding: .85rem 1rem; border-left: 3px solid #526748; }
 .notice { border-color: #895317; margin-bottom: 1.25rem; max-width: 45rem; }
 .notice p:last-child { margin: 0; }
+.credential-storage { margin-block: 1.25rem; }
+.credential-replacement { margin-block: 1rem; }
 .connection-actions { display: flex; flex-wrap: wrap; gap: .25rem .75rem; }
 .test-preview { margin-block: 2rem; padding-block: 1.25rem; border-block: 1px solid #b6bda9; }
 pre { padding: 1rem; background: #efeee6; white-space: pre-wrap; overflow-wrap: anywhere; font-size: .9rem; }

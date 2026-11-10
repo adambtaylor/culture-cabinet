@@ -21,24 +21,24 @@ NOTICES = {
     'REVISION_CONFLICT': 'This configuration changed. Review the current setup before submitting again.',
     'RATE_LIMITED': 'Too many attempts. Wait before trying again; no automatic retry will run.',
     'CAPABILITY_UNAVAILABLE': 'Setup is temporarily unavailable. No replacement connection or model was selected.',
-    'CREDENTIAL_REQUIRED': 'Add a session-only API key before previewing a connection test.',
+    'CREDENTIAL_REQUIRED': 'Add an API key, or unlock its saved encrypted key, before previewing a connection test.',
     'UNKNOWN_RECONCILIATION_REQUIRED': 'A previous test outcome is unknown. Reconcile that attempt before sending another potentially paid request.',
     'CONNECTION_SELECTION_REQUIRED': 'More than one model configuration is saved. Select an owned connection explicitly before continuing; none was chosen automatically.',
 }
 SUCCESS_NOTICES = {
     'OWNER_CREATED': 'Local owner created. Your model connection is ready to configure.',
     'OWNER_UNLOCKED': 'Your owner session is confirmed. Your saved configuration is available. Retry your intended action explicitly; no key or connection test was resubmitted.',
-    'SIGNED_OUT': 'You are logged out. Your nonsecret configuration is retained.',
+    'SIGNED_OUT': 'You are logged out. Your saved configuration and encrypted keys are retained on this computer.',
     'CONFIG_SAVED': 'Model configuration saved. Generation has not been verified.',
     'KEY_ADDED': 'Session-only API key updated. It is not stored with the configuration.',
-    'KEY_REMOVED': 'Session-only API key removed. Model configuration is retained.',
+    'KEY_REMOVED': 'API key removed from Cabinet. Model configuration is retained.',
     'TEST_PASSED': 'Connection test finished. Review the current connection status below; personal Run remains unavailable.',
 }
 ACTIONS = {name: '/setup/form/' + name for name in
            ('claim', 'login', 'logout', 'reauthenticate', 'configure', 'credential', 'remove', 'preview', 'confirm')}
 STATUS_COPY = {
     'unconfigured': 'Connection not tested. Saving a configuration does not prove that generation works.',
-    'missing_credential': 'No session-only API key is present. Add a key to preview the neutral connection test.',
+    'missing_credential': 'No API key is currently available to this session. Check the saved-key status below before previewing a connection test.',
     'stale': 'The previous connection check is no longer current. Review the configuration and key before testing again.',
     'isolated_test_only': 'Only a synthetic test result is recorded. Working inference has not been established.',
     'unknown': 'A previous test outcome is unknown. Do not send another test blindly; reconcile the existing attempt.',
@@ -51,6 +51,9 @@ STATUS_COPY = {
     'incompatible': 'The model response did not meet the required connection contract.',
     'failed': 'The connection check failed. Review the selected configuration; no automatic retry will run.',
 }
+
+
+CREDENTIAL_STORE_STATES = {'absent', 'available', 'locked', 'unavailable', 'removal_pending'}
 
 
 def _reference(value):
@@ -96,6 +99,7 @@ def render_setup(context, *, status=200):
             'actions': ACTIONS,
             'configured': False, 'credential_configured': False,
             'connection_ready': False, 'run_ready': False, 'reauthentication_required': False,
+            'credential_saved': False, 'credential_available': False, 'credential_store_state': 'absent',
             'selection_required': notice_code == 'CONNECTION_SELECTION_REQUIRED'}
     if state == 'model':
         # Only Root can distinguish a live-but-not-recent session from expiry.
@@ -123,6 +127,32 @@ def render_setup(context, *, status=200):
         data['selection_required'] = data['selection_required'] or (len(choices) > 1 and not data['configured'])
         data['credential_configured'] = _boolean(context, 'credential_configured')
         data['connection_ready'] = _boolean(context, 'connection_ready')
+        # Storage availability is a nonsecret backend projection, independent
+        # of the current RAM lease, provider validation and profile consent.
+        # Never inspect the store or a request to fill a missing presentation field.
+        for name in ('credential_saved', 'credential_available'):
+            data[name] = _boolean(context, name)
+        store_state = context.get('credential_store_state', 'absent')
+        if type(store_state) is not str or store_state not in CREDENTIAL_STORE_STATES:
+            raise ValueError('Invalid credential store presentation state')
+        data['credential_store_state'] = store_state
+        if data['credential_available'] and (not data['credential_saved'] or store_state != 'available'):
+            raise ValueError('Saved credential availability requires a matching saved state')
+        if not data['configured'] and (data['credential_saved'] or data['credential_available']):
+            raise ValueError('Saved credential status requires a selected configuration')
+        data['credential_use_blocked'] = store_state in ('locked', 'unavailable', 'removal_pending')
+        data['credential_save_disabled'] = (data['reauthentication_required']
+            or data['credential_use_blocked'])
+        if notice_code == 'KEY_ADDED' and data['credential_saved']:
+            data['success_notice'] = ('Encrypted API key saved on this computer. You can close the entry terminal. '
+                                      'Provider access has not been verified by saving it.')
+        if store_state == 'removal_pending':
+            # A deletion intent disables use immediately; it is not proof that
+            # the encrypted record was deleted. Do not announce removal early.
+            if notice_code == 'KEY_REMOVED':
+                data['success_notice'] = ''
+            data['connection_ready'] = False
+
         if data['configured']:
             revision = context.get('revision')
             if type(revision) is not int or not 1 <= revision <= 999999999999:
@@ -139,7 +169,7 @@ def render_setup(context, *, status=200):
         data['unknown_outcome'] = (outcome == 'unknown'
                                    or notice_code == 'UNKNOWN_RECONCILIATION_REQUIRED')
         preview = context.get('preview')
-        if preview is not None and not data['reauthentication_required']:
+        if preview is not None and not data['reauthentication_required'] and not data['credential_use_blocked']:
             if not data['configured'] or not data['credential_configured'] or type(preview) is not dict:
                 raise ValueError('Preview requires the current configured connection')
             body = preview.get('body')

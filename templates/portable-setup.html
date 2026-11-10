@@ -6,7 +6,7 @@
   <title>{% if state == 'claim' %}Your local cabinet{% elif state == 'login' %}Log in{% else %}Your model{% endif %} · Culture Cabinet</title>
   <link rel="stylesheet" href="/setup/style.css">
 </head>
-<body data-state="{{ state }}" data-configured="{{ configured|yesno:'true,false' }}" data-connection-ready="{{ connection_ready|yesno:'true,false' }}" data-run-ready="false" data-credential-configured="{{ credential_configured|yesno:'true,false' }}">
+<body data-state="{{ state }}" data-configured="{{ configured|yesno:'true,false' }}" data-connection-ready="{{ connection_ready|yesno:'true,false' }}" data-run-ready="false" data-credential-configured="{{ credential_configured|yesno:'true,false' }}" data-credential-saved="{{ credential_saved|yesno:'true,false' }}" data-credential-available="{{ credential_available|yesno:'true,false' }}" data-credential-store-state="{{ credential_store_state }}">
 <a class="skip-link" href="#setup-main">Skip to setup</a>
 <header class="masthead"><p class="wordmark">Culture Cabinet</p><p class="edition">Portable developer preview</p><nav aria-label="Application information"><a href="#about-credits">About and credits</a></nav></header>
 <main id="setup-main" tabindex="-1">
@@ -32,7 +32,7 @@
       <label for="login-passphrase">Owner passphrase</label><input id="login-passphrase" type="password" name="passphrase" autocomplete="current-password" minlength="12" maxlength="256" required>
       <button type="submit">Log in</button>
     </form>
-    <p class="help">Your saved model configuration remains. Session-only API keys must be entered again when their session ends.</p>
+    <p class="help">Your saved model configuration and encrypted keys remain on this computer. Log in normally; if the keyring is locked, unlock it on the Omarchy desktop. Keys used only for a session must be entered again when that session ends.</p>
   </section>
   {% else %}
   <section class="cabinet-entry-link" aria-labelledby="cabinet-entry-heading">
@@ -47,7 +47,7 @@
       {% if reauthentication_required %}
       <section class="notice" aria-labelledby="reauthentication-heading">
         <h2 id="reauthentication-heading">Confirm your owner passphrase</h2>
-        <p id="reauthentication-help">Your session is still open. Confirm your passphrase to continue changing this connection. Saved configuration and any existing session-only key are retained. Then retry the action you intended; enter any unsaved key again. Nothing is resubmitted automatically.</p>
+        <p id="reauthentication-help">Your session is still open. Confirm your passphrase to continue changing this connection. Saved configuration and any existing key are retained. Then retry the action you intended; enter any unsaved key again. Nothing is resubmitted automatically.</p>
         <form method="post" action="{{ actions.reauthenticate }}" data-form="reauthenticate">
           <input type="hidden" name="csrfmiddlewaretoken" value="{{ csrf_token }}">{% if configured %}<input type="hidden" name="connection_ref" value="{{ connection_ref }}">{% endif %}
           <label for="confirm-passphrase">Owner passphrase</label><input id="confirm-passphrase" type="password" name="passphrase" autocomplete="current-password" minlength="12" maxlength="256" required aria-describedby="reauthentication-help">
@@ -77,17 +77,34 @@
       {% endif %}
       {% if configured %}
       <p class="status">Configuration saved. {{ status_text }}</p>
+      <section class="credential-storage" aria-labelledby="credential-storage-heading" data-credential-status="{{ credential_store_state }}">
+        <h2 id="credential-storage-heading">Your API key</h2>
+        <p class="status" role="status">{% if credential_store_state == 'removal_pending' %}Removal pending — key disabled in Cabinet.{% elif credential_store_state == 'locked' %}Encrypted key store locked.{% elif credential_store_state == 'unavailable' %}Encrypted key store unavailable.{% elif credential_available %}Encrypted key saved and available.{% elif credential_saved %}Encrypted key saved; not currently available.{% elif credential_configured %}A key is available for this session only.{% else %}No encrypted key is saved for this connection.{% endif %}</p>
+        {% if credential_store_state == 'locked' %}
+        <p>Unlock the Culture Cabinet keyring using the normal prompt on the Omarchy desktop, then return here and check again. Do not enter the keyring password into Cabinet or an SSH terminal. You do not need to enter the API key again to unlock it.</p>
+        {% elif credential_store_state == 'unavailable' %}
+        <p>Cabinet cannot use the encrypted key store. Check its setup on the Omarchy desktop, then check again here. A replacement key will not fix unavailable storage; no request is sent automatically.</p>
+        {% elif credential_store_state == 'removal_pending' %}
+        <p>Cabinet will not use this key. Deletion from the encrypted store has not been confirmed. If the keyring is locked, unlock it on the Omarchy desktop, then check again here. This does not revoke the key at the provider.</p>
+        {% elif credential_saved %}
+        <p>The key remains encrypted on this computer after closing the entry terminal or restarting Cabinet normally. No terminal needs to stay open. Desktop logout or reboot may require a normal keyring unlock.</p>
+        {% else %}
+        <p>Save your key encrypted on this computer so Cabinet can use it after a normal restart without another API-key entry. Desktop logout or reboot may require a normal keyring unlock.</p>
+        {% endif %}
+        {% if credential_store_state == 'locked' or credential_store_state == 'unavailable' or credential_store_state == 'removal_pending' %}<p><a href="/setup?connection_ref={{ connection_ref }}">Check saved-key status again</a></p>{% endif %}
+        <p class="help">Saved-key availability does not confirm provider access, a connection test or permission to share personal data. Saving sends no request to the provider.</p>
+      </section>
+      {% if credential_saved %}<details class="credential-replacement"><summary>Replace the saved API key</summary>{% endif %}
       <form method="post" action="{{ actions.credential }}" data-form="credential" autocomplete="off">
-        <input type="hidden" name="csrfmiddlewaretoken" value="{{ csrf_token }}"><input type="hidden" name="connection_ref" value="{{ connection_ref }}"><input type="hidden" name="revision" value="{{ revision }}">
-        <label for="model-secret">{% if credential_configured %}Replace session-only API key{% else %}Session-only API key{% endif %}</label><input id="model-secret" type="password" name="secret" autocomplete="off" maxlength="8192" required{% if reauthentication_required %} disabled{% endif %} aria-describedby="secret-help"><p id="secret-help" class="help">The local backend keeps this key in memory only and uses it to authenticate with the selected provider. It is not included in a model prompt.</p>
-        <button type="submit"{% if reauthentication_required %} disabled{% endif %}>{% if credential_configured %}Replace session-only key{% else %}Use key for this session{% endif %}</button>
+        <input type="hidden" name="csrfmiddlewaretoken" value="{{ csrf_token }}"><input type="hidden" name="connection_ref" value="{{ connection_ref }}"><input type="hidden" name="revision" value="{{ revision }}"><input type="hidden" name="storage" value="persistent">
+        <label for="model-secret">{% if credential_saved or credential_configured %}Replace API key{% else %}API key{% endif %}</label><input id="model-secret" type="password" name="secret" autocomplete="off" maxlength="8192" required{% if credential_save_disabled %} disabled{% endif %} aria-describedby="secret-help"><p id="secret-help" class="help">The key is saved encrypted in the Culture Cabinet keyring on this computer. Cabinet uses it to authenticate with the selected provider; it is never included in a model prompt. After saving, you can close the entry terminal.</p>
+        <button type="submit"{% if credential_save_disabled %} disabled{% endif %}>Save encrypted key</button>
       </form>
-      {% if credential_configured %}
+      {% if credential_saved %}</details>{% endif %}
       <div class="connection-actions">
-        <form method="post" action="{{ actions.preview }}" data-form="preview"><input type="hidden" name="csrfmiddlewaretoken" value="{{ csrf_token }}"><input type="hidden" name="connection_ref" value="{{ connection_ref }}"><input type="hidden" name="revision" value="{{ revision }}"><button type="submit" class="secondary"{% if unknown_outcome or reauthentication_required %} disabled{% endif %}>Preview connection test</button></form>
-        <form method="post" action="{{ actions.remove }}" data-form="remove"><input type="hidden" name="csrfmiddlewaretoken" value="{{ csrf_token }}"><input type="hidden" name="connection_ref" value="{{ connection_ref }}"><input type="hidden" name="revision" value="{{ revision }}"><button type="submit" class="secondary"{% if reauthentication_required %} disabled{% endif %}>Remove session key</button></form>
+        {% if credential_configured and credential_store_state != 'removal_pending' %}<form method="post" action="{{ actions.preview }}" data-form="preview"><input type="hidden" name="csrfmiddlewaretoken" value="{{ csrf_token }}"><input type="hidden" name="connection_ref" value="{{ connection_ref }}"><input type="hidden" name="revision" value="{{ revision }}"><button type="submit" class="secondary"{% if unknown_outcome or reauthentication_required or credential_use_blocked %} disabled{% endif %}>Preview connection test</button></form>{% endif %}
+        {% if credential_saved or credential_configured %}{% if credential_store_state != 'removal_pending' %}<form method="post" action="{{ actions.remove }}" data-form="remove"><input type="hidden" name="csrfmiddlewaretoken" value="{{ csrf_token }}"><input type="hidden" name="connection_ref" value="{{ connection_ref }}"><input type="hidden" name="revision" value="{{ revision }}"><button type="submit" class="secondary"{% if reauthentication_required %} disabled{% endif %}>{% if credential_saved %}Remove saved key{% else %}Remove session key{% endif %}</button></form>{% endif %}{% endif %}
       </div>
-      {% endif %}
       {% endif %}
     </section>
     <aside class="scope" aria-labelledby="scope-heading"><h2 id="scope-heading">Prepare Enhance in your cabinet</h2><p>Working inference, current data-sharing consent and supported source integration are still required. Selecting a cabinet or saving a connection does not satisfy those gates.</p><p>No paid test runs automatically. A connection test sends neutral synthetic input only, with a separate explicit confirmation.</p><p>Open your selected cabinet for preferences and notes across all categories, MusicBrainz setup and separate source permission. The existing artist form is also available. Each API request and inference request still needs its own review.</p></aside>
@@ -98,7 +115,7 @@
     <form method="post" action="{{ actions.confirm }}" data-form="confirm"><input type="hidden" name="csrfmiddlewaretoken" value="{{ csrf_token }}"><input type="hidden" name="preview_ref" value="{{ preview.preview_ref }}"><input type="hidden" name="intent_ref" value="{{ preview.intent_ref }}"><label class="confirmation"><input type="checkbox" name="confirm_billable_test" value="yes" required> I approve this one potentially paid connection test.</label><button type="submit"{% if unknown_outcome %} disabled{% endif %}>Send one connection test</button></form>
   </section>
   {% endif %}
-  <details class="cabinet-entry-link"><summary>Trusted restart and restore are different</summary><p>A trusted same-installation restart assumes the original local root has not been rolled back. It cannot prove freshness after a whole-root rollback or authorize an import/restore. Real activation needs separate owner acceptance of that limitation; this setup page does not activate it. Existing sessions, previews and credentials must not become fresh authority merely because the app restarts.</p></details>
+  <details class="cabinet-entry-link"><summary>Restarting this cabinet</summary><p>After a normal shutdown, log in again to use the same cabinet and saved encrypted key. You may need to unlock the keyring on the Omarchy desktop. Old sessions and request confirmations do not carry over, and no connection test or Enhance request runs automatically. An interrupted shutdown or restored copy may need recovery before Cabinet can reopen; saving a key does not repair that state.</p></details>
   <form method="post" action="{{ actions.logout }}" data-form="logout" class="logout"><input type="hidden" name="csrfmiddlewaretoken" value="{{ csrf_token }}"><button type="submit" class="secondary">Log out</button></form>
   {% endif %}
 </main>
