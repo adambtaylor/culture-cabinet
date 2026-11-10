@@ -471,7 +471,7 @@ class OnboardingExperienceTests(SimpleTestCase):
 
     def test_saved_available_key_is_distinct_from_current_lease_validation_and_consent(self):
         context = self.model(credential_saved=True, credential_available=True,
-                             credential_store_state='available', notice='KEY_ADDED')
+                             credential_store_state='available', notice='KEY_SAVED')
         _, html, doc = self.render(context)
         self.assertIn('Encrypted key saved and available', html)
         self.assertIn('Encrypted API key saved on this computer', html)
@@ -556,3 +556,20 @@ class OnboardingExperienceTests(SimpleTestCase):
         self.assertIn('Nothing is resubmitted automatically', html)
         self.assertIn('Old sessions and request confirmations do not carry over', html)
         self.assertNotIn('confirm', doc.forms)
+
+
+    def test_persistent_notice_codes_keep_legacy_and_unconfirmed_receipts_distinct(self):
+        _, legacy, _ = self.render(self.model(credential_saved=True,
+            credential_store_state='available', notice='KEY_ADDED'))
+        self.assertIn('Session-only API key updated', legacy)
+        self.assertNotIn('Encrypted API key saved on this computer', legacy)
+        _, unconfirmed, _ = self.render(self.model(notice='KEY_SAVED'))
+        self.assertIn('Encrypted key saving is not confirmed', unconfirmed)
+        self.assertNotIn('Encrypted API key saved on this computer', unconfirmed)
+        _, pending, doc = self.render(self.model(credential_saved=True,
+            credential_store_state='removal_pending', notice='KEY_REMOVAL_PENDING'))
+        self.assertIn('deletion from the encrypted store has not been confirmed', pending)
+        self.assertNotIn('API key removed from Cabinet', pending)
+        self.assertTrue(any(attrs.get('id') == 'setup-status' and attrs.get('role') == 'status'
+                            for tag, attrs in doc.tags))
+        self.assertNotIn('remove', doc.forms)

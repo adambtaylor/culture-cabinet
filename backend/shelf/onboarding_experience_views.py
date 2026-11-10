@@ -31,6 +31,8 @@ SUCCESS_NOTICES = {
     'SIGNED_OUT': 'You are logged out. Your saved configuration and encrypted keys are retained on this computer.',
     'CONFIG_SAVED': 'Model configuration saved. Generation has not been verified.',
     'KEY_ADDED': 'Session-only API key updated. It is not stored with the configuration.',
+    'KEY_SAVED': 'Encrypted API key saved on this computer. You can close the entry terminal. Provider access has not been verified by saving it.',
+    'KEY_REMOVAL_PENDING': 'Removal pending. The key is disabled in Cabinet; deletion from the encrypted store has not been confirmed.',
     'KEY_REMOVED': 'API key removed from Cabinet. Model configuration is retained.',
     'TEST_PASSED': 'Connection test finished. Review the current connection status below; personal Run remains unavailable.',
 }
@@ -143,9 +145,11 @@ def render_setup(context, *, status=200):
         data['credential_use_blocked'] = store_state in ('locked', 'unavailable', 'removal_pending')
         data['credential_save_disabled'] = (data['reauthentication_required']
             or data['credential_use_blocked'])
-        if notice_code == 'KEY_ADDED' and data['credential_saved']:
-            data['success_notice'] = ('Encrypted API key saved on this computer. You can close the entry terminal. '
-                                      'Provider access has not been verified by saving it.')
+        # K2's persistent save receipt is distinct from the legacy RAM-only
+        # receipt, even when another saved binding already exists.
+        if notice_code == 'KEY_SAVED' and not data['credential_saved']:
+            data['success_notice'] = ''
+            data['notice'] = 'Encrypted key saving is not confirmed. Check the saved-key status before continuing.'
         if store_state == 'removal_pending':
             # A deletion intent disables use immediately; it is not proof that
             # the encrypted record was deleted. Do not announce removal early.
