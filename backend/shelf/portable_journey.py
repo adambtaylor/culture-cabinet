@@ -218,12 +218,22 @@ class PortableJourney:
                 first=SavedCredentialBinding.objects.filter(pk=anchor['connection_ref'],state='ACTIVE',
                     generation=anchor['saved_generation'],store_revision=anchor['store_revision'],removed=False).first()
                 ga._require(first is not None,'REVISION_CONFLICT',409)
+                unacknowledged=[row.pk for row in rows if not any(
+                    ack['connection_ref']==str(row.pk) for ack in acknowledgements)]
+                # A crash after a later OS write can leave an unacknowledged
+                # saved row. Do not mistake reconciliation for permission to
+                # replace it again. Only an untouched fresh child can resume.
+                ga._require(not SavedCredentialBinding.objects.filter(pk__in=unacknowledged).exists(),
+                    'UNKNOWN_RECONCILIATION_REQUIRED',409)
                 private=self.authority._source_vault.resolve(session_ref,first.pk,anchor['config_revision'])
             else:
                 self._pending(cabinet)
                 ga._require(journey.revision==expected_revision,'REVISION_CONFLICT',409)
-                ga._require(type(secret) is str and 1<=len(secret.encode('utf-8'))<=8192,'CONTRACT_INVALID',422)
-                private=secret.encode('utf-8');acknowledgements=[]
+                ga._require(type(secret) is str,'CONTRACT_INVALID',422)
+                try:private=secret.encode('utf-8','strict')
+                except UnicodeError:raise ga.AuthorityFault('CONTRACT_INVALID',422) from None
+                ga._require(1<=len(private)<=8192,'CONTRACT_INVALID',422)
+                acknowledgements=[]
                 with transaction.atomic(),ga._write_window():
                     prior=self._record(cabinet,command_id,'journey.provider.save',descriptor,
                         dict(code='PENDING',bindings=[]),state='reserved')
@@ -267,6 +277,8 @@ class PortableJourney:
             _,journey=self._state(session_ref,profile_ref,journey_ref,sensitive=True,expected_revision=expected_revision)
             prior=self._prior(cabinet,command_id,'journey.favourite',descriptor)
             if prior and prior.state=='committed':return prior.result
+            ga._require(remove or type(title) is str and 1<=len(title)<=200 and bool(title.strip())
+                and not any(ord(c)<32 or ord(c)==127 for c in title),'CONTRACT_INVALID',422)
             self._pending(cabinet,exclude=prior.pk if prior else None)
             key=category+':'+str(slot);old=journey.slots.get(key)
             ga._require(journey.revision==expected_revision and
@@ -291,6 +303,36 @@ class PortableJourney:
             return result
 
 
+    def prepare(self, session_ref, *, profile_ref, journey_ref, expected_revision,
+                command_id, connection_ref, client_key, refresh_nonce):
+        from django.db import transaction
+        from .models import PortableJourneyCommand
+        from .portable_enhance_service import get_service
+        for value in (command_id,connection_ref,client_key,refresh_nonce):ga._uuid(value)
+        descriptor=dict(profile_ref=profile_ref,journey_ref=journey_ref,expected_revision=expected_revision,
+            connection_ref=connection_ref,client_key=client_key,refresh_nonce=refresh_nonce)
+        with ga.current_writer(self.authority,session_ref,profile_ref) as cabinet:
+            _,journey=self._state(session_ref,profile_ref,journey_ref,sensitive=True,expected_revision=expected_revision)
+            prior=self._prior(cabinet,command_id,'journey.prepare',descriptor)
+            if prior and prior.state=='committed':return prior.result
+            self._pending(cabinet,exclude=prior.pk if prior else None)
+            ga._require(journey.revision==expected_revision and
+                connection_ref in journey.connections.get('openai',[]),'REVISION_CONFLICT',409)
+            if prior is None:
+                with transaction.atomic(),ga._write_window():
+                    prior=self._record(cabinet,command_id,'journey.prepare',descriptor,{},state='reserved')
+            # Start only constructs the existing reviewable Enhance plan. Neither
+            # this form nor a replay confirms source access or personal inference.
+            outcome=get_service(self.authority).start(session_ref,profile_ref=profile_ref,
+                connection_ref=connection_ref,client_key=client_key,refresh_nonce=refresh_nonce)
+            run_ref=str(ga._uuid(outcome['run_ref']))
+            with transaction.atomic(),ga._write_window():
+                journey.run_ref=ga._uuid(run_ref);self._advance(journey)
+                result=dict(profile_ref=profile_ref,journey_ref=journey_ref,revision=journey.revision,
+                    run_ref=run_ref,connection_ref=connection_ref,code='PREPARED')
+                PortableJourneyCommand.objects.filter(pk=prior.pk).update(state='committed',result=result)
+            return result
+
     def project(self, session_ref, *, profile_ref=None):
         from .models import PortableJourneyState,ProfileCabinetState,PortableConnection,SavedCredentialBinding,FeedbackTarget
         from .source_connection_validation import SourceConnectionValidation
@@ -300,7 +342,10 @@ class PortableJourney:
             if profile_ref is None:
                 return journey_projection(profile_ref=None,profile_label='',journey_ref=None,revision=0,
                     step='identity',steps=[dict(step=key,label=key.title(),state='current' if key=='identity' else 'pending')
-                        for key in STEPS],providers=[],favourite_categories=[],categories=[],
+                        for key in STEPS],providers=[],favourite_categories=[],
+                    categories=[dict(category=row.key,label=row.label,state='not_started',code='',count=0,
+                        publication_ref=None,publication_revision=None,ranking_state='none',cards=[],
+                        next_action=None,href=None) for row in CATEGORIES],
                     preparation=dict(state='not_started',run_ref=None,stage='',code='',href=None,
                         publication_ref=None,publication_revision=None,partial=False),completion_receipts=[],
                     actions=journey_actions(profile_ref=None,journey_ref=None,expected_revision=0,
@@ -364,7 +409,8 @@ class PortableJourney:
                     test_observed_at=test['observed_at'],test_expires_at=test['expires_at'],test_code=test['code'],
                     next_action='configure' if not bound else 'save' if keyed and not all_saved else
                         'test' if keyed and not test['test_current'] else 'continue',
-                    actions=dict(configure=config,save=save,test=test_action)))
+                    actions=({ 'configure':config, 'save':save, **({'test':test_action} if provider!='openai' else {})}
+                        if keyed else {'configure':config})))
             favourites=[]
             for category in CATEGORIES:
                 entries=[]

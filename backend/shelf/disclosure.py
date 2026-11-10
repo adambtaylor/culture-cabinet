@@ -402,7 +402,20 @@ def _lineage(nodes, permissions, purpose):
 
 def _profile(nodes, allowed, parents):
     signals, notes, traits, omitted = [], [], [], set()
+    import hashlib
+    native_identities={node['key'].removeprefix('candidate-key-sha256:')
+        for key,node in nodes.items() if allowed(key) and node.get('basis')=='typed_feedback'
+        and node.get('source_ref','').startswith('card-action:')
+        and node.get('key','').startswith('candidate-key-sha256:')
+        and node['value']['signal'] in ('interest','saved')}
     for key, node in nodes.items():
+        if (allowed(key) and node.get('basis') in ('favourite','interest','anticipated_reaction')
+            and node.get('identity_status')=='confirmed'
+            and hashlib.sha256(node['key'].encode()).hexdigest() in native_identities):
+            # Current, permitted native intent supersedes the same confirmed
+            # identity's older overlapping preference. Notes/enjoyment/history
+            # retain their meanings; denied nodes cannot affect this grouping.
+            continue
         if (node.get('basis') == 'typed_feedback' and
                 (node['value']['value'] is None or node['value']['signal'] == 'saved'
                  and node['value']['value'] == {'value': False})):

@@ -42,3 +42,32 @@ class CardActionHTTPTests(NativeFeedbackOutcomeTests):
         self.assertEqual(FeedbackEvent.objects.count(),0)
         self.assertEqual(PortableJourneyCommand.objects.count(),0)
         self.assertEqual(self.http.get('/cabinet/actions/'+str(uuid.uuid4())+'/',**self.headers).status_code,403)
+
+    def test_actual_cabinet_four_choices_feedback_pending_receipt_and_fixed_assets_csp(self):
+        values=self.prepare()
+        page=self.http.get('/cabinet',{'profile_ref':self.profile_ref},**self.headers)
+        self.assertEqual(page.status_code,200)
+        for action in ('like','dislike','favourite','obtain'):
+            self.assertContains(page,'name="action" value="'+action+'"')
+        self.assertContains(page,'/cabinet/actions/script.js')
+        csp=page['Content-Security-Policy']
+        self.assertIn(self.boundary.origin+'/cabinet/actions/script.js',csp)
+        self.assertIn(self.boundary.origin+'/cabinet/obtain/status.js',csp)
+        self.assertNotIn("'unsafe-inline'",csp)
+        self.assertNotIn("'unsafe-eval'",csp)
+        for path,mime in (('/cabinet/actions/script.js','text/javascript'),
+                          ('/cabinet/actions/style.css','text/css'),('/setup/journey/style.css','text/css')):
+            asset=self.http.get(path,**self.headers)
+            self.assertEqual(asset.status_code,200)
+            self.assertTrue(asset['Content-Type'].startswith(mime))
+            self.assertEqual(asset['X-Content-Type-Options'],'nosniff')
+            self.assertNotIn('script-src',asset['Content-Security-Policy'])
+        result=self.post('/cabinet/actions/',values)
+        current=self.http.get(result['Location'],**self.headers)
+        self.assertEqual(current.status_code,200)
+        self.assertContains(current,'Feedback saved; Enhance to update recommendations.')
+        self.assertContains(current,'Undo this preference')
+        self.assertNotIn(b'feedback-current-reason',current.content)
+        historical=self.http.get('/cabinet/actions/'+values['command_id']+'/',**self.headers)
+        self.assertContains(historical,'Feedback receipt')
+        self.assertNotIn('script-src',historical['Content-Security-Policy'])

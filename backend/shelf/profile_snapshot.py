@@ -127,6 +127,29 @@ def _feedback(view):
                 'medium': current.target.category, 'roots': []}
         node = _node(view, 'feedback:' + str(effective), card, 'typed_feedback',
                      {'signal': signal, 'scope': scope, 'value': body})
+        if current.target.source_namespace=='owner-stated-favourite':
+            # A title supplied by the owner is personal text, never a provider
+            # identity. Its separate text permission remains necessary.
+            node['identity_status']='unresolved_personal'
+            classes=[*classes,'unresolved_personal_text']
+        elif current.target.source_namespace=='enhance-current' and signal in ('interest','saved'):
+            from .models import PortableJourneyCommand
+            interest=groups.get((current.target_id,'interest','item'),[])
+            saved=groups.get((current.target_id,'saved','item'),[])
+            expected=(interest[-1].revision if interest else 0,saved[-1].revision if saved else 0)
+            opaque=str(uuid5(UUID(view.profile_ref),
+                'candidate:'+current.target.source_key))
+            for parent in PortableJourneyCommand.objects.filter(cabinet_id=view.profile_id,
+                    kind__in=['card.action','card.undo'],state='committed').order_by('-created_at','-id')[:1000]:
+                if (parent.result.get('target_ref')==opaque and
+                    (parent.result.get('interest_revision'),parent.result.get('saved_revision'))==expected and
+                    parent.proof.get('schema')=='card-action-continuity/v2' and
+                    parent.proof.get('child_event_refs')==parent.result.get('child_event_refs')):
+                    # Only a proven native command supplies this local identity
+                    # crosswalk. No title matching or new provider fact is used.
+                    node['key']='candidate-key-sha256:'+current.target.source_key
+                    node['source_ref']='card-action:'+str(parent.command_id)
+                    break
         node['data_classes'] = classes
         node['event_lineage'] = [{'event_ref': _id(view, 'event:' + str(e.pk)), 'revision': e.revision,
             'operation': e.operation, 'reverses_ref': _id(view, 'event:' + str(e.reverses_id)) if e.reverses_id else None,

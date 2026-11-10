@@ -61,3 +61,102 @@ class JourneyPrimitiveTests(RecoveryCase):
                 'command_id','category','slot','entry_ref','base_revision','mutation_id','title'})
         with self.assertRaises(AuthorityFault):favourite_slot(profile_ref=str(uuid.uuid4()),journey_ref=str(uuid.uuid4()),
             expected_revision=1,category='book',slot=6)
+
+from .test_portable_feedback_views import NativeFeedbackCase
+
+
+class JourneyNativeCallerTests(NativeFeedbackCase):
+    def test_returning_owner_get_optional_skip_and_rejected_secret_form_use_native_renderer(self):
+        from shelf.models import PortableJourneyCommand
+        path='/setup/journey?profile_ref='+self.profile_ref
+        page=self.http.get(path,**self.headers)
+        self.assertEqual(page.status_code,200)
+        self.assertContains(page,'/setup/journey/style.css')
+        self.assertFalse(PortableJourneyState.objects.exists())
+        journey_ref=str(uuid.uuid5(uuid.UUID(self.profile_ref),'guided-owner-journey:v2'))
+        fields=dict(profile_ref=self.profile_ref,journey_ref=journey_ref,expected_revision=0,
+            command_id=str(uuid.uuid4()),step='providers',action='skip')
+        self.assertEqual(self.post('/cabinet/journey/step',fields,csrf=False).status_code,403)
+        response=self.post('/cabinet/journey/step',fields)
+        self.assertEqual(response.status_code,303)
+        self.assertEqual(self.http.get(response['Location'],**self.headers).status_code,200)
+        self.assertEqual(PortableJourneyState.objects.get().step,'favourites')
+        self.assertEqual(self.post('/cabinet/journey/step',fields).status_code,303)
+        self.assertEqual(PortableJourneyCommand.objects.count(),1)
+        invalid=self.post('/cabinet/journey/providers/tmdb/save',dict(profile_ref=self.profile_ref,
+            journey_ref=journey_ref,expected_revision=1,command_id=str(uuid.uuid4()),secret='PRIVATE_CANARY',
+            storage='persistent',extra='rejected'))
+        self.assertEqual(invalid.status_code,422)
+        self.assertNotIn(b'PRIVATE_CANARY',invalid.content)
+        self.assertContains(invalid,'/setup/journey/style.css',status_code=422)
+        self.assertFalse(FeedbackEvent.objects.exists())
+
+    def test_normal_favourite_form_replay_and_clear_preserve_history(self):
+        journey=PortableJourney(self.authority)
+        initial=journey.project(self.ref,profile_ref=self.profile_ref)
+        journey.step(self.ref,profile_ref=self.profile_ref,journey_ref=initial['journey_ref'],
+            expected_revision=0,step='providers',action='skip',command_id=str(uuid.uuid4()))
+        fields=dict(profile_ref=self.profile_ref,journey_ref=initial['journey_ref'],expected_revision=1,
+            command_id=str(uuid.uuid4()),category='book',slot=1,entry_ref=str(uuid.uuid4()),
+            mutation_id=str(uuid.uuid4()),base_revision=0,title='A fictional favourite')
+        self.assertEqual(self.post('/cabinet/journey/favourites/add',fields).status_code,303)
+        self.assertEqual(self.post('/cabinet/journey/favourites/add',fields).status_code,303)
+        self.assertEqual(FeedbackEvent.objects.count(),1)
+        page=self.http.get('/setup/journey',**self.headers)
+        self.assertEqual(page.status_code,200)
+        self.assertContains(page,'A fictional favourite')
+        remove={key:value for key,value in fields.items() if key!='title'}
+        remove.update(expected_revision=2,command_id=str(uuid.uuid4()),mutation_id=str(uuid.uuid4()),base_revision=1)
+        self.assertEqual(self.post('/cabinet/journey/favourites/remove',remove).status_code,303)
+        self.assertEqual(list(FeedbackEvent.objects.order_by('revision').values_list('body',flat=True)),
+            [{'value':True},None])
+        self.assertEqual(PortableJourneyState.objects.get().slots,{})
+
+
+class JourneyFreshNativeTests(RecoveryCase):
+    claim_owner=NativeFeedbackCase.claim_owner
+    csrf=NativeFeedbackCase.csrf
+    post=NativeFeedbackCase.post
+
+    def test_cold_native_name_csrf_exact_replay_and_existing_owner_resume(self):
+        with self.controlled_recovery_state('clear'):
+            page=self.http.get('/setup/journey',**self.headers)
+            self.assertEqual(page.status_code,200)
+            self.assertContains(page,'/cabinet/journey/name')
+            self.assertFalse(ProfileCabinetState.objects.exists())
+            values=dict(expected_owner_revision=self.authority.authorize(self.ref).owner_revision,
+                label='Fictional Owner 雪',command_id=str(uuid.uuid4()))
+            self.assertEqual(self.post('/cabinet/journey/name',values,csrf=False).status_code,403)
+            created=self.post('/cabinet/journey/name',values)
+            self.assertEqual(created.status_code,303)
+            self.assertEqual(self.post('/cabinet/journey/name',values).status_code,303)
+            self.assertEqual(ProfileCabinetState.objects.get().profile.label,'Fictional Owner 雪')
+            self.assertContains(self.http.get('/setup/journey',**self.headers),'Connect your sources')
+            self.assertEqual(self.post('/cabinet/journey/name',{**values,'label':'Replacement'}).status_code,409)
+            self.assertEqual(ProfileCabinetState.objects.count(),1)
+
+from .test_portable_enhance_service import ServiceCase
+
+
+class JourneyPrepareTests(ServiceCase):
+    def test_prepare_reuses_existing_reviewable_plan_without_collection_or_inference(self):
+        from django.db import transaction
+        from shelf import grant_authority as ga
+        from shelf.models import SynthesisRun,PortableJourneyCommand
+        journey=PortableJourney(self.authority)
+        with ga.current_writer(self.authority,self.ref,self.profile_ref) as cabinet,transaction.atomic(),ga._write_window():
+            state=PortableJourneyState.objects.create(id=uuid.uuid5(cabinet.profile_ref,'guided-owner-journey:v2'),
+                cabinet=cabinet,connections={'openai':[str(self.config.pk)]},created_at=self.authority.now(),
+                updated_at=self.authority.now())
+        fields=dict(profile_ref=self.profile_ref,journey_ref=str(state.pk),expected_revision=1,
+            command_id=str(uuid.uuid4()),connection_ref=str(self.config.pk),client_key=str(uuid.uuid4()),
+            refresh_nonce=str(uuid.uuid4()))
+        result=journey.prepare(self.ref,**fields)
+        self.assertEqual(journey.prepare(self.ref,**fields),result)
+        self.assertEqual(SynthesisRun.objects.count(),1)
+        self.assertEqual((self.catalogue.calls,self.transport.calls),(0,0))
+        self.assertIn('preview',self.enhance.status(self.ref,run_ref=result['run_ref'])['actions'])
+        self.assertEqual(PortableJourneyCommand.objects.get().state,'committed')
+        state.refresh_from_db();self.assertEqual(str(state.run_ref),result['run_ref'])
+        with self.assertRaises(AuthorityFault):journey.prepare(self.ref,**{**fields,'refresh_nonce':str(uuid.uuid4())})
+        self.assertEqual((self.catalogue.calls,self.transport.calls),(0,0))

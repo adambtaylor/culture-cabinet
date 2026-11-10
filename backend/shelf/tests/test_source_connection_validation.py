@@ -63,3 +63,59 @@ class SourceCheckTests(SavedCredentialTests):
         with self.assertRaises(AuthorityFault):self.check(provider='openai')
         self.assertEqual(self.sends,[])
         self.assertFalse(PortableSourceCheckAttempt.objects.exists())
+
+    def test_native_check_form_reuses_current_receipt_and_never_claims_inference_readiness(self):
+        from shelf.portable_journey import PortableJourney
+        self.authority._guided_source_checks=self.checks
+        journey=PortableJourney(self.authority)
+        initial=journey.project(self.ref,profile_ref=self.profile_ref)
+        configured=journey.configure(self.ref,profile_ref=self.profile_ref,journey_ref=initial['journey_ref'],
+            expected_revision=0,command_id=str(uuid.uuid4()),provider='hardcover',confirmed=True)
+        fields=dict(profile_ref=self.profile_ref,journey_ref=initial['journey_ref'],
+            expected_revision=configured['revision'],command_id=str(uuid.uuid4()),confirmed='yes')
+        first=self.post('/cabinet/journey/providers/hardcover/test',fields)
+        self.assertEqual(first.status_code,303)
+        self.assertEqual(self.post('/cabinet/journey/providers/hardcover/test',fields).status_code,303)
+        self.assertEqual(self.post('/cabinet/journey/providers/hardcover/test',
+            {**fields,'command_id':str(uuid.uuid4())}).status_code,303)
+        self.assertEqual(len(self.sends),1)
+        page=self.http.get(first['Location'],**self.headers)
+        self.assertEqual(page.status_code,200)
+        self.assertContains(page,'Connection check passed')
+        self.source.refresh_from_db();self.assertEqual(self.source.validation_generation,0)
+        self.assertEqual(self.post('/cabinet/journey/providers/hardcover/test',
+            {**fields,'expected_revision':999,'command_id':str(uuid.uuid4())}).status_code,409)
+        self.assertEqual(len(self.sends),1)
+
+    def test_tmdb_partial_persistent_save_keeps_acknowledged_child_and_never_resends_unknown(self):
+        from shelf.portable_journey import PortableJourney
+        from shelf.models import SavedCredentialBinding
+        from .test_saved_credentials import StoreDouble
+        stores={}
+        def request(value):
+            key=value['binding']['connection_id_or_null']
+            if key not in stores:stores[key]=StoreDouble()
+            return stores[key].request(value)
+        self.saved.request=request
+        journey=PortableJourney(self.authority)
+        initial=journey.project(self.ref,profile_ref=self.profile_ref)
+        configured=journey.configure(self.ref,profile_ref=self.profile_ref,journey_ref=initial['journey_ref'],
+            expected_revision=0,command_id=str(uuid.uuid4()),provider='tmdb',confirmed=True)
+        tv=PortableConnection.objects.get(pk=configured['connection_refs'][1])
+        stores[str(tv.pk)]=StoreDouble();stores[str(tv.pk)].lose_ack=True
+        fields=dict(profile_ref=self.profile_ref,journey_ref=initial['journey_ref'],
+            expected_revision=configured['revision'],command_id=str(uuid.uuid4()),provider='tmdb',
+            secret=self.dummy,storage='persistent')
+        result=journey.save_provider(self.ref,**fields)
+        self.assertEqual(result['code'],'SAVE_UNKNOWN')
+        self.assertEqual(len(result['bindings']),1)
+        self.assertEqual(SavedCredentialBinding.objects.get(pk=result['bindings'][0]['connection_ref']).state,'ACTIVE')
+        self.assertEqual(SavedCredentialBinding.objects.get(pk=tv.pk).state,'PENDING_WRITE')
+        before={key:len(store.calls) for key,store in stores.items()}
+        replay=journey.save_provider(self.ref,**{**fields,'secret':'DIFFERENT-IGNORED-ON-REPLAY'})
+        self.assertEqual(replay,result)
+        self.assertEqual({key:len(store.calls) for key,store in stores.items()},before)
+        self.assertNotIn(self.dummy,str(list(PortableJourneyCommand.objects.values())))
+        self.assertTrue(all(row.validation_generation==0 for row in PortableConnection.objects.filter(
+            pk__in=configured['connection_refs'])))
+        self.assertEqual(self.sends,[])

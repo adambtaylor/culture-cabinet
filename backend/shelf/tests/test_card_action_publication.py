@@ -95,3 +95,76 @@ class CardPublicationTests(NativeFeedbackOutcomeTests):
             self.actions.apply(self.ref,command)
         self.state.refresh_from_db();self.assertEqual((self.state.policy_epoch,self.state.restriction_watermark),before)
         self.assertFalse(PortableJourneyCommand.objects.filter(command_id=command.command_id).exists())
+
+    def test_restore_grammar_accepts_actual_children_and_rejects_missing_receipt_or_bad_proof(self):
+        from django.db import connection
+        from shelf.card_actions import validate_journey_history
+        from shelf.models import MutationReceipt
+        command=self.prepare();self.actions.apply(self.ref,command)
+        raw=connection.connection
+        validate_journey_history(raw)
+        with ga.current_writer(self.authority,self.ref,self.profile_ref),transaction.atomic(),ga._write_window():
+            MutationReceipt.objects.filter(event_id=FeedbackEvent.objects.get().pk).delete()
+        with self.assertRaises(ValueError):validate_journey_history(raw)
+        with self.assertRaises(AuthorityFault):self.enhance.current_for_interaction(self.ref,profile_ref=self.profile_ref)
+        self.assertIsNotNone(PortableCabinetManifest.objects.get().content_redacted_at)
+
+    def test_obtain_favourite_keeps_real_native_tv_origin_deadline_and_navigates_without_send(self):
+        from shelf.source_authority import configure_source
+        from shelf.models import PortableConnection,SynthesisRun
+        from shelf.disclosure import canonical_bytes
+        from shelf.enhance_contract import EnhanceIntent
+        from shelf.portable_reactions import target_ref
+        from shelf.portable_saved_authority import selected_context,portable_saved_scope
+        from shelf.portable_obtain_origin import resolve_current_origin
+        from .test_owner_tv_entry import OwnerPolicy
+        self.consent(self.profile_ref)
+        identifier=configure_source(self.authority,self.ref,confirmed=True,adapter='tmdb_tv')
+        source=PortableConnection.objects.get(pk=identifier)
+        self.vault.replace(self.ref,source.pk,source.config_revision,b'SYNTHETIC-TV')
+        ga.change_grant(self.authority,self.ref,profile_ref=self.profile_ref,connection_ref=identifier,
+            purpose='catalogue_lookup',allowed_data_classes=['canonical_seed'],expected_revision=0,
+            expires_at=self.expires,action='grant')
+        self.enhance._policy_provider=OwnerPolicy(self.clock.wall)
+        store=self.enhance._store(self.ref,self.profile_ref,str(self.config.pk))
+        row=store.admit(EnhanceIntent(str(uuid.uuid4()),str(uuid.uuid4()),str(uuid.uuid4()),store.current().bindings))
+        card=dict(key='tmdb:tv:1399',category='tv',title='Fictional TV evidence',medium='tv',provider='tmdb',
+            source_id='1399',source_url='https://www.themoviedb.org/tv/1399',identity_status='confirmed',
+            evidence_type='cached_lookup',observed_at=self.clock.wall.isoformat(),valid_until=self.expires.isoformat(),
+            rights_ref='synthetic-owner-tv',source_roots=['synthetic-tv-evidence'],facts=[])
+        outcomes=[dict(category=k,state='fresh' if k=='tv' else 'unavailable',candidate_count=int(k=='tv'),
+            code='OK' if k=='tv' else 'CAPABILITY_UNAVAILABLE') for k in self.enhance.registry.categories]
+        row=store.checkpoint(str(row.pk),stage='awaiting_preview',outcomes=outcomes,
+            metadata={'phase':'inference','submitted_refs':{'signals':[],
+                'candidates':[{'key':card['key'],'evidence_refs':card['source_roots']}]}},
+            collection_digest='c'*64,body_digest='b'*64,sealed_run_digest='d'*64)
+        row=store.reserve(str(row.pk),body_digest=row.body_digest,expected_revision=row.revision)
+        store.record_result(str(row.pk),canonical_bytes(dict(schema='cabinet-inference-result/v1',associations=None,
+            candidate_assessments=[dict(candidate_key=card['key'],decision='uncertain',signal_keys=[],
+                evidence_refs=card['source_roots'],hypothesis='Fictional attribution test only.')])))
+        self.state.refresh_from_db()
+        store.publish(str(row.pk),manifest=dict(schema='cabinet-manifest/v1',categories=[dict(category=k,
+            state='fresh' if k=='tv' else 'unavailable',code='OK' if k=='tv' else 'CAPABILITY_UNAVAILABLE',
+            cards=[card] if k=='tv' else []) for k in self.enhance.registry.categories],for_you=[]),
+            expected_publication_revision=self.state.publication_revision,allowed_candidates=[card])
+        current=self.enhance.current_for_interaction(self.ref,profile_ref=self.profile_ref)
+        operations=CardActions(self.authority,service=self.enhance)
+        command=CardAction(self.profile_ref,current['publication_ref'],current['publication_revision'],
+            target_ref(self.profile_ref,card['key']),0,0,str(uuid.uuid4()),'obtain')
+        before_calls=self.fake.calls
+        result=operations.apply(self.ref,command)
+        self.assertEqual(result['selected_state'],'favourite')
+        self.assertEqual(result['obtain']['state'],'entry_ready')
+        self.assertTrue(result['obtain']['href'].startswith('/cabinet/obtain/options/?'))
+        self.assertEqual(FeedbackEvent.objects.count(),1)
+        self.assertEqual(self.fake.calls,before_calls)
+        self.assertEqual(SynthesisRun.objects.count(),1)
+        token=selected_context(self.authority,self.ref,operations.selection)
+        with portable_saved_scope(self.authority,self.ref,profile_ref=self.profile_ref,selection_token=token) as access:
+            origin,_=resolve_current_origin(access,publication_revision=current['publication_revision'],
+                candidate_key=card['key'],scope='series_s01e01',now=self.authority.now())
+        publication=PortableCabinetManifest.objects.get()
+        from datetime import datetime
+        self.assertLessEqual(datetime.fromisoformat(origin['valid_until'].replace('Z','+00:00')),publication.expires_at)
+        self.assertEqual(operations.apply(self.ref,command),result)
+        self.assertEqual(FeedbackEvent.objects.count(),1)

@@ -368,6 +368,42 @@ class CardActions:
         from .models import PortableJourneyCommand
         from django.db import transaction
         outcome = dict(state='unavailable', code='UNSUPPORTED_CATEGORY', href=None, job_ref=None)
+        if card.get('medium') == 'tv':
+            from urllib.parse import urlencode
+            from .acquisition_contract import Blocked
+            from .portable_saved_authority import (select_portable_profile, selected_context,
+                                                   portable_saved_scope)
+            from .portable_obtain_origin import resolve_current_origin
+            try:
+                selection = select_portable_profile(self.authority, session_ref, profile_ref=command.profile_ref)
+                token = selected_context(self.authority, session_ref, selection)
+                with portable_saved_scope(self.authority, session_ref, profile_ref=command.profile_ref,
+                                          selection_token=token) as access:
+                    # Resolve current attribution locally. Opening the chooser
+                    # never searches, downloads or purchases anything.
+                    resolve_current_origin(access, publication_revision=command.publication_revision,
+                        candidate_key=card['key'], scope='series_s01e01', now=self.authority.now())
+                    from .models import AcquisitionJob
+                    from .portable_obtain_origin import candidate_key_digest
+                    jobs=list(AcquisitionJob.objects.filter(actor_id=access.identity.actor_id,
+                        profile_id=access.identity.profile_id,publication_origin__profile_ref=command.profile_ref,
+                        publication_origin__publication_revision=command.publication_revision,
+                        publication_origin__candidate_key_digest=candidate_key_digest(card['key']))[:2])
+                    if len(jobs)==1:
+                        from .obtain_native_context import native_job_context
+                        context=native_job_context(access,job_id=jobs[0].pk,operation='view')
+                        context.revalidate()
+                        outcome=dict(state='resume_ready',code='OK',
+                            href='/cabinet/obtain/jobs/'+str(jobs[0].pk)+'/',job_ref=str(jobs[0].pk))
+                self.selection = selection  # Private native-session state, never a durable receipt.
+                if outcome['state']!='resume_ready':
+                    outcome = dict(state='entry_ready', code='OK', href='/cabinet/obtain/options/?'+urlencode(
+                        dict(profile_ref=command.profile_ref, publication_revision=command.publication_revision,
+                             candidate_key=card['key'])), job_ref=None)
+            except (ga.AuthorityFault, Blocked):
+                # The acknowledged Favourite remains true even if navigation
+                # loses current source or session authority after that commit.
+                outcome = dict(state='blocked', code='CAPABILITY_UNAVAILABLE', href=None, job_ref=None)
         with ga.current_writer(self.authority, session_ref, command.profile_ref) as cabinet, \
                 transaction.atomic(), ga._write_window():
             result = {**result, 'obtain': outcome}
@@ -411,6 +447,16 @@ def _historical_rows(cabinet,current,excluded):
 
 
 def verify_transition_chain(cabinet,publication,current,authority,session_ref):
+    # Restored or incomplete coordination data must deny the deck, rather than
+    # turning a malformed historical proof into an unhandled page error.
+    from django.core.exceptions import ObjectDoesNotExist
+    try:
+        return _verify_transition_chain(cabinet,publication,current,authority,session_ref)
+    except (KeyError, TypeError, ValueError, IndexError, ObjectDoesNotExist):
+        raise ga.AuthorityFault('PREVIEW_STALE',409) from None
+
+
+def _verify_transition_chain(cabinet,publication,current,authority,session_ref):
     """A2 comparison-only continuity; real current floors never move backwards."""
     from .models import PortableJourneyCommand,FeedbackTarget,FeedbackSubject
     from types import SimpleNamespace
@@ -611,3 +657,109 @@ def _check_frame_edge(before,after,advance):
     for field in ('snapshot_revision','policy_epoch','restriction_watermark','grants_digest'):a[field]=b[field]
     ga._require(left==right and before['session_digest']==after['session_digest']
         and before['process_generation']==after['process_generation'],'PREVIEW_STALE',409)
+
+
+def validate_journey_history(raw):
+    """Validate retained coordination structure without reviving live authority.
+
+    A restored source check or continuity frame remains historical: process,
+    session, expiry and actual-row proof checks still run on every current read.
+    """
+    import re
+    from .models import PortableJourneyState,PortableJourneyCommand,PortableSourceCheckAttempt
+    from .portable_journey import STEPS,PROVIDER_ADAPTERS
+    present=raw.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='shelf_portablejourneycommand'").fetchone()
+    if not present:return
+    def objects(model):
+        table=model._meta.db_table
+        columns=[row[1] for row in raw.execute('PRAGMA table_info('+table+')')]
+        if set(columns)!={field.column for field in model._meta.local_fields}:raise ValueError('Unknown journey schema')
+        cursor=raw.execute('SELECT * FROM '+table)
+        return [dict(zip([column[0] for column in cursor.description],row)) for row in cursor]
+    def document(value):
+        from .disclosure import read_json
+        return read_json(value.encode('utf-8'))
+    def identifier(value):return str(uuid.UUID(str(value)))
+    cabinets={row[0]:row for row in raw.execute(
+        'SELECT profile_id,profile_ref,installation_id,actor_id,actor_ref,profile_id FROM shelf_profilecabinetstate')}
+    commands={}
+    proof_fields={'schema','parent_command_ref','installation_ref','actor_ref','profile_ref','publication_ref',
+        'publication_revision','before_actual_frame','after_actual_frame','unchanged_authority_material_digest',
+        'permitted_row_delta_digest','child_event_refs','child_receipt_refs','guard_inventory_digest',
+        'derived_floor_advance','original_expires_at'}
+    frame_fields={'record','grants','history_versions','session_digest','process_generation',
+                  'feedback_subject_present','target_present','original_expires_at'}
+    for row in objects(PortableJourneyCommand):
+        cabinet=cabinets[row['cabinet_id']]
+        descriptor,result,proof=(document(row[key]) for key in ('descriptor','result','proof'))
+        if any(type(value) is not dict for value in (descriptor,result,proof)):raise ValueError('Invalid command document')
+        if row['descriptor_digest']!=history_digest(descriptor):raise ValueError('Invalid command digest')
+        command_id=identifier(row['command_id']);kind=row['kind']
+        if kind not in {'card.action','card.undo','journey.name','journey.step','journey.provider.configure',
+            'journey.provider.save','journey.favourite','journey.prepare','source.check'}:raise ValueError('Unknown command')
+        if row['state'] not in {'reserved','partial','unknown','committed'}:raise ValueError('Invalid command state')
+        if kind in ('card.action','card.undo'):
+            command=(CardAction if kind=='card.action' else CardUndo).parse({**descriptor,'command_id':command_id})
+            if command.profile_ref!=identifier(cabinet[1]) or row['state']!='committed':raise ValueError('Foreign action')
+            # Unit-only receipts deliberately cannot survive a native restore.
+            if set(proof)!=proof_fields or proof['schema']!='card-action-continuity/v2':raise ValueError('Invalid proof')
+            if (proof['parent_command_ref']!=command_id or proof['profile_ref']!=identifier(cabinet[1])
+                or proof['installation_ref']!=identifier(cabinet[2]) or proof['actor_ref']!=identifier(cabinet[4])
+                or proof['child_event_refs']!=result['child_event_refs']):raise ValueError('Foreign proof')
+            revision(proof['publication_revision'],positive=True);revision(proof['derived_floor_advance'])
+            identifier(proof['publication_ref'])
+            for key in ('unchanged_authority_material_digest','permitted_row_delta_digest','guard_inventory_digest'):
+                if type(proof[key]) is not str or re.fullmatch('[0-9a-f]{64}',proof[key]) is None:raise ValueError('Invalid digest')
+            events=proof['child_event_refs'];receipts=proof['child_receipt_refs']
+            if (type(events) is not list or len(events)>2 or len(set(events))!=len(events)
+                or type(receipts) is not list or len(receipts)!=len(events)):raise ValueError('Invalid children')
+            for event_ref,receipt_ref in zip(events,receipts):
+                event=raw.execute('SELECT profile_id,actor_id FROM shelf_feedbackevent WHERE id=?',
+                                  (uuid.UUID(event_ref).hex,)).fetchone()
+                receipt=raw.execute('SELECT profile_id,actor_id,event_id FROM shelf_mutationreceipt WHERE id=?',
+                                    (receipt_ref,)).fetchone()
+                if (event!=(cabinet[5],cabinet[3]) or receipt!=(cabinet[5],cabinet[3],uuid.UUID(event_ref).hex)):
+                    raise ValueError('Missing owned action child')
+            for key in ('before_actual_frame','after_actual_frame'):
+                frame=proof[key]
+                if type(frame) is not dict or set(frame)!=frame_fields:raise ValueError('Invalid frame')
+                if (frame['original_expires_at']!=proof['original_expires_at'] or
+                    any(type(frame[field]) is not bool for field in ('feedback_subject_present','target_present'))):
+                    raise ValueError('Invalid frame binding')
+            _check_frame_edge(proof['before_actual_frame'],proof['after_actual_frame'],proof['derived_floor_advance'])
+        elif proof:raise ValueError('Unexpected command proof')
+        commands[identifier(row['id'])]=(row,descriptor,result)
+    for row in objects(PortableJourneyState):
+        cabinet=cabinets[row['cabinet_id']]
+        revision(row['revision'])
+        if row['step'] not in STEPS:raise ValueError('Invalid journey step')
+        for key in ('completed','skipped'):
+            value=document(row[key])
+            if type(value) is not list or len(value)!=len(set(value)) or any(step not in STEPS for step in value):
+                raise ValueError('Invalid progress')
+        connections=document(row['connections']);slots=document(row['slots'])
+        if type(connections) is not dict or set(connections)-set(PROVIDER_ADAPTERS):raise ValueError('Invalid connections')
+        for provider,refs in connections.items():
+            if type(refs) is not list or len(refs)!=len(PROVIDER_ADAPTERS[provider]) or len(set(refs))!=len(refs):
+                raise ValueError('Invalid provider rows')
+            for ref in refs:
+                source=raw.execute('SELECT installation_id,adapter FROM shelf_portableconnection WHERE id=?',
+                                   (uuid.UUID(ref).hex,)).fetchone()
+                if not source or identifier(source[0])!=identifier(cabinet[2]) or source[1] not in PROVIDER_ADAPTERS[provider]:
+                    raise ValueError('Foreign provider row')
+        if type(slots) is not dict or len(slots)>65:raise ValueError('Invalid favourites')
+        from .category_registry import KEYS
+        for key,slot in slots.items():
+            category,number=key.rsplit(':',1)
+            if category not in KEYS or number not in ('1','2','3','4','5') or set(slot)!={'entry_ref','saved_revision'}:
+                raise ValueError('Invalid favourite slot')
+            identifier(slot['entry_ref']);revision(slot['saved_revision'],positive=True)
+    for row in objects(PortableSourceCheckAttempt):
+        command,descriptor,result=commands[identifier(row['command_id'])]
+        binding,outcome=document(row['binding']),document(row['outcome'])
+        cabinet=cabinets[row['cabinet_id']]
+        if (command['kind']!='source.check' or command['cabinet_id']!=row['cabinet_id'] or
+            row['state'] not in {'sending','passed','failed','unknown'} or type(outcome) is not dict or
+            type(binding) is not dict or binding.get('schema')!='native-source-check-binding/v1' or
+            binding.get('profile_ref')!=identifier(cabinet[1]) or
+            binding.get('operation_digest')!=row['operation_digest']):raise ValueError('Invalid source check')

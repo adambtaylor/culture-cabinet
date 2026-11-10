@@ -258,6 +258,8 @@ class PortableTasteInputs:
             events = FeedbackEvent.objects.filter(profile_id=state.profile_id,target=target,
                 signal='saved',scope='item').order_by('revision')
             receipt = MutationReceipt.objects.filter(actor=actor,mutation_id=mutation_id).first()
+            ga._require(receipt is None or receipt.state=='accepted' and receipt.accepted_revision is not None,
+                        'REVISION_CONFLICT',409)
             last = (events.filter(revision=receipt.accepted_revision-1).first() if receipt else events.last())
             command = MutationCommand(mutation_id,str(target.pk),'item','saved','item','set',base_revision,
                 str(last.pk) if last else None,None if remove else {'value':True})

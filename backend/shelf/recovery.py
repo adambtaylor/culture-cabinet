@@ -682,6 +682,12 @@ def semantic_check(raw):
         validate_obtain_history(raw)
     except (ValueError, TypeError, KeyError):
         raise RecoveryBlocked('Obtain origin semantics failed.') from None
+    from .card_actions import validate_journey_history
+    from .portable_authority import AuthorityFault
+    try:
+        validate_journey_history(raw)
+    except (ValueError, TypeError, KeyError, IndexError, AuthorityFault):
+        raise RecoveryBlocked('Journey history semantics failed.') from None
     if not raw.execute("SELECT 1 FROM django_migrations WHERE app='shelf' AND name='0002_feedback'").fetchone(): raise RecoveryBlocked('Unknown schema.')
     events=rows(raw,'SELECT * FROM shelf_feedbackevent ORDER BY profile_id,target_id,signal,scope,revision')
     targets={r['id']:r for r in rows(raw,'SELECT * FROM shelf_feedbacktarget')}

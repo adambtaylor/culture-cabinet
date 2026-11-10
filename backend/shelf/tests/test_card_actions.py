@@ -160,3 +160,58 @@ class GroundedCardStrengthTests(SimpleTestCase):
         self.assertNotIn('source:b',[c['key'] for c in GroundedSelector().build(output,submitted,outcomes)['categories'][0]['cards']])
         output['candidate_assessments'][0]['signal_keys']=['PRIVATE-DENIED']
         with self.assertRaises(ContractError):GroundedSelector().build(output,submitted,outcomes)
+
+from .test_portable_feedback_views import NativeFeedbackCase
+
+
+class FavouritePermissionTests(NativeFeedbackCase):
+    def test_unresolved_favourite_needs_text_permission_and_clear_never_seeds_a_query(self):
+        from shelf.portable_taste_inputs import PortableTasteInputs
+        from shelf import profile_snapshot,disclosure
+        from shelf.category_registry import registry_view
+        inputs=PortableTasteInputs(self.authority);entry=str(uuid.uuid4())
+        fields=dict(entry_ref=entry,mutation_id=str(uuid.uuid4()),base_revision=0,
+            category='book',title='Exact fictional favourite')
+        inputs.mutate_favourite(self.ref,self.profile_ref,**fields)
+        self.consent(self.profile_ref,purpose='catalogue_lookup',classes=['explicit_favourites'])
+        def query():
+            view=ga.current_view(self.authority,self.ref,profile_ref=self.profile_ref,
+                connection_ref=str(self.config.pk),purpose='catalogue_lookup')
+            snapshot=profile_snapshot.capture(view)
+            self.assertEqual(snapshot['evidence'][0]['identity_status'],'unresolved_personal')
+            body,_=disclosure.catalogue_input(snapshot,view.grants,view.context,
+                registry_view().categories,now=self.clock.wall)
+            return disclosure.read_json(body)
+        denied=query()
+        self.assertTrue(all(row['terms']==[] for row in denied['queries']))
+        self.assertNotIn('Exact fictional favourite',str(denied))
+        self.consent(self.profile_ref,purpose='catalogue_lookup',revision=1,action='revoke',classes=['explicit_favourites'])
+        self.consent(self.profile_ref,purpose='catalogue_lookup',revision=2,action='regrant',
+            classes=['explicit_favourites','unresolved_personal_text'])
+        permitted=query()
+        self.assertEqual(next(row['terms'] for row in permitted['queries'] if row['category']=='book'),
+            ['Exact fictional favourite'])
+        self.assertTrue(all(row['terms']==[] for row in permitted['queries'] if row['category']!='book'))
+        inputs.mutate_favourite(self.ref,self.profile_ref,**{**fields,'mutation_id':str(uuid.uuid4()),
+            'base_revision':1,'title':None,'remove':True})
+        self.assertTrue(all(row['terms']==[] for row in query()['queries']))
+
+    def test_only_permitted_canonical_native_preference_suppresses_old_favourite(self):
+        import hashlib
+        from shelf.disclosure import _profile
+        key='tmdb:tv:123';hashed=hashlib.sha256(key.encode()).hexdigest()
+        old=dict(id='old',key=key,title='Same confirmed target',medium='tv',basis='favourite',value=True,
+                 identity_status='confirmed',source_ref='favourite:1',data_classes=['explicit_favourites'])
+        native=dict(id='new',key='candidate-key-sha256:'+hashed,title='Same confirmed target',medium='tv',
+            basis='typed_feedback',value={'signal':'interest','scope':'item',
+                'value':{'value':'no','basis':'anticipated'}},identity_status='confirmed',source_ref='card-action:parent',data_classes=['anticipated_reactions'])
+        nodes={'old':old,'new':native}
+        permitted,_=_profile(nodes,lambda identifier:True,{})
+        self.assertEqual(len(permitted['signals']),1)
+        self.assertEqual(permitted['signals'][0]['basis'],'typed_feedback')
+        denied,_=_profile(nodes,lambda identifier:identifier=='old',{})
+        self.assertEqual(denied['signals'][0]['basis'],'favourite')
+        # Equal titles with distinct identities never collapse.
+        different={**native,'key':'candidate-key-sha256:'+hashlib.sha256(b'tmdb:tv:456').hexdigest()}
+        separate,_=_profile({'old':old,'new':different},lambda identifier:True,{})
+        self.assertEqual(len(separate['signals']),2)

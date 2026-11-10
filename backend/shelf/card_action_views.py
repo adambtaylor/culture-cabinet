@@ -44,7 +44,11 @@ def redirect(profile_ref,command_id,result):
 @sensitive_variables()
 def action(request):
     command=CardAction.parse(fields(request,ACTION_FIELDS))
-    result=service(request).apply(request.session.get('portable_session'),command)
+    operations=service(request)
+    result=operations.apply(request.session.get('portable_session'),command)
+    selection=getattr(operations,'selection',None)
+    if selection is not None:
+        request.session['portable_saved_selection']=selection
     return redirect(command.profile_ref,command.command_id,result)
 
 
