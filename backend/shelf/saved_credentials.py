@@ -226,6 +226,15 @@ class SavedCredentials:
             if saved is None:
                 return False
             if saved.removed:
+                # The durable tombstone describes the encrypted item only.
+                # A later explicit RAM-only replacement is still current key
+                # material and must be revoked by every native removal command.
+                with ga._checked_transaction(checkpoint):
+                    self._invalidate(row)
+                    if disable and not row.removed:
+                        row.removed = True
+                        row.config_revision += 1
+                        row.save(update_fields=['removed', 'config_revision'])
                 return {'removed': True, 'removal_pending': False, 'revision': row.config_revision}
             if saved.binding != self._binding(session, row):
                 raise AuthorityFault('CREDENTIAL_STORE_PENDING', 409)
