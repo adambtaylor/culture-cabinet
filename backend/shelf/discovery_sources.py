@@ -334,9 +334,9 @@ def fetch_public(operation, seed, mode, now):
         if operation == 'pbs' and not seed and not mode:
             from shelf.event_scraping import collect
             return collect('pbs', now=now)
-        if operation == 'venue303' and not seed and not mode:
+        if operation in ('venue303', 'forum') and not seed and not mode:
             from shelf.event_scraping import collect
-            return collect('venue303', now=now)
+            return collect(operation, now=now)
         if operation == 'rrr' and not seed and not mode:
             from shelf.event_scraping import collect
             return collect('rrr', now=now)

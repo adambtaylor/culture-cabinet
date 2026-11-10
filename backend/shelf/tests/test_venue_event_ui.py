@@ -67,3 +67,35 @@ class VenueEventUITests(TestCase):
         self.assertNotContains(page, 'SYNTHETIC')
         self.assertNotContains(page, 'CANARY')
         self.assertContains(page, 'rate-limited')
+
+    def test_forum_actual_action_replay_and_rendered_same_url_sessions(self):
+        from shelf.tests.test_forum_events import listing as forum_listing, session
+        with patch.object(transport, 'forum', return_value=(200,
+                forum_listing(session(),session('2026-11-01T21:00:00+11:00')))) as read:
+            data = self.form('forum')
+            self.assertEqual(self.client.post(self.action,data).status_code, 302)
+            self.client.post(self.action,data)
+            page = self.client.get(self.url)
+            events = page.context['public_results'][0]['outcome'].candidates
+            self.assertEqual(len(events), 2)
+            self.assertNotEqual(events[0].key, events[1].key)
+            self.assertContains(page, 'Forum Melbourne shows')
+            read.assert_called_once_with()
+
+    def test_forum_revocation_and_failed_refresh_are_safe(self):
+        from shelf.tests.test_forum_events import listing as forum_listing
+        with patch.object(transport, 'forum', return_value=(200, forum_listing())):
+            self.client.post(self.action, self.form('forum'))
+        with patch.object(transport, 'forum', side_effect=TimeoutError('CANARY')) as read:
+            self.client.post(self.action, self.form('forum'))
+            page = self.client.get(self.url)
+            self.assertContains(page, 'timeout')
+            self.assertNotContains(page, 'CANARY')
+            read.assert_called_once_with()
+        data = self.form('forum')
+        def revoke():
+            self.grant.can_select=False;self.grant.save()
+            return 200, forum_listing()
+        with patch.object(transport, 'forum', side_effect=revoke):
+            self.assertEqual(self.client.post(self.action, data).status_code, 404)
+        self.assertEqual(DiscoveryState.objects.get().history, [])
