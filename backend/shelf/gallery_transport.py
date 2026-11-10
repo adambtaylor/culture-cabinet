@@ -203,6 +203,12 @@ class GalleryOperation:
         return split.scheme + '://' + split.netloc + '/robots.txt'
 
     @property
+    def body(self):
+        # The existing native preview displays the selected body verbatim.
+        # Both gallery phases are fixed GETs and carry no personal payload.
+        return b''
+
+    @property
     def material(self):
         split = urlsplit(self.url)
         return {'source': self.source, 'method': 'GET', 'origin': split.scheme + '://' + split.netloc,

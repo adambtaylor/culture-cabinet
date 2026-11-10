@@ -63,6 +63,7 @@ class GalleryPhaseTests(TestCase):
 
     def test_cold_two_distinct_phases_with_collector_wait_and_exact_accounting(self):
         clock = GalleryClock()
+        self.assertEqual(transport.GalleryOperation('apw').body, b'')
         with driver(clock) as calls:
             collector, seal, progress = self.collect(clock)
             self.assertEqual(len(seal.records), 1)
