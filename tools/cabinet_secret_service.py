@@ -758,12 +758,20 @@ class _SecretBackend:
             'org.freedesktop.DBus', 'GetNameOwner', self.GLib.Variant('(s)', ('org.freedesktop.secrets',)))
         self.owner = owner.unpack()[0]
         require(self.owner.startswith(':'))
-        # The unique bus name and DO_NOT_AUTO_START also close the race where
-        # the existing provider exits between NameHasOwner and proxy creation.
-        self.service = self.Secret.Service(g_connection=self.connection, g_name=self.owner,
-            g_object_path='/org/freedesktop/secrets',
-            g_flags=self.Gio.DBusProxyFlags.DO_NOT_AUTO_START, flags=self.Secret.ServiceFlags.NONE)
-        self._initialize(self.service)
+        # libsecret's C constructor sets its own session-bus properties; passing
+        # a ready g-connection then calling init_async aborts inside GDBusProxy.
+        # Use its supported asynchronous factory instead. The installed client
+        # resolves its bus-name setting during construction, so pin that
+        # NONSECRET setting to the already observed unique owner. Unique names
+        # cannot activate a daemon, including if this owner exits during open.
+        # These two values are constructed here, never inherited or user input.
+        os.environ['DBUS_SESSION_BUS_ADDRESS'] = 'unix:path=/run/user/1000/bus'
+        os.environ['SECRET_SERVICE_BUS_NAME'] = self.owner
+        self.service = self.async_.call(lambda cancel, done: self.Secret.Service.open(
+            self.Secret.Service.__gtype__, self.owner, self.Secret.ServiceFlags.NONE,
+            cancel, done, None), lambda source, result: self.Secret.Service.open_finish(result))
+        require(self.service.get_name() == self.owner and self.service.get_name_owner() == self.owner
+                and self.service.get_connection().get_guid() == self.connection.get_guid())
         self._verify_service()
 
     def _open_collection(self):

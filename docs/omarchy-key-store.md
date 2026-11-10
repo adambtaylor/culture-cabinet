@@ -85,6 +85,9 @@ EOF is required. Duplicate/unknown fields, trailing/truncated frames and nonfini
 values are refused. Secrets are UTF-8 strings, limited to8192 encoded bytes.
 No secret travels in command arguments or environment variables. The client
 kills/reaps a timed-out child; it never retries a mutation.
+The worker pins libsecret's nonsecret service-name setting to the observed unique
+bus owner and uses libsecret's asynchronous factory. Supplying a ready connection
+to its raw constructor conflicts with the C constructor's own bus initialization.
 
 All requests contain exactly `version`, `operation`, `record_kind`, `binding`,
 `expected_revision`, `operation_id`, `record_if_put`. Version is
@@ -134,6 +137,10 @@ not defeated by these receipts; Python byte erasure is best effort.
 ## Checks and remaining OS proof
 
 Run `/usr/bin/python3 -I -B tools/test_cabinet_secret_service.py -v`.
+The explicit platform regression is
+`/usr/bin/python3 -I -B tools/test_cabinet_secret_service.py --metadata-connect`.
+It connects only to service metadata and checks the pinned owner/bus without
+loading collections, opening a secret session or requesting any secret.
 Tests use owned fictional records, actual Fernet, private child-process pipes,
 cancellation and header fixtures. A test-only ciphertext backend is never a
 production option. Its fresh-process result is component evidence, not proof

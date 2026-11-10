@@ -640,7 +640,22 @@ class FreshHelperTests(unittest.TestCase):
 
 
 if __name__ == '__main__':
-    if len(sys.argv) == 5 and sys.argv[1] == '--dummy-worker':
+    if sys.argv[1:] == ['--metadata-connect']:
+        # Explicit, non-mutating platform regression. No collection object,
+        # secret session, secret load, keyring file or provisioning is requested.
+        import resource
+        resource.setrlimit(resource.RLIMIT_CORE, (0, 0))
+        backend = object.__new__(store._SecretBackend)
+        backend._connect(time.monotonic() + store.TIMEOUT)
+        assert backend.service.get_name() == backend.owner
+        assert backend.service.get_name_owner() == backend.owner
+        assert not backend.service.get_flags() & backend.Secret.ServiceFlags.LOAD_COLLECTIONS
+        assert not backend.service.get_flags() & backend.Secret.ServiceFlags.OPEN_SESSION
+        print(json.dumps({'metadata_connection': 'PASS', 'pid': os.getpid(),
+            'unique_owner_pinned': True, 'same_user_bus': True,
+            'collections_loaded': False, 'secret_session_opened': False,
+            'collection_created': False, 'secret_read': False}))
+    elif len(sys.argv) == 5 and sys.argv[1] == '--dummy-worker':
         # Full production worker/codec, but a test-only owned backend/lock. This
         # is not GNOME/protected-collection evidence or a production option.
         from contextlib import nullcontext
