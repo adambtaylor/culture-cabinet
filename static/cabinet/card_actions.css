@@ -16,3 +16,7 @@
 .card-actions :focus-visible { outline: 3px solid #895317; outline-offset: 3px; }
 @media (prefers-reduced-motion:reduce) { .card-action-floating { transition: none; } }
 @media (forced-colors:active) { .card-bin,.card-action-buttons button,.card-actions-open { border-color: ButtonText; } }
+
+.noise-control { max-width: 38rem; margin-block: .8rem; padding: .8rem; border: 1px solid #858a7d; }
+.noise-control input[type=range] { width: 100%; min-height: 2.8rem; accent-color: #354e3c; }
+.noise-endpoints { display: flex; justify-content: space-between; gap: 1rem; flex-wrap: wrap; }
