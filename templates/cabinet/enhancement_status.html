@@ -212,3 +212,4 @@
   <p><a data-enhance-status-link href="{{ enhancement.status_url }}"{% if enhancement.schema == 'enhance/v1' or not enhancement.status_url %} hidden{% endif %}>Review enhancement status</a></p>
   {% if enhancement.request_id %}<p>Request: {{ enhancement.request_id }}</p>{% endif %}
 </section>
+{% if portable_ui %}<p><a href="/setup/journey">Continue guided setup</a>. Review the recorded preparation outcome before your next step; nothing is retried automatically.</p>{% endif %}
