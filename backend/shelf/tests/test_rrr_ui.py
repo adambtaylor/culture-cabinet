@@ -6,6 +6,7 @@ from unittest.mock import patch
 from django.test import Client, TestCase, override_settings
 
 from shelf import discovery_sources as sources, discovery_transport as transport, discovery_views as views
+from shelf import event_scraping
 from shelf.models import DiscoveryState
 from shelf.tests import test_discovery_public_ui as existing
 from shelf.tests.test_discovery_transport import NOW
@@ -18,7 +19,8 @@ class RRRUITests(TestCase):
     form = existing.PublicDiscoveryUITests.form
 
     def test_post_replay_one_read_no_choices_and_both_pages_show_attribution(self):
-        with patch.object(transport, 'rrr', return_value=(200, listing())) as send:
+        with patch.object(transport, 'rrr', return_value=(200, listing())) as send, \
+             patch.object(event_scraping, 'collect', wraps=event_scraping.collect) as collect:
             data = self.form('rrr')
             self.client.get('/recommendations/')
             self.assertEqual(self.client.get(self.action).status_code, 405)
@@ -26,6 +28,7 @@ class RRRUITests(TestCase):
             self.assertEqual(self.client.post(self.action, data).status_code, 302)
             self.assertEqual(self.client.post(self.action, data).status_code, 302)
             send.assert_called_once()
+            collect.assert_called_once_with('rrr', now=NOW)
         state = DiscoveryState.objects.get()
         self.assertEqual(state.history, [])
         for url in (self.url, '/recommendations/'):
@@ -37,6 +40,25 @@ class RRRUITests(TestCase):
             self.assertContains(page, 'live-automated')
             self.assertContains(page, 'Partial coverage')
         self.assertNotContains(self.client.get(self.url, {'mode': 'sample'}), 'SYNTHETIC event')
+
+    def test_failed_rrr_refresh_preserves_other_source_result(self):
+        from shelf.tests.test_discovery_transport import event_document
+        with patch.object(transport, 'events', return_value=(200, json.dumps(event_document()).encode())):
+            self.client.post(self.action, self.form('events'))
+        with patch.object(transport, 'rrr', return_value=(200, listing(card(name='SYNTHETIC RRR')))):
+            self.client.post(self.action, self.form('rrr'))
+        with patch.object(transport, 'rrr', side_effect=TimeoutError('CANARY')) as send:
+            data = self.form('rrr')
+            self.client.post(self.action, data)
+            self.client.post(self.action, data)
+            send.assert_called_once_with()
+        page = self.client.get(self.url)
+        self.assertNotContains(page, 'SYNTHETIC RRR')
+        self.assertNotContains(page, 'CANARY')
+        self.assertContains(page, 'SYNTHETIC event')
+        self.assertContains(page, 'Moshtix')
+        self.assertContains(page, 'timeout')
+        self.assertEqual(DiscoveryState.objects.get().history, [])
 
     def test_invalid_sample_extra_fields_stale_nonce_and_grant_prevent_io(self):
         data = self.form('rrr')
