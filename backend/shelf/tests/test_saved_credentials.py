@@ -2,10 +2,12 @@
 from copy import deepcopy
 import json
 from unittest.mock import patch
+from types import SimpleNamespace
 import uuid
 
 from shelf.models import SavedCredentialBinding
 from shelf.saved_credentials import SavedCredentials, VERSION
+from shelf.saved_credentials import secret_service_request
 from .test_portable_feedback_views import NativeFeedbackCase
 from .test_portable_authority import PASSWORD
 
@@ -187,3 +189,139 @@ class SavedCredentialTests(NativeFeedbackCase):
         self.fault('REVISION_CONFLICT',self.service.vault.resolve,self.ref,self.config.pk,2)
         self.assertEqual(SavedCredentialBinding.objects.get().store_revision,revision)
         self.assertEqual(sum(c['operation']=='delete' for c in self.store.calls),1)
+
+    def enable_delete_guarantee(self):
+        self.saved.delete_guarantee = lambda:'direct-delete-locked/v1'
+
+    def locked_delete(self):
+        self.enable_delete_guarantee()
+        self.save()
+        self.store.locked = True
+        fields=dict(connection_ref=str(self.config.pk),revision='1')
+        self.assertEqual(self.post('/setup/form/remove',fields).status_code,303)
+        saved=SavedCredentialBinding.objects.get()
+        self.assertEqual(saved.delete_no_effect_proof,self.saved._delete_proof(saved))
+        return fields,saved
+
+    def test_explicit_remove_consumes_durable_locked_proof_after_new_login(self):
+        fields,old=self.locked_delete()
+        self.assertEqual(self.post('/setup/form/login',{'passphrase':PASSWORD}).status_code,303)
+        self.ref=self.http.session['portable_session']
+        # A new facade has no private retry state; the proof is in SQLite.
+        self.saved=SavedCredentials(self.authority,self.service.vault,request=self.store.request,
+            delete_guarantee=lambda:'direct-delete-locked/v1')
+        self.store.locked=False
+        self.assertEqual(self.post('/setup/form/remove',fields).status_code,303)
+        target=SavedCredentialBinding.objects.get()
+        self.assertTrue(target.removed)
+        self.assertIsNone(target.delete_no_effect_proof)
+        direct=[c for c in self.store.calls if c['operation']=='delete']
+        self.assertEqual(len(direct),2)
+        self.assertEqual(direct[0],direct[1])
+        self.assertEqual(direct[1]['operation_id'],str(old.operation_id))
+        self.assertEqual(direct[1]['expected_revision'],old.store_revision)
+
+    def test_old_pending_without_proof_never_uses_later_locked_guarantee(self):
+        self.save()
+        self.store.locked=True
+        self.service.vault.remove(self.ref,self.config.pk,1)
+        self.assertIsNone(SavedCredentialBinding.objects.get().delete_no_effect_proof)
+        self.enable_delete_guarantee()
+        self.service.vault.remove(self.ref,self.config.pk,1)
+        self.assertEqual(self.store.calls[-1]['operation'],'reconcile')
+        self.assertIsNone(SavedCredentialBinding.objects.get().delete_no_effect_proof)
+
+    def test_ambiguous_delete_reply_never_creates_no_effect_proof(self):
+        self.enable_delete_guarantee()
+        self.save()
+        self.store.lose_ack=True
+        self.service.vault.remove(self.ref,self.config.pk,1)
+        saved=SavedCredentialBinding.objects.get()
+        self.assertIsNone(saved.delete_no_effect_proof)
+        self.assertFalse(saved.removed)
+        self.service.vault.remove(self.ref,self.config.pk,1)
+        self.assertTrue(SavedCredentialBinding.objects.get().removed)
+        self.assertEqual(sum(c['operation']=='delete' for c in self.store.calls),1)
+
+    def test_lost_caller_after_proof_consumption_cannot_reissue_mutation(self):
+        _,old=self.locked_delete()
+        self.store.locked=False
+        original=self.saved._call
+        def crash(operation,saved,**kwargs):
+            if operation=='delete':
+                self.assertIsNone(SavedCredentialBinding.objects.get().delete_no_effect_proof)
+                raise RuntimeError('Owned fixture stops before IPC')
+            return original(operation,saved,**kwargs)
+        with patch.object(self.saved,'_call',side_effect=crash):
+            with self.assertRaises(RuntimeError):self.service.vault.remove(self.ref,self.config.pk,1)
+        saved=SavedCredentialBinding.objects.get()
+        self.assertIsNone(saved.delete_no_effect_proof)
+        self.assertEqual(saved.operation_id,old.operation_id)
+        self.service.vault.remove(self.ref,self.config.pk,1)
+        self.assertEqual(self.store.calls[-1]['operation'],'reconcile')
+        self.assertIsNotNone(self.store.record)
+
+    def test_changed_predecessor_invalidates_no_effect_proof(self):
+        _,old=self.locked_delete()
+        self.store.locked=False
+        SavedCredentialBinding.objects.filter(pk=old.pk).update(store_revision=str(uuid.uuid4()))
+        self.service.vault.remove(self.ref,self.config.pk,1)
+        self.assertEqual(self.store.calls[-1]['operation'],'reconcile')
+        self.assertEqual(sum(c['operation']=='delete' for c in self.store.calls),1)
+        self.assertIsNotNone(self.store.record)
+
+    def test_competing_remove_observes_spent_proof_before_first_ipc(self):
+        _,old=self.locked_delete()
+        self.store.locked=False
+        original=self.saved._call
+        competed=[]
+        def interleave(operation,saved,**kwargs):
+            if operation=='delete' and not competed:
+                self.assertIsNone(SavedCredentialBinding.objects.get().delete_no_effect_proof)
+                competed.append(self.service.vault.remove(self.ref,self.config.pk,1))
+            return original(operation,saved,**kwargs)
+        with patch.object(self.saved,'_call',side_effect=interleave):
+            self.service.vault.remove(self.ref,self.config.pk,1)
+        self.assertTrue(competed[0]['removal_pending'])
+        self.assertEqual(sum(c['operation']=='delete' for c in self.store.calls),2)
+        self.assertTrue(SavedCredentialBinding.objects.get().removed)
+
+    def test_repeated_direct_locked_restores_same_no_effect_proof(self):
+        fields,old=self.locked_delete()
+        self.assertEqual(self.post('/setup/form/remove',fields).status_code,303)
+        saved=SavedCredentialBinding.objects.get()
+        self.assertEqual(saved.operation_id,old.operation_id)
+        self.assertEqual(saved.delete_no_effect_proof,old.delete_no_effect_proof)
+        self.assertIsNotNone(self.store.record)
+
+    def test_malformed_proof_never_permits_direct_delete(self):
+        _,old=self.locked_delete()
+        SavedCredentialBinding.objects.filter(pk=old.pk).update(
+            delete_no_effect_proof={**old.delete_no_effect_proof,'invented':True})
+        self.store.locked=False
+        self.service.vault.remove(self.ref,self.config.pk,1)
+        self.assertEqual(self.store.calls[-1]['operation'],'reconcile')
+        self.assertIsNotNone(self.store.record)
+
+    def test_delete_guarantee_comes_only_from_current_trusted_packaged_adapter(self):
+        self.saved.request=secret_service_request
+        with patch('shelf.saved_credentials.packaged_adapter',return_value=SimpleNamespace(VERSION=VERSION)):
+            self.assertFalse(self.saved._supports_delete_proof())
+        with patch('shelf.saved_credentials.packaged_adapter',return_value=SimpleNamespace(
+                VERSION=VERSION,DELETE_NO_EFFECT_GUARANTEE='direct-delete-locked/v1')):
+            self.assertTrue(self.saved._supports_delete_proof())
+        with patch('shelf.saved_credentials.packaged_adapter',return_value=SimpleNamespace(
+                VERSION='unsupported',DELETE_NO_EFFECT_GUARANTEE='direct-delete-locked/v1')):
+            self.assertFalse(self.saved._supports_delete_proof())
+        self.saved.request=self.store.request
+        self.assertFalse(self.saved._supports_delete_proof())
+
+    def test_http_cannot_supply_a_delete_guarantee_or_proof(self):
+        self.save()
+        before=len(self.store.calls)
+        response=self.http.post('/setup/connections/remove',json.dumps({
+            'connection_ref':str(self.config.pk),'revision':1,'disable':False,
+            'helper_guarantee':'direct-delete-locked/v1'}),content_type='application/json',
+            HTTP_X_CSRFTOKEN=self.csrf(),**self.headers)
+        self.assertEqual(response.status_code,422)
+        self.assertEqual(len(self.store.calls),before)

@@ -571,6 +571,7 @@ class SavedCredentialBinding(models.Model):
     scopes = models.JSONField(default=list)
     removed = models.BooleanField(default=False)
     remove_requested = models.BooleanField(default=False)
+    delete_no_effect_proof = models.JSONField(null=True, default=None)
 
     class Meta:
         constraints = [models.CheckConstraint(condition=models.Q(
