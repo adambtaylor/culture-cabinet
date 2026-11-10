@@ -1,0 +1,16 @@
+{% comment %}A shared native start envelope, supplied by Taste's current read-only producer. Rendering is not admission; POST revalidates authority and unresolved attempts. Keep Noise inside this form once, immediately after its submit button.{% endcomment %}
+{% if portable_commands.start == '/enhance/start' and profile_ref and connection_ref and client_key and refresh_nonce and noise_control %}
+<form method="post" action="/enhance/start" data-native-enhance-start>{% csrf_token %}
+  <input type="hidden" name="profile_ref" value="{{ profile_ref }}"><input type="hidden" name="connection_ref" value="{{ connection_ref }}">
+  <input type="hidden" name="client_key" value="{{ client_key }}"><input type="hidden" name="refresh_nonce" value="{{ refresh_nonce }}">
+  <button type="submit">{{ start_label }}</button>
+  <fieldset class="noise-control" data-noise-control><legend>Noise</legend>
+    <label for="{{ noise_id }}">Next round: <output for="{{ noise_id }}" data-noise-output>{{ noise_control.value }}</output> · applies to the next round</label>
+    <p class="help">Starting default: {{ noise_control.value }}. Without scripting, the numeric readout remains this initial default; the native slider still submits your choice for review.</p>
+    <input id="{{ noise_id }}" name="noise" type="range" min="0" max="100" step="1" value="{{ noise_control.value }}" aria-describedby="{{ noise_id }}-help">
+    <div class="noise-endpoints"><span>Precise</span><span>Experimental</span></div>
+    <p id="{{ noise_id }}-help" class="help">More variety from the same source-grounded candidates. Moving this control sends nothing. Your choice is saved only when a new round is admitted; an unsubmitted edit is lost on reload and does not change an active round.</p>
+  </fieldset>
+  <p>Review API requests next, then review inference separately. Starting a round does not confirm either request.</p>
+</form>
+{% endif %}

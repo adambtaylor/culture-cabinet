@@ -1,6 +1,6 @@
 {% extends enhancement_base %}
 {% block content %}
-{% if card_actions_available and not read_code %}<link rel="stylesheet" href="/cabinet/actions/style.css">{% endif %}
+{% if not read_code %}{% if card_actions_available or noise_control %}<link rel="stylesheet" href="/cabinet/actions/style.css">{% endif %}{% endif %}
 {% if taste_input %}
 <section class="paper-panel cabinet-taste" aria-labelledby="taste-heading">
   <p class="eyebrow">Preferences · {{ profile_label }}</p>
@@ -280,8 +280,10 @@
       {% if round_blocks_start %}
         {% if round_url %}<p><a class="cabinet-action" href="{{ round_url }}">Continue the recorded round</a></p>{% endif %}
         <p>An unfinished or uncertain attempt must not be replaced by a new round. Review its recorded status before any further action.</p>
+      {% elif portable_commands.start == '/enhance/start' and profile_ref and connection_ref and client_key and refresh_nonce and noise_control %}
+        {% include 'cabinet/portable_enhance_start.html' with start_label='Enhance' noise_id='cabinet-enhance-noise' %}
       {% elif enhance_url %}
-        <p><a class="cabinet-action" href="{{ enhance_url }}">Enhance this cabinet</a></p>
+        <p><a class="cabinet-action" href="{{ enhance_url }}">Review Enhance setup and requests</a></p>
         <p>Collect API candidates first, then review inference. Every enabled category participates, whichever tab you view.</p>
       {% else %}<p><a href="/setup/cabinet?profile_ref={{ profile_ref|urlencode }}">Choose a model connection</a> before considering Enhance. Sources, consent and working inference must also be available.</p>{% endif %}
     </div>
