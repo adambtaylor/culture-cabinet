@@ -133,6 +133,7 @@ class TasteHistoryPresentationTests(SimpleTestCase):
         self.assertIn('Moving this control sends nothing', html)
         native = render_to_string('cabinet/enhancement_status.html', {'portable_ui': True,
             'portable_commands': {'start': '/enhance/start'}, 'noise_control': control,
+            'profile_ref': ref(1), 'connection_ref': ref(2), 'client_key': ref(3), 'refresh_nonce': ref(4),
             'enhancement': {'schema': 'enhance/v1'}})
         self.assertLess(native.index('Start a round and review API requests</button>'), native.index('id="enhance-noise"'))
         self.assertIn('Experimental', native)
