@@ -197,7 +197,7 @@ class OnboardingExperienceTests(SimpleTestCase):
         _, html, doc = self.render(context)
         self.assertEqual(set(doc.forms), {'credential', 'preview', 'remove', 'logout'})
         self.assertEqual(doc.body['data-credential-configured'], 'true')
-        self.assertIn('Replace session-only API key', html)
+        self.assertIn('Replace API key', html)
         self.assertNotIn('confirm', doc.forms)
 
     def test_neutral_preview_is_exact_text_and_not_executable_markup(self):
@@ -450,3 +450,193 @@ class OnboardingExperienceTests(SimpleTestCase):
         self.assertNotIn('disabled', ready.forms['preview']['buttons'][0])
         self.assertIn('Retry your intended action explicitly', confirmed)
         self.assertIn('no key or connection test was resubmitted', confirmed)
+
+
+    def test_persistent_enrollment_is_explicit_bound_and_never_echoes_failed_input(self):
+        _, html, doc = self.render(self.model(notice='CONTRACT_INVALID', secret=CANARY), status=422)
+        form = doc.forms['credential']
+        self.assertEqual(form['attrs']['action'], '/setup/form/credential')
+        fields = {row['name']: row for row in form['inputs']}
+        self.assertEqual(set(fields), {'csrfmiddlewaretoken', 'connection_ref', 'revision', 'storage', 'secret'})
+        self.assertEqual(fields['storage']['value'], 'persistent')
+        self.assertEqual(fields['csrfmiddlewaretoken']['value'], TOKEN)
+        self.assertEqual(fields['connection_ref']['value'], CONNECTION)
+        self.assertEqual(fields['revision']['value'], '1')
+        self.assertEqual(fields['secret']['type'], 'password')
+        self.assertNotIn('value', fields['secret'])
+        self.assertNotIn(CANARY, html)
+        self.assertIn('Save encrypted key', html)
+        self.assertIn('After saving, you can close the entry terminal', html)
+        self.assertNotIn('confirm', doc.forms)
+
+    def test_saved_available_key_is_distinct_from_current_lease_validation_and_consent(self):
+        context = self.model(credential_saved=True, credential_available=True,
+                             credential_store_state='available', notice='KEY_SAVED')
+        _, html, doc = self.render(context)
+        self.assertIn('Encrypted key saved and available', html)
+        self.assertIn('Encrypted API key saved on this computer', html)
+        self.assertIn('Provider access has not been verified by saving it', html)
+        self.assertIn('No terminal needs to stay open', html)
+        self.assertEqual(doc.body['data-credential-saved'], 'true')
+        self.assertEqual(doc.body['data-credential-available'], 'true')
+        self.assertEqual(doc.body['data-credential-configured'], 'false')
+        self.assertEqual(doc.body['data-connection-ready'], 'false')
+        self.assertEqual(doc.body['data-run-ready'], 'false')
+        self.assertNotIn('preview', doc.forms)
+        self.assertNotIn('confirm', doc.forms)
+        self.assertIn('remove', doc.forms)
+        self.assertIn('Replace the saved API key', html)
+        self.assertIn('permission to share personal data', html)
+
+    def test_locked_or_unavailable_store_guides_desktop_unlock_without_key_reentry(self):
+        for state, phrase in [('locked', 'Encrypted key store locked'),
+                              ('unavailable', 'Encrypted key store unavailable')]:
+            with self.subTest(state=state):
+                _, html, doc = self.render(self.model(credential_saved=True,
+                    credential_store_state=state, credential_configured=state == 'locked', preview=self.preview()))
+                self.assertIn(phrase, html)
+                self.assertIn('Omarchy desktop', html)
+                self.assertIn('Check saved-key status again', html)
+                self.assertTrue(any(tag == 'a' and attrs.get('href') == '/setup?connection_ref=' + CONNECTION
+                                    for tag, attrs in doc.tags))
+                self.assertIn('disabled', doc.forms['credential']['buttons'][0])
+                self.assertIn('disabled', next(row for row in doc.forms['credential']['inputs']
+                                              if row['name'] == 'secret'))
+                if state == 'locked':
+                    self.assertIn('disabled', doc.forms['preview']['buttons'][0])
+                else:
+                    self.assertNotIn('preview', doc.forms)
+                self.assertNotIn('disabled', doc.forms['remove']['buttons'][0])
+                self.assertNotIn('confirm', doc.forms)
+                self.assertNotIn(PREVIEW, html)
+                self.assertNotIn('name="keyring_password"', html)
+                if state == 'locked':
+                    self.assertIn('Do not enter the keyring password into Cabinet or an SSH terminal', html)
+                    self.assertIn('You do not need to enter the API key again', html)
+
+    def test_pending_removal_never_claims_deletion_or_offers_another_send(self):
+        _, html, doc = self.render(self.model(credential_saved=True,
+            credential_store_state='removal_pending', notice='KEY_REMOVED',
+            credential_configured=True, preview=self.preview()))
+        self.assertIn('Removal pending — key disabled in Cabinet', html)
+        self.assertIn('Deletion from the encrypted store has not been confirmed', html)
+        self.assertNotIn('API key removed from Cabinet', html)
+        self.assertIn('This does not revoke the key at the provider', html)
+        self.assertIn('disabled', doc.forms['credential']['buttons'][0])
+        self.assertNotIn('preview', doc.forms)
+        self.assertNotIn('confirm', doc.forms)
+        self.assertIn('remove', doc.forms)
+        self.assertNotIn(PREVIEW, html)
+        _, removed, after = self.render(self.model(notice='KEY_REMOVED'))
+        self.assertIn('API key removed from Cabinet', removed)
+        self.assertIn('No encrypted key is saved for this connection', removed)
+        self.assertNotIn('remove', after.forms)
+
+    def test_saved_key_projection_accepts_only_safe_primitives_and_keeps_secrets_out(self):
+        for changes in ({'credential_saved': 'true'}, {'credential_available': 1},
+                        {'credential_store_state': Poison()}, {'credential_store_state': CANARY},
+                        {'credential_available': True},
+                        {'credential_saved': True, 'credential_available': True, 'credential_store_state': 'locked'}):
+            with self.subTest(fields=list(changes)), self.assertRaises(ValueError):
+                self.render(self.model(**changes))
+        _, html, doc = self.render(self.model(credential_saved=True,
+            credential_store_state='locked', secret=CANARY, saved_record=Poison(),
+            keyring_password=CANARY, credential_binding=Poison(), request=Poison()))
+        self.assertNotIn(CANARY, html)
+        self.assertTrue(all('value' not in row for row in doc.inputs if row.get('type') == 'password'))
+
+    def test_saved_key_restart_login_and_live_confirmation_keep_separate_meanings(self):
+        _, login, doc = self.render({'state': 'login', 'notice': 'SIGNED_OUT',
+                                    'credential_saved': True, 'credential_store_state': 'locked'})
+        self.assertIn('encrypted keys are retained on this computer', login)
+        self.assertIn('unlock it on the Omarchy desktop', login)
+        self.assertEqual(set(doc.forms), {'login'})
+        self.assertEqual(doc.body['data-credential-saved'], 'false')
+        _, html, doc = self.render(self.model(credential_saved=True,
+            credential_store_state='available', reauthentication_required=True))
+        self.assertIn('reauthenticate', doc.forms)
+        self.assertIn('disabled', doc.forms['credential']['buttons'][0])
+        self.assertIn('Nothing is resubmitted automatically', html)
+        self.assertIn('Old sessions and request confirmations do not carry over', html)
+        self.assertNotIn('confirm', doc.forms)
+
+
+    def test_persistent_notice_codes_keep_legacy_and_unconfirmed_receipts_distinct(self):
+        _, legacy, _ = self.render(self.model(credential_saved=True,
+            credential_store_state='available', notice='KEY_ADDED'))
+        self.assertIn('Session-only API key updated', legacy)
+        self.assertNotIn('Encrypted API key saved on this computer', legacy)
+        _, unconfirmed, _ = self.render(self.model(notice='KEY_SAVED'))
+        self.assertIn('Encrypted key saving is not confirmed', unconfirmed)
+        self.assertNotIn('Encrypted API key saved on this computer', unconfirmed)
+        _, pending, doc = self.render(self.model(credential_saved=True,
+            credential_store_state='removal_pending', notice='KEY_REMOVAL_PENDING'))
+        self.assertIn('deletion from the encrypted store has not been confirmed', pending)
+        self.assertNotIn('API key removed from Cabinet', pending)
+        self.assertTrue(any(attrs.get('id') == 'setup-status' and attrs.get('role') == 'status'
+                            for tag, attrs in doc.tags))
+        self.assertIn('remove', doc.forms)
+
+
+    def test_explicit_ram_replacement_keeps_current_key_review_without_using_disabled_saved_binding(self):
+        # K2 sequence: persistent save, then an explicit legacy RAM-only update
+        # without deletion. The disabled durable binding remains truthful.
+        context = self.model(credential_saved=True, credential_available=True,
+                             credential_store_state='available', credential_configured=True,
+                             notice='KEY_SAVED')
+        _, saved, _ = self.render(context)
+        self.assertIn('Encrypted API key saved on this computer', saved)
+        context.update(credential_available=False, credential_store_state='unavailable',
+                       notice='KEY_ADDED', preview=self.preview())
+        _, html, doc = self.render(context)
+        self.assertIn('Session-only API key updated', html)
+        self.assertIn('A separate session-only key is available', html)
+        self.assertIn('will not survive logout or restart', html)
+        self.assertEqual(doc.body['data-credential-configured'], 'true')
+        self.assertEqual(doc.body['data-credential-available'], 'false')
+        self.assertEqual(doc.body['data-connection-ready'], 'false')
+        self.assertNotIn('disabled', doc.forms['preview']['buttons'][0])
+        self.assertNotIn('disabled', doc.forms['confirm']['buttons'][0])
+        self.assertIn('disabled', doc.forms['credential']['buttons'][0])
+        self.assertEqual(doc.pre_text, self.preview()['body'])
+        self.assertEqual(next(row for row in doc.forms['confirm']['inputs']
+                              if row['name'] == 'confirm_billable_test')['type'], 'checkbox')
+        for changes in ({'credential_configured': False},
+                        {'credential_store_state': 'locked'},
+                        {'credential_store_state': 'removal_pending'},
+                        {'reauthentication_required': True}):
+            with self.subTest(changes=changes):
+                _, refused, blocked = self.render({**context, **changes})
+                self.assertNotIn('confirm', blocked.forms)
+                if 'preview' in blocked.forms:
+                    self.assertIn('disabled', blocked.forms['preview']['buttons'][0])
+                self.assertNotIn(PREVIEW, refused)
+
+
+    def test_pending_removal_preserves_explicit_native_reconciliation_with_current_authority(self):
+        context = self.model(credential_saved=True, credential_store_state='removal_pending',
+                             notice='KEY_REMOVAL_PENDING', secret=CANARY)
+        _, html, doc = self.render(context)
+        form = doc.forms['remove']
+        self.assertEqual(form['attrs']['method'], 'post')
+        self.assertEqual(form['attrs']['action'], '/setup/form/remove')
+        values = {row['name']: row.get('value') for row in form['inputs']}
+        self.assertEqual(values, {'csrfmiddlewaretoken': TOKEN, 'connection_ref': CONNECTION, 'revision': '1'})
+        self.assertEqual(form['buttons'][0]['type'], 'submit')
+        self.assertNotIn('disabled', form['buttons'][0])
+        self.assertIn('Finish removing key', html)
+        self.assertIn('explicitly check or complete the pending removal', html)
+        self.assertIn('nothing is retried automatically', html)
+        self.assertIn('Deletion from the encrypted store has not been confirmed', html)
+        self.assertNotIn('API key removed from Cabinet', html)
+        self.assertNotIn(CANARY, html)
+        self.assertNotIn('preview', doc.forms)
+        self.assertNotIn('confirm', doc.forms)
+        self.assertIn('disabled', doc.forms['credential']['buttons'][0])
+        self.assertFalse(any(tag == 'script' for tag, attrs in doc.tags))
+        # The added completion path is still a sensitive native operation:
+        # recent-auth confirmation must happen first, without replaying it.
+        _, pending, reauth = self.render({**context, 'reauthentication_required': True})
+        self.assertIn('disabled', reauth.forms['remove']['buttons'][0])
+        self.assertNotIn('disabled', reauth.forms['reauthenticate']['buttons'][0])
+        self.assertNotIn('confirm', reauth.forms)

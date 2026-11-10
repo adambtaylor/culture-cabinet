@@ -66,7 +66,7 @@ _NATIVE_CLEAN_STARTS = weakref.WeakKeyDictionary()
 
 
 def native_clean_start_matches(coordinator, boundary):
-    # An absent witness is a refusal, not a WeakKeyDictionary lookup of None.
+    # Reject absent/non-native witnesses before the weak-key lookup.
     if type(coordinator) is not CurrentRecoveryCoordinator:
         return False
     issued = _NATIVE_CLEAN_STARTS.get(coordinator)

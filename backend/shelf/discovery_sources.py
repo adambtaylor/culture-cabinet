@@ -332,8 +332,8 @@ def fetch_public(operation, seed, mode, now):
             from shelf.soundsystems_events import fetch_listing
             return fetch_listing(now)
         if operation == 'pbs' and not seed and not mode:
-            from shelf.pbs_events import fetch_listing
-            return fetch_listing(now)
+            from shelf.event_scraping import collect
+            return collect('pbs', now=now)
         if operation == 'rrr' and not seed and not mode:
             from shelf.event_scraping import collect
             return collect('rrr', now=now)
