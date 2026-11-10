@@ -127,7 +127,7 @@ def recovery_guard(authority, session_ref, *, profile_ref=None):
     Lock order is coordinator -> authority -> SQL. Nested checks reuse the live
     verified checkpoint; the original outer barrier verifies journal continuity
     again on exit, so an exit failure cannot hand a snapshot or bytes to a caller.
-    profile_ref is the shared capture seam; this fresh-only policy denies every
+    profile_ref is the shared capture seam; this conservative policy denies every
     pending/committed restriction rather than narrowing away another subject.
     """
     _require(type(authority) is PortableAuthority)
@@ -140,7 +140,8 @@ def recovery_guard(authority, session_ref, *, profile_ref=None):
             trusted = (witness is not None and getattr(witness, '_trusted_restart_seal', None)
                 is recovery._TRUSTED_RESTART_SEAL and witness.trusted_boundary is authority.boundary)
             native = recovery.native_first_start_matches(witness, authority.boundary)
-            _require(_fixture_database() or trusted or native, 'CAPABILITY_UNAVAILABLE', 503)
+            clean = recovery.native_clean_start_matches(witness, authority.boundary)
+            _require(_fixture_database() or trusted or native or clean, 'CAPABILITY_UNAVAILABLE', 503)
             checkpoint = _RecoveryCheckpoint(authority, session_ref, witness, connection.connection)
             checkpoint.check()
             yield checkpoint

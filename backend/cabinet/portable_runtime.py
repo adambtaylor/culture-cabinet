@@ -248,13 +248,14 @@ def _compose_enhance(authority, connections, *, approved_policies=None, approved
     return policy
 
 
-def run(root, *, port=0, approved_policies=None, approved_policies_factory=None):
+def run(root, *, port=0, approved_policies=None, approved_policies_factory=None, saved_store=None):
     os.umask(0o077)
     boundary = server = None
     lifetime = ExitStack()
     previous = {}
     stopping = False
     closing = False
+    checkpoint = None
 
     def stop(signum, frame):
         nonlocal stopping
@@ -272,7 +273,7 @@ def run(root, *, port=0, approved_policies=None, approved_policies_factory=None)
         # This process is a dedicated local server. Disabling logging avoids
         # accidental exception-value disclosure; terminal output is fixed below.
         logging.disable(logging.CRITICAL)
-        for sig in [signal.SIGTERM, signal.SIGINT]:
+        for sig in [signal.SIGTERM, signal.SIGINT, signal.SIGHUP]:
             previous[sig] = signal.signal(sig, stop)
         from cabinet.portable_boundary import open_boundary
         boundary = open_boundary(root, port=port)
@@ -289,20 +290,28 @@ def run(root, *, port=0, approved_policies=None, approved_policies_factory=None)
         from shelf.portable_authority import PortableAuthority
         from shelf.secret_leases import MemoryCredentials
         from shelf.connection_validation import ConnectionValidation
-        authority = PortableAuthority(boundary)
-        from shelf.recovery import native_first_start
-        # Retain the real disk/journal witness through every request. Existing
-        # roots cannot recreate first-start authority after witness loss.
-        lifetime.enter_context(native_first_start(boundary))
+        from shelf.recovery import NativeCleanCheckpoint, native_first_start, native_clean_restart
+        from shelf.saved_credentials import SavedCredentials, secret_service_request
+        store_request = secret_service_request if saved_store is None else saved_store
+        checkpoint = NativeCleanCheckpoint(boundary, store_request)
+        if fresh:
+            authority = PortableAuthority(boundary)
+            lifetime.enter_context(native_first_start(boundary))
+        else:
+            # Consume the independent CLEAN anchor before PortableAuthority can
+            # update installation generation, sessions or any other SQL row.
+            lifetime.enter_context(native_clean_restart(boundary, checkpoint))
+            authority = PortableAuthority(boundary)
+        lifetime.callback(checkpoint.seal)
         from shelf.obtain_runtime import selected_supervisor
         # Close selected children/monitors before the original recovery witness.
         # Effects stay on this serving thread, outside every request's scopes.
         supervisor = lifetime.enter_context(selected_supervisor(authority))
+        checkpoint.writers_stopped = lambda: supervisor.closed and not supervisor.failed and not authority._obtain_workers
         settings.PORTABLE_AUTHORITY = authority
         settings.PORTABLE_CONNECTIONS = ConnectionValidation(authority, MemoryCredentials(authority))
-        from shelf.saved_credentials import SavedCredentials, secret_service_request
         settings.PORTABLE_SAVED_CREDENTIALS = SavedCredentials(authority,
-            settings.PORTABLE_CONNECTIONS.vault, request=secret_service_request)
+            settings.PORTABLE_CONNECTIONS.vault, request=store_request, before_save=checkpoint.enroll)
         from shelf.portable_disclosure import DisclosureServices
         # Inference grants use the same validation instance registered here;
         # ordinary construction also closes its previews with the boundary.
@@ -329,8 +338,11 @@ def run(root, *, port=0, approved_policies=None, approved_policies_factory=None)
                 # A bounded synchronous pass may delay the next request. Return
                 # to serving between passes, without a polling/draining loop.
                 supervisor.tick_once()
+        checkpoint.clean_stop = True
         return 0
     except PortableStop:
+        if checkpoint is not None:
+            checkpoint.clean_stop = True
         return 0
     except Exception:
         print('PORTABLE_START_OR_RUNTIME_REFUSED', file=sys.stderr, flush=True)
@@ -339,6 +351,8 @@ def run(root, *, port=0, approved_policies=None, approved_policies_factory=None)
         closing = True
         try:
             try:
+                if server is not None:
+                    server.server_close()
                 lifetime.close()
             finally:
                 if boundary is not None:
