@@ -287,6 +287,7 @@
     </div>
   </div>
   <p><a class="cabinet-action" href="/cabinet/obtain/tv/{% if profile_ref %}?profile_ref={{ profile_ref|urlencode }}{% endif %}">Obtain a TV episode</a></p>
+  {% if taste_history_available and profile_ref %}<p><a href="/cabinet/taste/history?profile_ref={{ profile_ref|urlencode }}">Taste history</a> · Inspect and compare your recorded choices.</p>{% endif %}
   {% if feedback_available %}<p><a class="cabinet-preferences-link" href="{{ feedback_url }}">Preferences and notes</a> · Add or change your responses before another Enhance round.</p>{% endif %}
   {% if round_url and not round_blocks_start %}<p class="cabinet-round-status" role="status"><a href="{{ round_url }}">Review this round’s recorded status</a>{% if round_pending %}. Pending, failed or uncertain work does not replace the publication shown below.{% endif %}</p>{% endif %}
   <details class="cabinet-options"><summary>Cabinet options and permissions</summary>
@@ -442,6 +443,6 @@
 {% endif %}{% endfor %}
 {% endif %}
 {% if feedback_available or card_actions_available %}<p class="fine-print">Your responses and notes are saved separately from Enhance. A changed response needs a fresh request preview; no collection or inference is sent automatically.</p>{% else %}<p class="fine-print">Ratings and reactions are not connected on this native page yet. No response, Save, Obtain or provider action is inferred from viewing a card.</p>{% endif %}
-{% if not read_code %}<script src="/cabinet/obtain/status.js" defer></script>{% if card_actions_available %}<script src="/cabinet/actions/script.js" defer></script>{% endif %}{% endif %}
+{% if not read_code %}<script src="/cabinet/obtain/status.js" defer></script>{% if card_actions_available or noise_control %}<script src="/cabinet/actions/script.js" defer></script>{% endif %}{% endif %}
 {% endif %}
 {% endblock %}
