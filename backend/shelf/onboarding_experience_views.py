@@ -142,9 +142,13 @@ def render_setup(context, *, status=200):
             raise ValueError('Saved credential availability requires a matching saved state')
         if not data['configured'] and (data['credential_saved'] or data['credential_available']):
             raise ValueError('Saved credential status requires a selected configuration')
-        data['credential_use_blocked'] = store_state in ('locked', 'unavailable', 'removal_pending')
+        # An explicit legacy RAM-only replacement can disable the saved binding
+        # while leaving a valid current RAM key. Its native availability permits
+        # request review, never retrieval/fallback to the disabled saved record.
+        data['credential_use_blocked'] = (store_state in ('locked', 'removal_pending')
+            or (store_state == 'unavailable' and not data['credential_configured']))
         data['credential_save_disabled'] = (data['reauthentication_required']
-            or data['credential_use_blocked'])
+            or store_state in ('locked', 'unavailable', 'removal_pending'))
         # K2's persistent save receipt is distinct from the legacy RAM-only
         # receipt, even when another saved binding already exists.
         if notice_code == 'KEY_SAVED' and not data['credential_saved']:

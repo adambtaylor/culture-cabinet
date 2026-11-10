@@ -83,7 +83,8 @@
         {% if credential_store_state == 'locked' %}
         <p>Unlock the Culture Cabinet keyring using the normal prompt on the Omarchy desktop, then return here and check again. Do not enter the keyring password into Cabinet or an SSH terminal. You do not need to enter the API key again to unlock it.</p>
         {% elif credential_store_state == 'unavailable' %}
-        <p>Cabinet cannot use the encrypted key store. Check its setup on the Omarchy desktop, then check again here. A replacement key will not fix unavailable storage; no request is sent automatically.</p>
+        <p>Cabinet cannot use the saved encrypted key. Check the key store’s setup on the Omarchy desktop, then check again here. A replacement key will not fix unavailable storage; no request is sent automatically.</p>
+        {% if credential_configured %}<p>A separate session-only key is available. You can explicitly preview a connection test using that current key. The saved key remains unavailable; this session key will not survive logout or restart.</p>{% endif %}
         {% elif credential_store_state == 'removal_pending' %}
         <p>Cabinet will not use this key. Deletion from the encrypted store has not been confirmed. If the keyring is locked, unlock it on the Omarchy desktop, then check again here. This does not revoke the key at the provider.</p>
         {% elif credential_saved %}

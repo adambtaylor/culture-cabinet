@@ -493,7 +493,7 @@ class OnboardingExperienceTests(SimpleTestCase):
                               ('unavailable', 'Encrypted key store unavailable')]:
             with self.subTest(state=state):
                 _, html, doc = self.render(self.model(credential_saved=True,
-                    credential_store_state=state, credential_configured=True, preview=self.preview()))
+                    credential_store_state=state, credential_configured=state == 'locked', preview=self.preview()))
                 self.assertIn(phrase, html)
                 self.assertIn('Omarchy desktop', html)
                 self.assertIn('Check saved-key status again', html)
@@ -502,7 +502,10 @@ class OnboardingExperienceTests(SimpleTestCase):
                 self.assertIn('disabled', doc.forms['credential']['buttons'][0])
                 self.assertIn('disabled', next(row for row in doc.forms['credential']['inputs']
                                               if row['name'] == 'secret'))
-                self.assertIn('disabled', doc.forms['preview']['buttons'][0])
+                if state == 'locked':
+                    self.assertIn('disabled', doc.forms['preview']['buttons'][0])
+                else:
+                    self.assertNotIn('preview', doc.forms)
                 self.assertNotIn('disabled', doc.forms['remove']['buttons'][0])
                 self.assertNotIn('confirm', doc.forms)
                 self.assertNotIn(PREVIEW, html)
@@ -573,3 +576,38 @@ class OnboardingExperienceTests(SimpleTestCase):
         self.assertTrue(any(attrs.get('id') == 'setup-status' and attrs.get('role') == 'status'
                             for tag, attrs in doc.tags))
         self.assertNotIn('remove', doc.forms)
+
+
+    def test_explicit_ram_replacement_keeps_current_key_review_without_using_disabled_saved_binding(self):
+        # K2 sequence: persistent save, then an explicit legacy RAM-only update
+        # without deletion. The disabled durable binding remains truthful.
+        context = self.model(credential_saved=True, credential_available=True,
+                             credential_store_state='available', credential_configured=True,
+                             notice='KEY_SAVED')
+        _, saved, _ = self.render(context)
+        self.assertIn('Encrypted API key saved on this computer', saved)
+        context.update(credential_available=False, credential_store_state='unavailable',
+                       notice='KEY_ADDED', preview=self.preview())
+        _, html, doc = self.render(context)
+        self.assertIn('Session-only API key updated', html)
+        self.assertIn('A separate session-only key is available', html)
+        self.assertIn('will not survive logout or restart', html)
+        self.assertEqual(doc.body['data-credential-configured'], 'true')
+        self.assertEqual(doc.body['data-credential-available'], 'false')
+        self.assertEqual(doc.body['data-connection-ready'], 'false')
+        self.assertNotIn('disabled', doc.forms['preview']['buttons'][0])
+        self.assertNotIn('disabled', doc.forms['confirm']['buttons'][0])
+        self.assertIn('disabled', doc.forms['credential']['buttons'][0])
+        self.assertEqual(doc.pre_text, self.preview()['body'])
+        self.assertEqual(next(row for row in doc.forms['confirm']['inputs']
+                              if row['name'] == 'confirm_billable_test')['type'], 'checkbox')
+        for changes in ({'credential_configured': False},
+                        {'credential_store_state': 'locked'},
+                        {'credential_store_state': 'removal_pending'},
+                        {'reauthentication_required': True}):
+            with self.subTest(changes=changes):
+                _, refused, blocked = self.render({**context, **changes})
+                self.assertNotIn('confirm', blocked.forms)
+                if 'preview' in blocked.forms:
+                    self.assertIn('disabled', blocked.forms['preview']['buttons'][0])
+                self.assertNotIn(PREVIEW, refused)
