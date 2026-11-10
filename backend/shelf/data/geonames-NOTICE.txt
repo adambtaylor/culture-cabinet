@@ -1,0 +1,16 @@
+GeoNames Australian postal codes
+Source: https://download.geonames.org/export/zip/AU.zip
+Documentation: https://download.geonames.org/export/zip/readme.txt
+Attribution: GeoNames, https://www.geonames.org/
+Licence: Creative Commons Attribution 4.0 International
+https://creativecommons.org/licenses/by/4.0/
+
+Culture Cabinet normalizes the source into a bundled, deterministic local index.
+The accompanying manifest pins acquisition time, source archive and normalized
+checksums. No automatic runtime download or remote postcode/geocoding service.
+
+Source coordinates are estimates without an accuracy/completeness guarantee.
+Distinct points form an approximate postcode reference using a spherical mean;
+source-point spread is not an error bound, a home position or a true centroid.
+Retain this attribution when distributing the data or derived index. The UI must
+make GeoNames attribution and the approximation notice accessible.

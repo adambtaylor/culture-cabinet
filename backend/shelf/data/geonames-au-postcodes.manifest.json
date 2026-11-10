@@ -1,0 +1,14 @@
+{
+  "source_url": "https://download.geonames.org/export/zip/AU.zip",
+  "retrieved_at": "2026-11-10T22:25:47.081317+00:00",
+  "upstream_sha256": "bc309511c7872fbcb4e25de8f8eec80145562f23135792434d18b9d389bb5148",
+  "archive_readme_sha256": "fff60148da20f4d182859d926518efa5b0f3949f3c3273a284901325f1f8f008",
+  "normalized_sha256": "6aef84e344a0827b77f9a3bb5f52933f00871c8a1e5ce988dd33741ea3e348dd",
+  "license": "CC BY 4.0",
+  "license_url": "https://creativecommons.org/licenses/by/4.0/",
+  "attribution": "GeoNames Australian postal data, https://www.geonames.org/, CC BY 4.0; normalized by Culture Cabinet.",
+  "documentation": "https://download.geonames.org/export/zip/readme.txt",
+  "row_count": 18565,
+  "normalizer_version": "geonames-au/v1",
+  "meaning": "Estimated WGS84 source points; no accuracy/completeness guarantee. Derived references are not home positions, surveyed centroids or error bounds."
+}
