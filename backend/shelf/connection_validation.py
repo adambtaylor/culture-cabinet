@@ -93,6 +93,8 @@ class ConnectionValidation:
     def preview(self, ref, connection_id, revision):
         with self._lock:
             self.authority.authorize(ref, sensitive=True)
+            if self.vault._saved_credentials is not None:
+                self.vault.resolve(ref, connection_id, revision)
             row, binding, description = self._current(ref, connection_id, revision)
             if not description['configured']:
                 raise AuthorityFault('CREDENTIAL_REQUIRED', 503)
@@ -245,7 +247,9 @@ class ConnectionValidation:
                 outcome = 'isolated_test_only'
             else:
                 outcome = 'stale'
-            return {'connection_ref': str(row.pk), 'revision': row.config_revision,
+            saved = {key: description[key] for key in
+                     ('credential_saved', 'credential_available', 'credential_store_state') if key in description}
+            return {'connection_ref': str(row.pk), 'revision': row.config_revision, **saved,
                 'config': {'adapter': row.adapter, 'model': row.model, 'reasoning': row.reasoning},
                 'credential_configured': description['configured'], 'connection_ready': bool(valid),
                 'outcome': outcome, 'proof_kind': proof.proof_kind if proof else None,

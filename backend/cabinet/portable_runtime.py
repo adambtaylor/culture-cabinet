@@ -300,6 +300,9 @@ def run(root, *, port=0, approved_policies=None, approved_policies_factory=None)
         supervisor = lifetime.enter_context(selected_supervisor(authority))
         settings.PORTABLE_AUTHORITY = authority
         settings.PORTABLE_CONNECTIONS = ConnectionValidation(authority, MemoryCredentials(authority))
+        from shelf.saved_credentials import SavedCredentials, secret_service_request
+        settings.PORTABLE_SAVED_CREDENTIALS = SavedCredentials(authority,
+            settings.PORTABLE_CONNECTIONS.vault, request=secret_service_request)
         from shelf.portable_disclosure import DisclosureServices
         # Inference grants use the same validation instance registered here;
         # ordinary construction also closes its previews with the boundary.

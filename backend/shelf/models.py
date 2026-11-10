@@ -556,6 +556,28 @@ class PortableConnection(models.Model):
     removed = models.BooleanField(default=False)
 
 
+class SavedCredentialBinding(models.Model):
+    """Nonsecret intent/CAS state; encrypted bytes belong only to Secret Service."""
+    connection = models.OneToOneField(PortableConnection, primary_key=True, on_delete=models.PROTECT)
+    binding = models.JSONField()
+    config_revision = models.PositiveBigIntegerField()
+    state = models.CharField(max_length=16)
+    generation = models.UUIDField()
+    operation_id = models.UUIDField()
+    store_revision = models.CharField(max_length=128, null=True)
+    entered_at = models.DateTimeField()
+    updated_at = models.DateTimeField()
+    expires_at = models.DateTimeField(null=True)
+    scopes = models.JSONField(default=list)
+    removed = models.BooleanField(default=False)
+    remove_requested = models.BooleanField(default=False)
+
+    class Meta:
+        constraints = [models.CheckConstraint(condition=models.Q(
+            state__in=['PENDING_WRITE', 'ACTIVE', 'PENDING_DELETE', 'UNAVAILABLE']),
+            name='saved_credential_binding_state')]
+
+
 class PortableProbeAttempt(models.Model):
     """One neutral connection check, not a recommendation broker or prompt store."""
     id = models.UUIDField(primary_key=True, serialize=False)

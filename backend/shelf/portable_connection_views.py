@@ -76,10 +76,11 @@ def configure(request):
 @_reply
 @sensitive_variables()
 def credential(request):
-    value = _body(request, {'connection_ref': str, 'revision': int, 'secret': str})
+    value = _body(request, {'connection_ref': str, 'revision': int, 'secret': str}, {'storage': str})
     service = _service(request)
     status = service.vault.replace(request.session.get('portable_session'), _uuid(value['connection_ref']),
-                                   value['revision'], value['secret'].encode('utf-8'))
+                                   value['revision'], value['secret'].encode('utf-8'),
+                                   storage=value.get('storage'))
     return JsonResponse({'ok': True, **status})
 
 
@@ -89,9 +90,9 @@ def credential(request):
 def remove(request):
     value = _body(request, {'connection_ref': str, 'revision': int, 'disable': bool})
     service = _service(request)
-    service.vault.remove(request.session.get('portable_session'), _uuid(value['connection_ref']),
-                         value['revision'], disable=value['disable'])
-    return JsonResponse({'ok': True})
+    result = service.vault.remove(request.session.get('portable_session'), _uuid(value['connection_ref']),
+                                 value['revision'], disable=value['disable'])
+    return JsonResponse({'ok': True, **(result if type(result) is dict else {})})
 
 
 @require_POST
@@ -153,19 +154,22 @@ def html_configure(request):
 @_html_reply
 @sensitive_variables()
 def html_credential(request):
-    value = _form(request, {'connection_ref', 'revision', 'secret'})
+    fields = {'connection_ref', 'revision', 'secret'} | ({'storage'} if 'storage' in request.POST else set())
+    value = _form(request, fields)
     _service(request).vault.replace(request.session.get('portable_session'), _uuid(value['connection_ref']),
-        _revision(value['revision']), value['secret'].encode('utf-8'))
-    return _after_success(request, notice='KEY_ADDED', selected=value['connection_ref'])
+        _revision(value['revision']), value['secret'].encode('utf-8'), storage=value.get('storage'))
+    return _after_success(request, notice='KEY_SAVED' if value.get('storage') == 'persistent' else 'KEY_ADDED',
+                          selected=value['connection_ref'])
 
 
 @_html_reply
 @sensitive_variables()
 def html_remove(request):
     value = _form(request, {'connection_ref', 'revision'})
-    _service(request).vault.remove(request.session.get('portable_session'), _uuid(value['connection_ref']),
+    result = _service(request).vault.remove(request.session.get('portable_session'), _uuid(value['connection_ref']),
         _revision(value['revision']))
-    return _after_success(request, notice='KEY_REMOVED', selected=value['connection_ref'])
+    notice = 'KEY_REMOVAL_PENDING' if type(result) is dict and result.get('removal_pending') else 'KEY_REMOVED'
+    return _after_success(request, notice=notice, selected=value['connection_ref'])
 
 
 @_html_reply

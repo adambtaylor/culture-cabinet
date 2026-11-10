@@ -1,4 +1,4 @@
-"""Memory-only connection credentials. No transport or persistent secret mode.
+"""Current-session credential leases, optionally hydrated by the saved-key port.
 
 Private handles and credential bytes never enter browser/session state. Python
 cannot promise byte erasure and this boundary cannot protect against OS admins.
@@ -32,6 +32,7 @@ class _Lease:
     created_at: datetime
     absolute_expires_at: datetime
     secret: bytes = field(repr=False)
+    saved_generation: str | None = None
     state: str = 'live'
     schema: str = 'SecretLease/v1'
 
@@ -40,6 +41,7 @@ class MemoryCredentials:
     def __init__(self, authority):
         self.authority = authority
         self._leases = {}
+        self._saved_credentials = None
         # Shared lock establishes one order for session callbacks and vault access.
         self._lock = authority._lock
         authority._revokers.append(self._revoke_session)
@@ -92,7 +94,19 @@ class MemoryCredentials:
             return row
 
     @sensitive_variables()
-    def replace(self, ref, connection_id, revision, secret):
+    def replace(self, ref, connection_id, revision, secret, *, storage=None):
+        if storage is not None:
+            if storage != 'persistent':
+                raise AuthorityFault('CONTRACT_INVALID', 422)
+            if self._saved_credentials is None:
+                raise AuthorityFault('CREDENTIAL_STORE_UNAVAILABLE', 503)
+            return self._saved_credentials.save(ref, connection_id, revision, secret)
+        if self._saved_credentials is not None:
+            return self._saved_credentials.replace_memory(ref, connection_id, revision, secret)
+        return self._replace_memory(ref, connection_id, revision, secret)
+
+    @sensitive_variables()
+    def _replace_memory(self, ref, connection_id, revision, secret):
         with self._lock:
             session = self.authority.authorize(ref, sensitive=True)
             if type(secret) is not bytes or not 1 <= len(secret) <= 8192:
@@ -100,19 +114,36 @@ class MemoryCredentials:
             require_secret_protection()
             with transaction.atomic():
                 row = self._connection(connection_id, revision)
+                if self._saved_credentials is not None:
+                    # Explicit RAM replacement must never later resurrect the
+                    # previous saved bytes after this session logs out.
+                    self._saved_credentials.supersede_saved(row)
                 row.credential_generation += 1
                 row.save(update_fields=['credential_generation'])
             self._revoke_connection(row.pk)
-            now = self.authority.now()
-            expires = session.created + 28800
-            self._leases[row.pk] = _Lease(secrets.token_urlsafe(32),
-                self.authority.boundary.installation_id, row.pk, ref, session.owner_id,
-                session.owner_revision, self.authority.boundary.process_generation,
-                row.config_revision, row.credential_generation, expires, now,
-                now + timedelta(seconds=expires - self.authority.monotonic()), secret)
+            self._install_lease(ref, session, row, secret)
             return {'connection_ref': str(row.pk), 'configured': True, 'validation': 'UNPROVEN'}
 
+    @sensitive_variables()
+    def _install_lease(self, ref, session, row, secret, *, expires_at=None, saved_generation=None):
+        """Hydration creates current authority, never a longer saved-key lifetime."""
+        now = self.authority.now()
+        expires = session.created + 28800
+        if expires_at is not None:
+            expires = min(expires, self.authority.monotonic() + (expires_at-now).total_seconds())
+        if expires <= self.authority.monotonic():
+            raise AuthorityFault('CREDENTIAL_REQUIRED', 503)
+        self._leases[row.pk] = _Lease(secrets.token_urlsafe(32),
+            self.authority.boundary.installation_id, row.pk, ref, session.owner_id,
+            session.owner_revision, self.authority.boundary.process_generation,
+            row.config_revision, row.credential_generation, expires, now,
+            now + timedelta(seconds=expires-self.authority.monotonic()), secret, saved_generation)
+
     def remove(self, ref, connection_id, revision, *, disable=False):
+        if self._saved_credentials is not None:
+            result = self._saved_credentials.remove(ref, connection_id, revision, disable=disable)
+            if result is not False:
+                return result
         with self._lock:
             self.authority.authorize(ref, sensitive=True)
             with transaction.atomic():
@@ -127,6 +158,20 @@ class MemoryCredentials:
     @sensitive_variables()
     def resolve(self, ref, connection_id, revision):
         """Internal dispatch port, never an HTTP response or validation receipt."""
+        with self._lock:
+            lease = self._leases.get(connection_id)
+            if lease is not None and lease.saved_generation is None:
+                return self._resolve_memory(ref, connection_id, revision)
+            if self._saved_credentials is not None:
+                status = self._saved_credentials.describe(ref, connection_id, revision)
+                if status['credential_saved']:
+                    if not status['credential_available']:
+                        raise AuthorityFault('CREDENTIAL_REQUIRED', 503)
+                    self._saved_credentials.hydrate(ref, connection_id, revision)
+            return self._resolve_memory(ref, connection_id, revision)
+
+    @sensitive_variables()
+    def _resolve_memory(self, ref, connection_id, revision):
         with self._lock:
             session = self.authority.authorize(ref, touch=False)
             row = self._connection(connection_id, revision)
@@ -147,16 +192,22 @@ class MemoryCredentials:
         with self._lock:
             session = self.authority.authorize(ref, touch=False)
             row = self._connection(connection_id, revision)
+            saved_status = {}
             try:
-                self.resolve(ref, connection_id, revision)
+                # Passive status never hydrates/decrypts a saved key. It may
+                # observe a lock and revoke bytes already held in this process.
+                if self._saved_credentials is not None:
+                    saved_status = self._saved_credentials.describe(ref, connection_id, revision)
+                self._resolve_memory(ref, connection_id, revision)
             except AuthorityFault as fault:
                 if fault.code != 'CREDENTIAL_REQUIRED':
                     raise
-                return {'configured': False, 'credential_generation': row.credential_generation, 'usable_until': None}
+                return {'configured': False, 'credential_generation': row.credential_generation,
+                        'usable_until': None, **saved_status}
             lease = self._leases[row.pk]
             remaining = min(lease.expires, session.created + 28800, session.last_seen + 1800) - self.authority.monotonic()
             return {'configured': True, 'credential_generation': row.credential_generation,
-                    'usable_until': self.authority.now() + timedelta(seconds=max(0, remaining))}
+                    'usable_until': self.authority.now() + timedelta(seconds=max(0, remaining)), **saved_status}
 
     @contextmanager
     @sensitive_variables()
