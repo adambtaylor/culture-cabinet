@@ -80,3 +80,8 @@ class Moons24ParserTests(TestCase):
         self.assertNotEqual(live.key,fixture.key)
         self.assertIsNone(fixture.url)
         self.assertFalse(hasattr(live,'body'))
+
+    def test_observation_budget_keeps_only_nine_bounded_leads(self):
+        events=self.parse(listing([card('SYNTHETIC '+str(i)) for i in range(10)]))
+        self.assertEqual(len(events),9)
+        self.assertEqual(len({event.key for event in events}),9)
