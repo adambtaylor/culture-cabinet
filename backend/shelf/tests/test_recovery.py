@@ -693,3 +693,163 @@ class TrustedPortableRestartTests(PortableRecoveryCase):
             self.assertEqual({p.name: p.read_bytes() for p in journal.iterdir()}, before)
         with closing(sqlite3.connect(path)) as raw:
             self.assertEqual(raw.execute('PRAGMA application_id').fetchone()[0], 0)
+
+
+class EventReferenceRecoveryTests(FeedbackCase):
+    restriction = RecoveryTests.restriction
+    backup = RecoveryTests.backup
+    restore = RecoveryTests.restore
+
+    def setUp(self):
+        from django.db import connections
+        from django.db.backends.sqlite3.base import DatabaseWrapper
+        # Reuse the accepted dedicated migrated in-memory fixture pattern.
+        # Tombstones remain protected; Django flush sees only its original DB.
+        original = connections['default'];original.ensure_connection()
+        wrapper = DatabaseWrapper({**original.settings_dict,
+            'NAME':'file:memorydb_event_recovery_'+uuid.uuid4().hex+'?mode=memory&cache=shared'},alias='default')
+        wrapper.ensure_connection();original.connection.backup(wrapper.connection)
+        connections['default'] = wrapper
+        def restore_wrapper():
+            try:
+                if wrapper.connection is not None:
+                    wrapper.connection.close();wrapper.connection=None
+            finally:connections['default']=original
+        self.addCleanup(restore_wrapper)
+        super().setUp()
+
+    def _event_reference_state(self, history):
+        from django.db import transaction
+        from shelf.grant_authority import _write_window
+        from shelf.models import PortableInstallation, ProfileCabinetState, DiscoveryState
+        # Explicitly fictional current-schema rows exercise the real floor
+        # triggers; no production guard or installation authority is patched.
+        with transaction.atomic(), _write_window():
+            installation = PortableInstallation.objects.create(id=uuid.uuid4(),
+                root_identity=uuid.uuid4().hex, owner=self.actor, owner_revision=1,
+                process_generation=uuid.uuid4())
+            cabinet = ProfileCabinetState.objects.create(profile=self.profile,
+                installation=installation, actor=self.actor, owner_revision=1, data_schema_version=2)
+            state = DiscoveryState.objects.create(actor=self.actor, profile=self.profile,
+                mode='household', nonce='fictional-retained-form', revision=len(history),
+                history=history, receipts={'original-request': 'a'*64})
+        return cabinet, state
+
+    def _deny_event_source(self, namespace):
+        command=dict(mutation_id=str(uuid.uuid4()),base_sequence=self.recovery.sequence,
+            restrictions=[self.restriction('deny_source_content',kind='source_restrict',
+                profile_id=None,subject_id=namespace)])
+        restrict_authority(actor=trusted_operator(self.recovery,self.actor),
+            command=command,recovery=self.recovery)
+        return command
+
+    def test_event_reference_fixed_namespaces_allow_empty_denial_without_feedback_targets(self):
+        from shelf.event_source_registry import SOURCE_NAMESPACES, LEGACY_ALIASES
+        from shelf.models import FeedbackTarget
+        from shelf.recovery import apply_restriction
+        self.assertEqual(SOURCE_NAMESPACES[LEGACY_ALIASES['events']], 'event-source:moshtix')
+        self.assertEqual(set(SOURCE_NAMESPACES), {'pbs','rrr','venue303','forum','moshtix'})
+        self.assertFalse(FeedbackTarget.objects.filter(source_namespace__in=SOURCE_NAMESPACES.values()).exists())
+        # Retiring every active descriptor cannot unrecognize fixed identities.
+        with patch('shelf.event_source_registry.SOURCES', {}):
+            for namespace in SOURCE_NAMESPACES.values():
+                command=self._deny_event_source(namespace)
+                before=(self.recovery.directory/'journal').read_bytes()
+                restrict_authority(actor=trusted_operator(self.recovery,self.actor),
+                    command=command,recovery=self.recovery)
+                self.assertEqual((self.recovery.directory/'journal').read_bytes(),before)
+        self.assertEqual(RecoveryRestriction.objects.count(),5)
+        cap=trusted_operator(self.recovery,self.actor)
+        for unknown in ('event-source:unlisted','event-source:events','events'):
+            restriction=self.restriction('deny_source_content',kind='source_restrict',profile_id=None,subject_id=unknown)
+            with self.assertRaises(FeedbackError):
+                restrict_authority(actor=cap,command=dict(mutation_id=str(uuid.uuid4()),
+                    base_sequence=self.recovery.sequence,restrictions=[restriction]),recovery=self.recovery)
+            frame,_=self.recovery.committed_restrictions()[0]
+            raw=sqlite3.connect(':memory:');register_closed_sql_guards(raw);connection.connection.backup(raw)
+            try:
+                with self.assertRaisesMessage(RecoveryBlocked,'Unknown source mapping'):
+                    apply_restriction(raw,frame,dict(restriction,sequence=6))
+            finally:raw.close()
+        self.assertEqual(RecoveryRestriction.objects.count(),5)
+
+    def test_event_reference_purge_keeps_undone_history_receipts_and_advances_current_floors_once(self):
+        from copy import deepcopy
+        from shelf.discovery_reducer import replay
+        from shelf.event_saved_references import make_reference, project_references
+        from shelf.tests.test_event_saved_references import pbs_card, policies, action
+        card=pbs_card();reference=make_reference(card,mode='household',descriptors=policies())
+        history=[action(card,reference),dict(operation='undo',key=''),
+            action(card,deepcopy(reference)),dict(operation='unsave',key=card.key),
+            dict(operation='restart',key=''),dict(operation='undo',key='')]
+        history[2].update(operation='respond',choice='intrigued',note='Exact human note',
+            card={'title':'Legacy content unchanged','url':'https://example.invalid/legacy'})
+        other=deepcopy(history[0]);other['saved_reference']['source_id']='venue303'
+        history.append(other)
+        cabinet,state=self._event_reference_state(history)
+        cabinet.refresh_from_db();floors=(cabinet.policy_epoch,cabinet.restriction_watermark)
+        old=deepcopy(state.history);receipts=deepcopy(state.receipts);nonce=state.nonce;revision=state.revision
+        self._deny_event_source('event-source:pbs')
+        state.refresh_from_db();cabinet.refresh_from_db()
+        expected=deepcopy(old)
+        for event in expected[:-1]:event.pop('saved_reference',None)
+        self.assertEqual(state.history,expected)
+        self.assertEqual(replay(old),replay(state.history))
+        self.assertEqual(replay(old+[dict(operation='undo',key='')]),
+                         replay(state.history+[dict(operation='undo',key='')]))
+        self.assertEqual((state.receipts,state.nonce,state.revision),(receipts,nonce,revision+1))
+        self.assertEqual((cabinet.policy_epoch,cabinet.restriction_watermark),tuple(v+1 for v in floors))
+        self.assertNotIn(card.key,project_references(state.history[:-1],mode='household',descriptors=policies()))
+        # A new denial after the purge records its restriction without a fake
+        # history update or second floor increment, even with descriptors gone.
+        with patch('shelf.event_source_registry.SOURCES',{}):self._deny_event_source('event-source:pbs')
+        state.refresh_from_db();cabinet.refresh_from_db()
+        self.assertEqual((state.history,state.receipts,state.nonce,state.revision),(expected,receipts,nonce,revision+1))
+        self.assertEqual((cabinet.policy_epoch,cabinet.restriction_watermark),tuple(v+1 for v in floors))
+
+    def test_event_reference_isolated_restore_purges_old_links_and_accepts_pre_source_backup(self):
+        from django.db import transaction
+        from shelf.grant_authority import _write_window
+        from shelf.event_saved_references import make_reference
+        from shelf.tests.test_event_saved_references import pbs_card, policies, action
+        from shelf.models import DiscoveryState
+        cabinet,state=self._event_reference_state([])
+        empty=self.backup('before-event-reference.sqlite3')
+        card=pbs_card();reference=make_reference(card,mode='household',descriptors=policies())
+        with transaction.atomic(),_write_window():
+            state.history=[action(card,reference),dict(operation='undo',key='')]
+            state.revision=2;state.save(update_fields=['history','revision'])
+        prior=self.backup('before-reference-denial.sqlite3')
+        self._deny_event_source('event-source:pbs')
+        already_purged=self.backup('after-reference-denial.sqlite3')
+        with patch('shelf.event_source_registry.SOURCES',{}):
+            for index,backup in enumerate((empty,prior,already_purged)):
+                report=self.restore(backup,'event-reference-restore-'+str(index))
+                self.assertEqual(report.state,'ISOLATED_READY',report)
+                self.assertEqual(report.applied_restriction_ids,() if index==2 else (1,))
+                with closing(sqlite3.connect(report.isolated_database)) as raw:
+                    row=raw.execute('SELECT history,receipts,nonce,revision FROM shelf_discoverystate').fetchone()
+                    history=json.loads(row[0]);self.assertFalse(any('saved_reference' in event for event in history))
+                    self.assertEqual(json.loads(row[1]),{'original-request':'a'*64})
+                    self.assertEqual(row[2],'fictional-retained-form')
+                    self.assertEqual(row[3],0 if index==0 else 3)
+                    self.assertEqual(raw.execute('SELECT count(*) FROM shelf_recoveryrestriction').fetchone()[0],1)
+        state.refresh_from_db();self.assertFalse(any('saved_reference' in event for event in state.history))
+        self.assertEqual(DiscoveryState.objects.count(),1)
+
+    def test_event_reference_local_commit_resume_does_not_purge_twice(self):
+        from shelf.event_saved_references import make_reference
+        from shelf.tests.test_event_saved_references import pbs_card, policies, action
+        card=pbs_card();reference=make_reference(card,mode='household',descriptors=policies())
+        cabinet,state=self._event_reference_state([action(card,reference)])
+        with patch.object(self.recovery,'finalize',side_effect=RuntimeError('fictional head interruption')):
+            with self.assertRaises(RuntimeError):self._deny_event_source('event-source:pbs')
+        state.refresh_from_db();cabinet.refresh_from_db()
+        self.assertNotIn('saved_reference',state.history[0])
+        before=(state.revision,cabinet.policy_epoch,cabinet.restriction_watermark)
+        self.assertIsNotNone(self.recovery.pending)
+        self.recovery.resume_pending(connection.connection)
+        state.refresh_from_db();cabinet.refresh_from_db()
+        self.assertEqual((state.revision,cabinet.policy_epoch,cabinet.restriction_watermark),before)
+        self.assertIsNone(self.recovery.pending)
+        self.assertEqual(RecoveryRestriction.objects.count(),1)
