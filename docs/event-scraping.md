@@ -184,3 +184,19 @@ that semantic failure and its correction are retained separately. These receipts
 are live acquisition/handler evidence, not a browser or working-source acceptance.
 No body or image archive, durable source-reference grant or native activation is
 introduced. The 24 Moons release remains independent of PR83's recovery/UI tails.
+
+### Improv Conspiracy calendar readiness (E7)
+
+The assigned homepage and robots paths use the existing fixed transport and one
+ten-second origin reservation. Robots404 was permitted under the current reader.
+The single bounded homepage attempt failed before usable HTTP with
+`PublicTransportError(reason=child_exit)`. No current programme, advertised
+calendar link or show/session format was obtained. The earlier research mention
+of a Performance Calendar is not a verified endpoint and no calendar path is
+guessed. No retry, alternative route, image, account or workshop acquisition occurs.
+
+The unimplemented descriptor explicitly reports that current programme/calendar
+evidence is missing. Its normal action renders unavailable; GET/replay make no
+source request or taste write. Fixed-target, shared-origin and authenticated
+normal-action checks cover that boundary without fabricating event rows. This is
+a readiness component with a retained live failure, not working acquisition.

@@ -19,14 +19,15 @@ TARGETS = MappingProxyType({
     'venue303': ('https://303.net.au/gigs-events', 'https://303.net.au/robots.txt'),
     'forum': ('https://forummelbourne.com.au/shows', 'https://forummelbourne.com.au/robots.txt'),
     'moons24': ('https://24moons.com.au/events', 'https://24moons.com.au/robots.txt'),
+    'improv_conspiracy': ('https://improvconspiracy.com/', 'https://improvconspiracy.com/robots.txt'),
 })
-_DELAYS = {'venue303': 10, 'forum': 10, 'moons24': 10}
+_DELAYS = {'venue303': 10, 'forum': 10, 'moons24': 10, 'improv_conspiracy': 10}
 _RATE_DIRECTORY = '/tmp'
 # Initial bounded observations: 303 robots allowed this path; Forum returned
 # unrecognized content. The first exact 24 Moons robots read allowed /events
 # with the existing ten-second minimum. Keep Forum's live listing closed while its pure adapter
 # and synthetic caller remain testable. This is not model/republication consent.
-LISTING_ACCESS = MappingProxyType({'venue303': True, 'forum': False, 'moons24': True})
+LISTING_ACCESS = MappingProxyType({'venue303': True, 'forum': False, 'moons24': True, 'improv_conspiracy': True})
 
 
 class ListingIntervalPending(SourceError):
@@ -106,6 +107,10 @@ def forum():
 
 def moons24():
     return _read('moons24')
+
+
+def improv_conspiracy():
+    return _read('improv_conspiracy')
 
 
 def observe_robots(source_id):
