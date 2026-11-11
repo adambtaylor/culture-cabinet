@@ -1227,6 +1227,203 @@ DIALOG_ACTUAL_CALLER = r'''{
 '''.encode('utf-8')
 
 
+# Exact relationless-form terminal receipts, including their recorded clock atoms.
+PAIR_ACTUAL_FAILURE = r'''{
+  "id": "K1-A4B-ACTUAL-CONTINUATION-TERMINAL-03",
+  "date": "2026-11-11",
+  "observed_terminal_utc": "2026-11-11T04:25:35.182234+00:00",
+  "state": "NOT_READY_NATIVE_CONTROL_RELATION_REFUSAL_RETAINED",
+  "source_head": "d0d9f3bd52e7c5db70ca90afccfdac60882edc5a",
+  "merged_main": "25bffd9d7bee4a2e5973d9e69520028ccae6f052",
+  "helper_sha256": "745e946b899323b0bbddab0caab0024c940175babd91953506697774ed91bee7",
+  "retirement": "PASS exact b8cc865d/861c null-pre-master record archived before CAS retirement. All three immutable ancestors retained. No OS orphan lookup/adoption/deletion.",
+  "approved_Create_attempts": 1,
+  "original_bounds": {
+    "monitor_started_utc": "2026-11-11T04:18:39.490785+00:00",
+    "monitor_original_deadline_monotonic": 1340075.871266088,
+    "provision_bound_seconds": 120,
+    "extension_or_retry": false,
+    "termination_event": "UNOBSERVED per retained source record; not relabelled TIMEOUT"
+  },
+  "operation_id": "1cc2bd37-8f62-420d-928d-ec9c28945013",
+  "requested_label": "CultureCabinet40169a13b00b4459adf1022962a61eb4",
+  "service_owner": ":1.0",
+  "original_caller": ":1.22631",
+  "returned_prompt_ref": "/org/freedesktop/secrets/prompt/p4",
+  "returned_collection_ref": null,
+  "prompt_observation": {
+    "acknowledgement": "ACKNOWLEDGED",
+    "completion": "UNOBSERVED",
+    "termination": "UNOBSERVED"
+  },
+  "terminal_result": "CORRECTED_PROVISION_REFUSED_NO_RETRY / UNAVAILABLE; direct-PTY exec session26690 exit1",
+  "binding_facts": {
+    "singleton_process_application_window_top_level": "PASS actual:1 compositor,1 accessibility application,1 ACTIVE top-level, process generation guarded",
+    "same_dialog_nonce": "PASS actual nonce label confirmed within exact owned dialog",
+    "coordinates": "Different compositor/AT-SPI coordinates were diagnostics and did not block the singleton binding",
+    "failure_category": "IDENTITY",
+    "failure_phase": "CONTROLS",
+    "precise_observed_gap": "Both actual PASSWORD_TEXT nodes have empty relation sets, so neither supplies the required single LABELLED_BY relation. Actual push buttons are Continue and Cancel; driver requires Create. These are unsupported actual form semantics for the reviewed control contract, not a Secret Service callback/provider error.",
+    "field_interface_support": "UNRUN; constructor refused before native focus/edit/Create interfaces or private generation",
+    "readonly_diagnosis": "Only current owned PID409325/window0xb728f32b63a0/dialog tree and in-dialog LABEL/PUSH_BUTTON/relation metadata; no password-widget name/text/value/contents read, no UI action or old prompt invocation"
+  },
+  "effects": {
+    "input_attempts": 0,
+    "focus_edit_Create_actions": 0,
+    "private_passphrase_generated_or_acquired": false,
+    "canary_state": "NOT_STARTED",
+    "master_phase": "NOT_STARTED",
+    "file_binding": null,
+    "verified_filename": null,
+    "dummy_write": "UNRUN",
+    "fresh_helper_read": "UNRUN_STOPPED_ON_FIRST_FAILURE",
+    "native_retrieval_and_protection_negatives": "UNRUN",
+    "provider_or_model_requests": 0,
+    "real_key_read_or_entry": false
+  },
+  "custody_and_cleanup": {
+    "custody_metadata": {
+      "socket_path": "/run/user/1000/culture-cabinet-owned-proof/787e1968-a8c9-4faa-91db-fae9b0b961d7.sock",
+      "pid": 409304,
+      "process_generation": [
+        409304,
+        133995586
+      ]
+    },
+    "custody_retained_value_before_terminal": false,
+    "custody_disposed_empty": true,
+    "socket_exists": false,
+    "custodian_process_exists": false,
+    "enrollment_parent_pid": 409294,
+    "enrollment_parent_exists": false,
+    "monitor_joined": true,
+    "helper_caller_has_owner": false,
+    "exact_owned_prompt_window_remaining": false,
+    "native_handoff": "No private value exists to hand off and no extra custody-dispose needed. Historical metadata retained as disposed.",
+    "shared_service_kill": false,
+    "OS_collection_cleanup_claim": false
+  },
+  "next_precise_dependency": "A supported same-owned-dialog semantic association for GCR password/confirmation controls without LABELLED_BY and its actual Continue action, preserving singleton/nonce/current identity and no guessed/global input. Do not loosen/fallback or retry p4. The ended exact1cc2bd37 ACK/null-result/zero-input/zero-master pending pointer needs its own bounded disposition before any further Create; current approved retirement targets b8 only.",
+  "legitimate_key_entry": "Still blocked on actual input/Completed/returned identity/canary-linked encrypted association/dummy persistence/fresh-helper and separately routed native/protection proofs. No real key request is appropriate.",
+  "evidence": {
+    "/home/tang/.codex/visualizations/2026/11/08/01a1b94d-3181-7451-84dc-55d2d7d637f8/api-wiring-2026-11-10/owned-gnome-a4b-retire-03.json": "5bbd72874603a5c7b276211b5387142e7d95fd882ac4fafd4a6e534f28c56d7b",
+    "/home/tang/.codex/visualizations/2026/11/08/01a1b94d-3181-7451-84dc-55d2d7d637f8/api-wiring-2026-11-10/owned-gnome-a4b-positive-03.json": "447fe12c68f64889c058310750187ebd6b776391a1bf204cd0475d35f75cce74",
+    "/home/tang/.codex/visualizations/2026/11/08/01a1b94d-3181-7451-84dc-55d2d7d637f8/api-wiring-2026-11-10/owned-gnome-a4b-input-03.json": "da540384ac7118177d0c513d415a6959087ca78d9ab9bd33c715e6055e4b428c",
+    "/home/tang/.codex/visualizations/2026/11/08/01a1b94d-3181-7451-84dc-55d2d7d637f8/api-wiring-2026-11-10/k1-a4b-active-custody-03.json": "548cba8e1ec4869dd500064e00ec0d4b8011de8207e9b86d39d717e721228a91",
+    "/home/tang/.codex/visualizations/2026/11/08/01a1b94d-3181-7451-84dc-55d2d7d637f8/api-wiring-2026-11-10/k1-a4b-owned-controls-readonly-03.json": "192410980df337ad9b9468368622b92b648edeb7660fdaed78e1e940f79b88aa",
+    "/home/tang/.codex/visualizations/2026/11/08/01a1b94d-3181-7451-84dc-55d2d7d637f8/api-wiring-2026-11-10/k1-a4b-owned-caller-closed-03.json": "ae07d0f7bf7cee1a4e47de5d3a460c0b9dc42643c1bfdb0b67520785fccb4ba5",
+    "/home/tang/.codex/visualizations/2026/11/08/01a1b94d-3181-7451-84dc-55d2d7d637f8/api-wiring-2026-11-10/owned-gnome-a4b-proof-09.py": "f501c73b09741c824cc1fb2c92106c2bc85f9ca49f652909e4b9c6d13f56d4c2",
+    "/home/tang/.codex/visualizations/2026/11/08/01a1b94d-3181-7451-84dc-55d2d7d637f8/api-wiring-2026-11-10/owned-gcr-single-surface-driver-08.py": "fe560c11d2596795e1fea74c4b83d9ea39f001d8dd9974e807accb1829254c2d",
+    "/home/tang/.local/state/culture-cabinet-key-store/selection.json": "c7cd0519577efc5884e650e0b4a6ae842d72b2aafefe4df214b9b4025c10e3d5",
+    "/home/tang/.local/state/culture-cabinet-key-store/abandoned-f6ed3437-1f93-4564-8a6d-e558e5dd6462.json": "184e1a5ac45fe03f4bd59659c3dca3dc15d2a67b873c619c86009533a09a9dfb",
+    "/home/tang/.local/state/culture-cabinet-key-store/abandoned-ce102960-02f0-4697-8008-371439a02d04.json": "fe7a79afb45e22a6ac1d7b4cc4080d4ac5c60d1abc5f494277aa19900c12cc77",
+    "/home/tang/.local/state/culture-cabinet-key-store/abandoned-b8cc865d-df30-46da-969a-cf7fa40c6eba.json": "9d6ada8785c4d05c8d4c77bb56754391ebe812da8d624273a4e0fef291d4819d"
+  }
+}
+'''.encode('utf-8')
+
+PAIR_ACTUAL_POSITIVE = r'''{
+  "candidate": "d0d9f3bd52e7c5db70ca90afccfdac60882edc5a",
+  "source_sha256": "745e946b899323b0bbddab0caab0024c940175babd91953506697774ed91bee7",
+  "stage": "CORRECTED_PROVISION_REFUSED_NO_RETRY",
+  "parent_pid": 409294,
+  "parent_generation": [
+    409294,
+    133995575
+  ],
+  "no_real_key": true,
+  "provider_requests": 0,
+  "custody": {
+    "socket_path": "/run/user/1000/culture-cabinet-owned-proof/787e1968-a8c9-4faa-91db-fae9b0b961d7.sock",
+    "pid": 409304,
+    "process_generation": [
+      409304,
+      133995586
+    ]
+  },
+  "monitor_original_deadline_monotonic": 1340075.871266088,
+  "provision_bound_seconds": 120,
+  "monitor_started_utc": "2026-11-11T04:18:39.490785+00:00",
+  "monitor_joined": true,
+  "custody_disposed_empty": true,
+  "provision_status": "UNAVAILABLE",
+  "selection": {
+    "canary_prompt_ref": null,
+    "canary_ref": null,
+    "canary_state": "NOT_STARTED",
+    "continuation_archive": "b8cc865d-df30-46da-969a-cf7fa40c6eba",
+    "creation_operation_id": "1cc2bd37-8f62-420d-928d-ec9c28945013",
+    "decoded_identifier": null,
+    "file_binding": null,
+    "keyring_directory": "/home/tang/.local/share/keyrings",
+    "master_phase": "NOT_STARTED",
+    "prompt_observation": {
+      "acknowledgement": "ACKNOWLEDGED",
+      "completion": "UNOBSERVED",
+      "termination": "UNOBSERVED"
+    },
+    "requested_label": "CultureCabinet40169a13b00b4459adf1022962a61eb4",
+    "returned_collection_ref": null,
+    "returned_prompt_ref": "/org/freedesktop/secrets/prompt/p4",
+    "schema": "cabinet-key-store-selection/v2",
+    "service_provenance": {
+      "caller": ":1.22631",
+      "implementation": "gnome-keyring-51.1",
+      "service_owner": ":1.0",
+      "service_uid": 1000
+    },
+    "state": "PROMPT_PENDING",
+    "terminal_fact": null,
+    "verified_filename": null
+  }
+}
+'''.encode('utf-8')
+
+PAIR_ACTUAL_INPUT = r'''{
+  "stage": "INPUT_REFUSED_NO_RETRY",
+  "attempts": 0,
+  "actual_gcr_fields_verified": false,
+  "passphrase_output": false,
+  "completion_confirmed": false,
+  "input_events": [],
+  "error_type": "DriverRefused",
+  "refusal_category": "IDENTITY",
+  "refusal_phase": "CONTROLS",
+  "binding_metadata": {
+    "compositor_windows": 1,
+    "applications": 1,
+    "top_levels": 1,
+    "binding_method": "single-owned-surface/v1",
+    "compositor_geometry": {
+      "at": [
+        -83,
+        -5
+      ],
+      "size": [
+        518,
+        262
+      ]
+    },
+    "accessible_geometry": [
+      0,
+      0,
+      517,
+      262
+    ]
+  }
+}
+'''.encode('utf-8')
+
+PAIR_ACTUAL_CALLER = r'''{
+  "operation_id": "1cc2bd37-8f62-420d-928d-ec9c28945013",
+  "caller": ":1.22631",
+  "caller_has_owner": false,
+  "method": "NameHasOwner exact current owned caller only",
+  "prompt_or_collection_or_secret_calls": 0
+}
+'''.encode('utf-8')
+
+
 class PinnedReceiptDecoderTests(unittest.TestCase):
     def sample(self, **changes):
         return {'evidence': pending_evidence_fixture(), 'observed': 'dummy-only', **changes}
@@ -1715,6 +1912,137 @@ class OwnedDialogRetirementTests(unittest.TestCase):
         (self.directory / store._archive_name()).unlink()
         with self.assertRaises(FileNotFoundError):
             store._check_continuation(store.DIALOG_OPERATION)
+
+
+class PairReceiptCodecTests(unittest.TestCase):
+    def test_actual_new_terminal_and_positive_decode_only_in_their_pinned_private_profiles(self):
+        failure=store._pending_failure_json(PAIR_ACTUAL_FAILURE)
+        positive=store._pair_positive_json(PAIR_ACTUAL_POSITIVE)
+        self.assertEqual(failure['operation_id'],store.PAIR_OPERATION)
+        self.assertEqual(failure['original_bounds']['monitor_original_deadline_monotonic'],store.PAIR_RECORDED_CLOCK)
+        self.assertEqual(positive['monitor_original_deadline_monotonic'],store.PAIR_RECORDED_CLOCK)
+        for raw in (PAIR_ACTUAL_FAILURE,PAIR_ACTUAL_POSITIVE):
+            with self.assertRaises(store.Refused):store.strict_json(raw)
+        with self.assertRaises(store.Refused):store._pair_positive_json(PAIR_ACTUAL_POSITIVE+b' ')
+
+    def test_recorded_clock_does_not_permit_other_paths_values_or_nonfinite_numbers(self):
+        cases=(
+            store.canonical({'evidence':{},'original_bounds':{'monitor_original_deadline_monotonic':store.PAIR_RECORDED_CLOCK},'other':1.5}),
+            store.canonical({'evidence':{},'original_bounds':{'monitor_original_deadline_monotonic':store.PAIR_RECORDED_CLOCK+1}}),
+            b'{"evidence":{},"original_bounds":{"monitor_original_deadline_monotonic":NaN}}',
+        )
+        for raw in cases:
+            with self.subTest(raw_length=len(raw)),patch.object(store,'PAIR_FAILURE_SHA',hashlib.sha256(raw).hexdigest()),self.assertRaises(store.Refused):
+                store._pending_failure_json(raw)
+        raw=store.canonical({'monitor_original_deadline_monotonic':store.PAIR_RECORDED_CLOCK,'other':2.5})
+        with patch.object(store,'PAIR_TERMINAL_SHA',hashlib.sha256(raw).hexdigest()),self.assertRaises(store.Refused):
+            store._pair_positive_json(raw)
+
+
+class PasswordPairRetirementTests(unittest.TestCase):
+    def set_pending(self,value):PendingPromptRetirementTests.set_pending(self,value)
+    def setUp(self):
+        OwnedDialogRetirementTests.setUp(self)
+        store.retire_owned_dialog_dummy(DIALOG_ACTUAL_FAILURE,DIALOG_ACTUAL_POSITIVE,DIALOG_ACTUAL_INPUT,DIALOG_ACTUAL_CALLER)
+        self.third=self.directory/store._dialog_archive_name()
+        self.third_bytes=self.third.read_bytes()
+        self.enterContext(patch.object(store,'PAIR_PREDECESSOR_SHA',hashlib.sha256(self.third_bytes).hexdigest()))
+        self.value=json.loads(PAIR_ACTUAL_POSITIVE)['selection']
+        self.original=store.canonical(self.value)
+        self.assertEqual(hashlib.sha256(self.original).hexdigest(),store.PAIR_SELECTION_SHA)
+        self.pointer.write_bytes(self.original);self.pointer.chmod(0o600)
+        self.pair_closed=self.enterContext(patch.object(store._SecretBackend,'_pair_caller_closed',return_value=True))
+    def retire(self,failure=PAIR_ACTUAL_FAILURE,positive=PAIR_ACTUAL_POSITIVE,entered=PAIR_ACTUAL_INPUT,caller=PAIR_ACTUAL_CALLER):
+        return store.retire_password_pair_dummy(failure,positive,entered,caller)
+    def assert_untouched(self):
+        self.assertTrue(self.pointer.exists())
+        self.assertFalse((self.directory/store._pair_archive_name()).exists())
+
+    def test_actual_shapes_retirement_archive_reread_and_all_four_links(self):
+        first=(self.directory/store._archive_name()).read_bytes()
+        second=(self.directory/store._pending_archive_name()).read_bytes()
+        self.assertEqual(self.retire(),store.PAIR_OPERATION)
+        archive=self.directory/store._pair_archive_name()
+        self.assertEqual(archive.stat().st_mode & 0o777,0o400)
+        raw=archive.read_bytes();self.assertLessEqual(len(raw),32768)
+        saved=store._validate_pending_archive(raw)
+        self.assertEqual(saved['original_selection'].encode(),self.original)
+        self.assertEqual(saved['failure_receipt'].encode(),PAIR_ACTUAL_FAILURE)
+        self.assertEqual(saved['terminal_receipt'].encode(),PAIR_ACTUAL_POSITIVE)
+        self.assertEqual(self.third.read_bytes(),self.third_bytes)
+        self.assertEqual((self.directory/store._archive_name()).read_bytes(),first)
+        self.assertEqual((self.directory/store._pending_archive_name()).read_bytes(),second)
+        store._check_continuation(store.PAIR_OPERATION)
+        for ref in (None,store.OLD_DUMMY_OPERATION,store.PENDING_OPERATION,store.DIALOG_OPERATION):
+            with self.assertRaises(store.Refused):store._check_continuation(ref)
+
+    def test_changed_four_receipt_hashes_refuse_before_connection_or_pointer_effect(self):
+        for index,raw in enumerate((PAIR_ACTUAL_FAILURE,PAIR_ACTUAL_POSITIVE,PAIR_ACTUAL_INPUT,PAIR_ACTUAL_CALLER)):
+            args=[PAIR_ACTUAL_FAILURE,PAIR_ACTUAL_POSITIVE,PAIR_ACTUAL_INPUT,PAIR_ACTUAL_CALLER]
+            args[index]=raw+b' '
+            with self.subTest(index=index),patch.object(store._SecretBackend,'_connect') as connect,self.assertRaises(store.Refused):self.retire(*args)
+            connect.assert_not_called();self.assert_untouched()
+
+    def test_nonnull_result_identity_or_progress_refuses_even_with_fixture_hash(self):
+        for changes in ({'creation_operation_id':store.DIALOG_OPERATION},{'returned_prompt_ref':'/org/freedesktop/secrets/prompt/other'},
+                        {'service_provenance':{**self.value['service_provenance'],'caller':':1.999'}},
+                        {'state':'CREATED_UNVERIFIED','returned_collection_ref':store.COLLECTION_ROOT+'owned'},
+                        {'canary_state':'CREATE_PENDING'},{'master_phase':'WRITE_PENDING'},
+                        {'prompt_observation':{**self.value['prompt_observation'],'completion':'RETURNED'}}):
+            raw=store.canonical({**self.value,**changes});self.pointer.write_bytes(raw)
+            with self.subTest(changes=changes),patch.object(store,'PAIR_SELECTION_SHA',hashlib.sha256(raw).hexdigest()),self.assertRaises(store.Refused):self.retire()
+            self.assert_untouched()
+
+    def test_live_caller_malformed_caller_schema_or_input_progress_refuse(self):
+        self.pair_closed.return_value=False
+        with self.assertRaises(store.Refused):self.retire()
+        self.assert_untouched();self.pair_closed.return_value=True
+        entered=json.loads(PAIR_ACTUAL_INPUT);entered['attempts']=1;raw=store.canonical(entered)
+        with patch.object(store,'PAIR_INPUT_SHA',hashlib.sha256(raw).hexdigest()),self.assertRaises(store.Refused):self.retire(entered=raw)
+        self.assert_untouched()
+        with self.assertRaises(store.Refused):self.retire(caller=DIALOG_ACTUAL_CALLER)
+        self.assert_untouched()
+
+    def test_changed_selection_inode_after_archive_is_never_unlinked(self):
+        read=store._read_private_at;seen=[]
+        def race(directory,name,*args):
+            if name=='selection.json':
+                seen.append(name)
+                if len(seen)==2:
+                    replacement=self.directory/'replacement'
+                    replacement.write_bytes(self.original);replacement.chmod(0o600)
+                    os.replace(replacement,self.pointer)
+            return read(directory,name,*args)
+        with patch.object(store,'_read_private_at',side_effect=race),self.assertRaises(store.Refused):self.retire()
+        self.assertEqual(self.pointer.read_bytes(),self.original)
+        self.assertTrue((self.directory/store._pair_archive_name()).exists())
+
+    def test_interrupted_fsync_identical_replay_and_foreign_archive_refusal(self):
+        with patch.object(store.os,'fsync',side_effect=OSError()),self.assertRaises(OSError):self.retire()
+        self.assertTrue(self.pointer.exists())
+        archive=self.directory/store._pair_archive_name();raw=archive.read_bytes();inode=archive.stat().st_ino
+        self.retire();self.assertEqual(archive.read_bytes(),raw);self.assertEqual(archive.stat().st_ino,inode)
+        store._check_continuation(store.PAIR_OPERATION)
+
+    def test_missing_wrong_ancestor_or_foreign_new_archive_never_provisions(self):
+        archive=self.directory/store._pair_archive_name();archive.write_bytes(b'foreign');archive.chmod(0o400)
+        with patch.object(store,'_provision_worker') as provision,self.assertRaises(store.Refused):self.retire()
+        provision.assert_not_called();self.assertTrue(self.pointer.exists());self.assertEqual(archive.read_bytes(),b'foreign')
+        archive.unlink();self.third.chmod(0o600);self.third.write_bytes(self.third_bytes+b' ');self.third.chmod(0o400)
+        with self.assertRaises(store.Refused):self.retire()
+        self.assert_untouched();self.third.unlink()
+        with self.assertRaises(FileNotFoundError):self.retire()
+        self.assert_untouched()
+
+    def test_terminal_and_envelope_size_guards_precede_mutation(self):
+        with patch.object(store.os,'isatty',return_value=False),self.assertRaises(store.Refused):self.retire()
+        self.assert_untouched()
+        original_canonical=store.canonical
+        def oversized(value):
+            raw=original_canonical(value)
+            return raw+b' '*(32769-len(raw)) if value.get('schema')=='cabinet-abandoned-prompt/v1' else raw
+        with patch.object(store,'canonical',side_effect=oversized),patch.object(store._SecretBackend,'_connect') as connect,self.assertRaises(store.Refused):self.retire()
+        connect.assert_not_called();self.assert_untouched()
 
 
 class FileDummyCollection(DummyCollection):

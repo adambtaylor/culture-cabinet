@@ -195,6 +195,36 @@ have been used stays under explicit custody until the final proof/handoff or
 precise uncertain-outcome disposition, followed by explicit disposal. Provider
 credentials and collection/API operations are outside this custodian interface.
 
+The next actual creation form passed singleton/nonce ownership but exposed two
+relationless `PASSWORD_TEXT` controls and Continue/Cancel. The explicit private
+profile `gcr-owned-creation-password-pair-continue/v1` supports only that owned
+creation form: exactly two distinct relationless password targets and exactly
+one Continue plus one Cancel, all inside the frozen dialog. Both targets receive
+the same retained nonempty value; stable A/B identity order has no asserted
+password/confirmation meaning. All four identities are revalidated before each
+native effect. Cancel is never invoked; PAIR_A/PAIR_B/CONTINUE pending markers
+precede dispatch and acknowledgements remain separate from Completed. No labelled
+profile, unlock form, tab/coordinate input or retry fallback is selected.
+
+The ended `1cc2bd37-8f62-420d-928d-ec9c28945013` attempt still had no input/value,
+canary or master progress. Terminal-only `retire_password_pair_dummy` admits only
+its exact selection,75ce terminal,447f positive,da54 input andae07 caller receipts,
+including the new effects/custody schema and empty disposed custodian. It checks
+original caller closure, preserves original strings in the same bounded immutable
+archive, then applies the same final byte/inode CAS. All four fixed archive links
+are required; older continuation references cannot bypass the newest tombstone.
+No OS outcome is inferred or cleaned up.
+
+Those two pinned receipts contain the exact recorded clock atom
+`1340075.871266088`, once under the terminal's original_bounds and once at the
+positive root. Only those exact hashes/paths/value may decode that finite float
+as inert attribution; ordinary decoding and all other numeric/field/frame limits
+stay strict. It never supplies a new operation budget, expiry or authority. Outer
+archives remain strict and preserve both original receipt strings unchanged.
+The matched native receiver/build is required before any next positive proof;
+actual field interfaces, encrypted association, fresh-helper/native retrieval,
+protection negatives and final custody closure remain separate evidence.
+
 The versioned dummy input helper must identify both labelled Password and
 Confirm controls within the exact owned GCR dialog, verify intended focus, and
 invoke its explicit Create action once. It cannot assume Tab navigation, read
