@@ -112,6 +112,42 @@ class SavedEventReferenceUITests(TestCase):
     setUp = existing.PublicDiscoveryUITests.setUp
     form = existing.PublicDiscoveryUITests.form
 
+    def test_production_null_policy_opaque_history_is_stale_and_not_a_fresh_unlinked_card(self):
+        from dataclasses import replace
+        with patch.object(views.sources,'household_candidates',return_value=[]), \
+             patch.object(transport,'pbs',return_value=(200,listing())) as read:
+            self.client.post(self.action,self.form('event_source',source_id='pbs'))
+            page=self.client.get(self.url)
+            row=page.context['events'][0];key=row['card'].key
+            self.assertFalse(row['reference_only'])
+            # A current source card lacking a link is still current output. The
+            # discriminator is server-owned projection type, not URL/title text.
+            session=self.client.session
+            cache_key=f'{self.actor.pk}:1:{session.session_key}'
+            entries=views.PUBLIC_CACHE.get(cache_key)
+            entry=next(iter(entries.values()))
+            entry['outcome']=replace(entry['outcome'],candidates=(replace(row['card'],url=None),))
+            views.PUBLIC_CACHE.set(cache_key,entries,timeout=900)
+            page=self.client.get(self.url)
+            fresh=page.context['events'][0]
+            self.assertIsNone(fresh['card'].url)
+            self.assertFalse(fresh['reference_only'])
+            self.client.post(self.action,self.form('save',key=key))
+            self.client.get(self.url)
+            before=DiscoveryState.objects.get().history
+            self.assertNotIn('saved_reference',before[0])
+            views.PUBLIC_CACHE.clear()
+            page=self.client.get(self.url)
+            stale=next(row for row in page.context['responses'] if row['card'].key==key)
+            self.assertTrue(stale['saved'] and stale['reference_only'])
+            self.assertIsNone(stale['saved_reference'])
+            self.assertIsNone(stale['card'].url)
+            self.assertIn('Stale',stale['freshness'])
+            for field in ('events','more_source_events'):
+                self.assertNotIn(key,[row['card'].key for row in page.context[field]])
+            self.assertEqual(DiscoveryState.objects.get().history,before)
+            read.assert_called_once_with()
+
     def test_same_session_saved_reference_leaves_retained_recommendation_slots(self):
         descriptors=policies()
         with patch('shelf.event_source_registry.SOURCES',descriptors), \
