@@ -63,7 +63,9 @@ class EventSourceUITests(TestCase):
             self.assertNotContains(page,'SYNTHETIC music event')
             self.assertContains(page,'SYNTHETIC event')
             self.assertNotContains(page,'CANARY')
-            self.assertContains(page,'timeout')
+            self.assertContains(page,'Read timed out')
+            self.assertEqual(next(result['outcome'].status for result in
+                page.context['public_results'] if result['source']==views.EVENT_SOURCES['pbs'].label),'timeout')
             self.assertEqual(len(page.context['public_results']),2)
 
     def test_current_profile_csrf_and_revocation_still_guard_generic_acquisition(self):
@@ -96,7 +98,7 @@ class EventSourceUITests(TestCase):
             page=fresh.get(self.url)
             rows=page.context['responses']
             self.assertTrue(any(row['card'].key==key and row['saved'] for row in rows))
-            self.assertContains(page,'Previously judged identity')
+            self.assertContains(page,'source details expired')
             data=dict(mode='household',revision=page.context['revision'],nonce=page.context['nonce'],
                       operation='undo',key='',choice='',radio_mode='')
             self.assertEqual(fresh.post(self.action,data).status_code,302)

@@ -206,3 +206,27 @@ helper; Experience owns the template and actual rendered evidence. The helper's
 detached redaction removes only this new field from every affected historical
 action, including undone saves. Component handler tests do not establish that
 separate recovery/restore or browser acceptance.
+
+### Coherent producer, interface and recovery candidate
+
+The E4 composition consumes PR83's producer/opaque-history corrections, PR84's
+source controls, PR85's corrected native history forms and PR90's recovery tail.
+The authored template and recovery files are consumed unchanged. Reference-only
+response forms use a full native POST: the partial response endpoint retains its
+current-deck membership guard and refuses an expired history row.
+
+`test_event_reference_integration.py` exercises those actual rendered forms with
+CSRF checks, a mocked PBS response and both fictional positive-reference and
+ordinary production-null policies. It checks expiry, recommendation exclusion,
+response/replay, save/Undo and a fresh authenticated session. Its separate isolated
+recovery case creates the reference through normal handlers, applies an actual
+source restriction without a FeedbackTarget and restores a pre-restriction backup.
+Only the optional reference is purged; choices, saved identity, receipts and nonce
+survive, and Undo cannot restore the removed reference. It uses the accepted
+isolated migrated-memory recovery fixture pattern without changing production
+authority, recovery or SQL guards.
+
+These are mocked-source handler/recovery checks, not live acquisition, real browser
+acceptance, a new retention permission or acceptance of all 35 sources. The first
+combined run retained three old assertions for raw status labels; the checks now
+assert both the actual outcome status and the interface's authored human wording.
