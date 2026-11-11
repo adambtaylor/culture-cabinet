@@ -97,8 +97,12 @@ def parse_listing(raw, *, retrieved_at, provenance='live-automated'):
         anchor = _one(node.find('a','content-card'))
         if not anchor.matches(css='events'):
             raise SourceError('Unrecognized event card.')
-        title_node = _one(node.find(css='this-week-title')) if position <= len(week_nodes) else _one(anchor.find('h3'))
-        title = label(title_node.text())
+        # this-week-title labels the weekday wrapper, not the event. Event
+        # identity/name comes from the card itself; never promote Friday/Saturday
+        # headings into factual programme names.
+        title = label(_one(anchor.find('h3')).text())
+        if title in ('Monday','Tuesday','Wednesday','Thursday','Friday','Saturday','Sunday'):
+            raise SourceError('Programme day heading is not an event title.')
         listed = label(_one(anchor.find('time','meta')).text())
         try:
             start, end = _times(listed)
@@ -111,7 +115,9 @@ def parse_listing(raw, *, retrieved_at, provenance='live-automated'):
         # is fetched or promoted into source authority/stock evidence.
         evidence = EventEvidence('moons24',None,LISTING_URL,retrieved_at,provenance,digest,position)
         notices = node.find(css='event-tags')
-        notice = label(' '.join(item.text() for item in notices)) if notices else ''
+        notice = label(' · '.join(
+            text for item in notices for child in item.children
+            if (text := (child.text() if hasattr(child, 'text') else child).strip()))) if notices else ''
         event = ListingEvent(key='fixture:event:pending', title=title, kind='event', source='24 Moons',
             provenance=provenance, rank=position, retrieved_at=retrieved_at,
             url=None if provenance == 'fixture' else LISTING_URL,

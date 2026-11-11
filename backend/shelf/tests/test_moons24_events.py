@@ -10,10 +10,10 @@ NOW = datetime(2026,11,11,4,tzinfo=timezone.utc)
 
 
 def card(title='SYNTHETIC overnight event', when='Fri 13 Nov 2026 · 10:00pm — Sat 5:00am AEDT'):
-    return ('<div class="this-week-event"><h3 class="this-week-title">'+escape(title)+'</h3>'
+    return ('<div class="this-week-event"><h3 class="this-week-title">Friday</h3>'
         '<a class="content-card events" href="https://ra.co/events/999999999">'
-        '<div class="card-copy"><time class="meta">'+escape(when)+'</time></div>'
-        '<div class="event-tags">18+ · Synthetic source tag</div></a></div>')
+        '<div class="card-copy"><h3>'+escape(title)+'</h3><time class="meta">'+escape(when)+'</time></div>'
+        '<div class="event-tags"><span>18+</span><span>Synthetic source tag</span></div></a></div>')
 
 
 def listing(rows=None, *, week='9 Nov – 15 Nov 2026 · Melbourne time', later='', empty_week=False):
@@ -32,12 +32,14 @@ class Moons24ParserTests(TestCase):
 
     def test_current_week_is_not_erased_by_empty_later_section_and_overnight_is_exact(self):
         event,=self.parse(listing())
+        self.assertEqual(event.title,'SYNTHETIC overnight event')
         self.assertEqual(event.starts_at,'2026-11-13T22:00:00+11:00')
         self.assertEqual(event.ends_at,'2026-11-14T05:00:00+11:00')
         self.assertEqual(event.occurrence_basis,'explicit_range')
         self.assertEqual(event.url,source.LISTING_URL)
         self.assertEqual(event.evidence[0].source_id,'moons24')
         self.assertIn('18+',event.source_notice)
+        self.assertEqual(event.source_notice,'18+ · Synthetic source tag')
         self.assertEqual(event.status,'unknown')
         self.assertIsNone(event.lineup)
         self.assertIsNone(event.entry_fee)
