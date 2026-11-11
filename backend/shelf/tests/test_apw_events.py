@@ -65,6 +65,15 @@ class APWEventTests(TestCase):
                 self.assertEqual(send.call_args.args[0][-1],APW_URL)
                 self.assertEqual(len(list(Path(directory).iterdir())),1)
 
+    def test_multiple_homepage_heroes_select_only_dated_event_panel(self):
+        promotion=listing(opening='Support APW',run='',title='A catalyst for great art')
+        rows=self.parse(promotion+listing()+promotion)
+        self.assertEqual(len(rows),2)
+        self.assertTrue(all(row.title=='FICTIONAL print programme' for row in rows))
+        with self.assertRaises(event_scraping.ProgrammeUnavailable):self.parse(promotion)
+        with self.assertRaises(event_scraping.ProgrammeUnavailable):
+            self.parse(promotion+listing(opening='Opening 6pm. Friday 6 November 2026',run=''))
+
 
 @override_settings(ROOT_URLCONF='cabinet.provider_urls',ALLOWED_HOSTS=['testserver'])
 class APWEventUITests(DjangoCase):
