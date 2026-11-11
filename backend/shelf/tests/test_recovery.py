@@ -693,3 +693,132 @@ class TrustedPortableRestartTests(PortableRecoveryCase):
             self.assertEqual({p.name: p.read_bytes() for p in journal.iterdir()}, before)
         with closing(sqlite3.connect(path)) as raw:
             self.assertEqual(raw.execute('PRAGMA application_id').fetchone()[0], 0)
+
+    def test_trusted_restart_retains_only_original_policy_and_legacy_empty_evidence(self):
+        from shelf.recovery import trusted_restart_fixture
+        from shelf.enhance_contract import RegistryView
+        from shelf.enhance_selection import RunSelectionPolicy
+        from shelf.portable_cabinet_store import CabinetStore
+        from shelf.models import ProfileCabinetState,_content_digest
+        from .test_portable_cabinet_store import IsolatedStateProvider,StoreCase
+        self.profile_ref=self.bind();self.state=ProfileCabinetState.objects.get()
+        self.consent(self.profile_ref);self.consent(self.profile_ref,purpose='catalogue_lookup')
+        self.registry=RegistryView('1',('books','films','tv','music','events','outings'))
+        self.store=CabinetStore.isolated_test(self.authority,self.ref,profile_ref=self.profile_ref,
+            connection_ref=str(self.config.pk),state_provider=IsolatedStateProvider(self))
+        legacy=self.store.admit(StoreCase.intent(self))
+        policy=self.store.admit(StoreCase.intent(self),selection_policy=RunSelectionPolicy(75))
+        policy=self.store.checkpoint(str(policy.pk),stage='awaiting_preview',
+            outcomes=[dict(category=k,state='unavailable',candidate_count=0,code='CAPABILITY_UNAVAILABLE') for k in self.registry.categories],
+            metadata={'phase':'inference','submitted_refs':{'signals':[],'candidates':[]}},
+            collection_digest='c'*64,body_digest='b'*64,sealed_run_digest='d'*64)
+        policy=self.store.reserve(str(policy.pk),body_digest=policy.body_digest,expected_revision=policy.revision)
+        expected={row.pk.hex:(row.input_digest,_content_digest(json.dumps(row.output),json.dumps(row.evidence)))
+                  for row in (legacy,policy)}
+        path=self.boundary.root/'portable.sqlite3'
+        fd=os.open(path,os.O_RDWR|os.O_CREAT|os.O_EXCL|os.O_NOFOLLOW,0o600);os.close(fd)
+        raw=sqlite3.connect(path)
+        try:connection.connection.backup(raw)
+        finally:raw.close()
+        with trusted_restart_fixture(self.boundary,confirmed=True,fresh=True) as current:
+            values=current.bound_db.execute('SELECT id,evidence,output,input_digest,content_digest,attempts,transport_request_id,state FROM shelf_synthesisrun').fetchall()
+            self.assertEqual(len(values),2)
+            for reference,evidence,output,fingerprint,digest,attempts,request,state in values:
+                self.assertEqual(json.loads(output),{})
+                self.assertEqual((fingerprint,digest),expected[reference])
+                self.assertEqual(json.loads(evidence),{} if reference==legacy.pk.hex else
+                    {'selection_policy':{'version':'selection-policy/v1','noise':75}})
+                if reference==policy.pk.hex:
+                    self.assertEqual((attempts,request,state),(1,policy.transport_request_id.hex,'unknown'))
+            self.assertEqual(current.bound_db.execute('SELECT count(*) FROM shelf_portablevalidation').fetchone()[0],0)
+            semantic_check(current.bound_db)
+        from shelf.portable_authority import AuthorityFault
+        with self.assertRaises(AuthorityFault):self.authority.authorize(self.ref)
+
+
+from .test_portable_feedback_views import NativeFeedbackCase
+
+
+class SelectionIsolatedRestoreTests(NativeFeedbackCase):
+    def test_redacted_policy_restore_keeps_current_erasure_source_denial_and_neutralized_auth(self):
+        from shelf.enhance_selection import RunSelectionPolicy
+        from shelf.enhance_contract import EnhanceIntent
+        from shelf.models import SynthesisRun,PortableJourneyCommand,FeedbackTarget
+        from django.contrib.auth import get_user_model
+        from shelf import grant_authority as ga
+        self.consent(self.profile_ref,classes=['raw_notes','free_text_entry'])
+        fields=self.note_fields(text='Fictional note to erase before isolated restore')
+        self.assertEqual(self.post('/cabinet/taste',fields).status_code,303)
+        target=FeedbackTarget.objects.get(source_key=self.profile_ref+':'+fields['entry_ref'])
+        store=self.enhance._store(self.ref,self.profile_ref,str(self.config.pk))
+        run=store.admit(EnhanceIntent(str(uuid.uuid4()),str(uuid.uuid4()),str(uuid.uuid4()),store.current().bindings),
+                        selection_policy=RunSelectionPolicy(75))
+        store.redact_profile(run_refs={run.pk});run.refresh_from_db()
+        # A later admitted setting differs from the old retained policy. Restore
+        # must preserve the snapshot setting, never copy a tombstone's Noise.
+        later=store.admit(EnhanceIntent(str(uuid.uuid4()),str(uuid.uuid4()),str(uuid.uuid4()),store.current().bindings),
+                          selection_policy=RunSelectionPolicy(25))
+        store.redact_profile(run_refs={later.pk})
+        folder=Path(self.directory.name)/'a6c-isolated';folder.mkdir(mode=0o700)
+        source=folder/'source.sqlite3'
+        disk=sqlite3.connect(source)
+        try:connection.connection.backup(disk)
+        finally:disk.close()
+        source.chmod(0o600)
+        reader=sqlite3.connect(source.as_uri()+'?mode=ro',uri=True);reader.execute('PRAGMA query_only=ON')
+        try:
+            manifest=consistent_backup(source=reader,destination=ExclusiveScratchFile(folder/'backup.sqlite3'),
+                                       recovery=self.coordinator)
+        finally:reader.close()
+        projection=FeedbackProjection.objects.get(signal='note')
+        event=FeedbackEvent.objects.get(target=target,signal='note',revision=projection.revision)
+        token=key_token(str(target.pk),'note','item')
+        command=EraseCommand(str(uuid.uuid4()),str(target.pk),'item',('note',),
+            {token:projection.revision},{token:str(event.pk)},'ERASE_FICTIONAL_FEEDBACK')
+        actor=get_user_model().objects.get(pk=self.state.actor_id)
+        erase_feedback(actor=actor,profile_id=self.state.profile_id,command=command,recovery=self.coordinator)
+        operator=trusted_operator(self.coordinator,actor)
+        restriction=dict(kind='source_restrict',profile_id=None,target_id=None,signal=None,scope=None,
+            subject_id=target.source_namespace,restriction_code='deny_source_content')
+        restrict_authority(actor=operator,command=dict(mutation_id=str(uuid.uuid4()),
+            base_sequence=self.coordinator.sequence,restrictions=[restriction]),recovery=self.coordinator)
+        isolated=folder/'restore';isolated.mkdir(mode=0o700)
+        report=isolated_restore(backup=ReadOnlyBackup(folder/'backup.sqlite3',manifest),sandbox=isolated,
+                                recovery=self.coordinator)
+        self.assertEqual(report.state,'ISOLATED_READY',report)
+        with closing(sqlite3.connect(report.isolated_database)) as raw:
+            evidence,output,fingerprint,digest=raw.execute('SELECT evidence,output,input_digest,content_digest FROM shelf_synthesisrun WHERE id=?',(run.pk.hex,)).fetchone()
+            self.assertEqual(json.loads(evidence),{'selection_policy':{'version':'selection-policy/v1','noise':75}})
+            self.assertEqual((json.loads(output),fingerprint,digest),({},run.input_digest,run.content_digest))
+            self.assertEqual(raw.execute('SELECT count(*) FROM shelf_feedbackevent WHERE body IS NOT NULL').fetchone()[0],0)
+            self.assertEqual(raw.execute("SELECT count(*) FROM shelf_portablejourneycommand WHERE kind LIKE 'taste.%' AND (state!='retired' OR result!='{}')").fetchone()[0],0)
+            self.assertEqual(raw.execute('SELECT next_noise FROM shelf_portablejourneystate').fetchone()[0],25)
+            self.assertEqual(raw.execute('SELECT count(*) FROM django_session').fetchone()[0],0)
+            self.assertEqual(raw.execute('SELECT count(*) FROM shelf_grant WHERE can_view OR can_mutate OR can_select OR can_export').fetchone()[0],0)
+            self.assertEqual(raw.execute('SELECT count(*) FROM shelf_recoveryrestriction').fetchone()[0],2)
+            semantic_check(raw)
+
+    def test_corrupt_redacted_policy_fingerprint_and_extra_metadata_fail_raw_history_validation(self):
+        from shelf.enhance_selection import RunSelectionPolicy
+        from shelf.enhance_contract import EnhanceIntent
+        from shelf.models import register_closed_sql_guards
+        from shelf import grant_authority as ga
+        self.consent(self.profile_ref)
+        store=self.enhance._store(self.ref,self.profile_ref,str(self.config.pk))
+        run=store.admit(EnhanceIntent(str(uuid.uuid4()),str(uuid.uuid4()),str(uuid.uuid4()),store.current().bindings),
+                        selection_policy=RunSelectionPolicy(25))
+        store.redact_profile(run_refs={run.pk})
+        mutations=[('input_digest','a'*64),('evidence',json.dumps({'selection_policy':{'version':'selection-policy/v1','noise':True}})),
+                   ('evidence',json.dumps({'selection_policy':{'version':'selection-policy/v1','noise':25},'retired':'extra'})),
+                   ('evidence','{}')]
+        for column,value in mutations:
+            with closing(sqlite3.connect(':memory:')) as raw:
+                connection.connection.backup(raw);register_closed_sql_guards(raw)
+                semantic_check(raw)
+                # Corrupt only an isolated copy, as a damaged backup would be.
+                # Live native guards and their inventory remain untouched.
+                for name in ('enhance_run_update','enhance_run_content_update','enhance_selection_update'):
+                    raw.execute('DROP TRIGGER '+name)
+                raw.execute('UPDATE shelf_synthesisrun SET '+column+'=? WHERE id=?',(value,run.pk.hex))
+                with self.assertRaises(RecoveryBlocked):semantic_check(raw)
+        ga._synthesis_guards()

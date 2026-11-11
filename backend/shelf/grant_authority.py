@@ -399,7 +399,7 @@ def _synthesis_guards():
     prior = import_module('shelf.migrations.0021_portable_disclosure_authority').TRIGGERS
     broker = import_module('shelf.migrations.0022_portable_enhance_state').TRIGGERS
     normalize = lambda sql: sql.strip().removesuffix(';').rstrip()
-    current = import_module('shelf.migrations.0029_local_selection_preferences')
+    current = import_module('shelf.migrations.0030_run_selection_retention')
     try:
         definitions = current.effective_inventory(connection.connection)
     except RuntimeError:
@@ -463,10 +463,14 @@ def _broker_history_row(row, state):
     require(type(record['source_revision']) is str and 0 < len(record['source_revision']) <= 300)
     # Reuse the broker's existing intent definition and canonical codec. Mutable
     # stage/attempt/receipt fields are deliberately absent from this fingerprint.
-    material={'schema':VERSION,'bindings':vars(bound),'refresh_nonce':str(row['refresh_nonce'])}
-    if 'local_selection_digest' in record:material['local_selection_digest']=record['local_selection_digest']
-    expected = digest(canonical_bytes(material))
-    require(sha(row['input_digest']) and row['input_digest'] == expected)
+    from .enhance_selection import validate_selection_history
+    evidence=row['evidence']
+    try:
+        projected=validate_selection_history(record,evidence,input_digest=row['input_digest'],
+            refresh_nonce=row['refresh_nonce'],run_ref=row['id'],collection_digest=row['collection_digest'],
+            redacted=row['content_redacted_at'] is not None)
+    except (ValueError,TypeError,KeyError):
+        require(False)
     require(type(row['revision']) is int and row['revision'] >= 0
             and type(row['attempts']) is int and row['attempts'] in (0, 1)
             and type(row['cancel_requested']) is bool)
@@ -477,7 +481,7 @@ def _broker_history_row(row, state):
         # Only the effective one-way guards can create this grammar. Deleted
         # receipt content is no longer required, and can never become evidence.
         require(type(row['content_redacted_at']) is datetime and sha(row['content_digest'])
-                and row['output'] == row['evidence'] == {})
+                and row['output']=={} and row['evidence']==projected)
         require((row['attempts'] == 0 and row['transport_request_id'] is None and row['state'] in ('queued', 'failed'))
                 or (row['attempts'] == 1 and isinstance(row['transport_request_id'], UUID)
                     and row['state'] in ('running', 'unknown', 'completed', 'failed')))
@@ -487,7 +491,8 @@ def _broker_history_row(row, state):
     require(type(evidence) is dict and {'code', 'outcomes', 'phase', 'expected_publication_revision'} <= set(evidence))
     require(set(evidence) <= {'code', 'outcomes', 'phase', 'expected_publication_revision',
                             'preview_ref', 'preview_digest', 'session_digest', 'submitted_refs',
-                            'publication_revision', 'publication_ref', 'source_use'})
+                            'publication_revision', 'publication_ref', 'source_use',
+                            'selection_policy','selection_policy_digest','selection_seed','selection_report'})
     require(evidence['code'] in SAFE_CODES and evidence['phase'] in
             ('catalogue', 'inference', 'source_model_context_unavailable'))
     if 'source_use' in evidence:

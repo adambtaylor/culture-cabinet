@@ -180,7 +180,14 @@ class CabinetStore:
             rows = rows.exclude(pk=exclude)
         require(not rows.exists(), 'UNKNOWN_RECONCILIATION_REQUIRED', 409)
 
-    def admit(self, intent, *, local_context=None):
+    def admit(self, intent, *, local_context=None,selection_policy=None):
+        from .enhance_selection import RunSelectionPolicy
+        require(selection_policy is None or type(selection_policy) is RunSelectionPolicy)
+        if selection_policy is not None:
+            from django.db.migrations.recorder import MigrationRecorder
+            require(MigrationRecorder.Migration.objects.filter(app='shelf',name='0030_run_selection_retention').exists(),
+                    'CAPABILITY_UNAVAILABLE',503)
+            ga._synthesis_guards()
         require(type(intent) is EnhanceIntent)
         client, refresh = ga._uuid(intent.client_key), ga._uuid(intent.refresh_nonce)
         with self.mutation() as (cabinet, current):
@@ -188,10 +195,9 @@ class CabinetStore:
             if local_context is not None:
                 require(current.local_context is not None and local_context.digest==current.local_context.digest,
                         'PREVIEW_STALE',409)
-            material={'schema':VERSION,'bindings':vars(intent.bindings),'refresh_nonce':str(refresh)}
-            if current.local_context is not None:
-                material['local_selection_digest']=current.local_context.digest
-            fingerprint=digest(canonical_bytes(material))
+            from .enhance_selection import admission_fingerprint
+            fingerprint=admission_fingerprint(current.record(),refresh,
+                {'selection_policy':selection_policy.material()} if selection_policy is not None else {})
             prior = SynthesisRun.objects.filter(installation=cabinet.installation, actor=cabinet.actor,
                 profile=cabinet.profile, contract_version=VERSION, client_key=client).first()
             if prior is not None:
@@ -210,13 +216,41 @@ class CabinetStore:
                         input_snapshot={}, input_digest=fingerprint, portable_stage='authorized',
                         portable_bindings=current.record(), portable_expires_at=current.expires_at,
                         evidence={'code': 'OK', 'outcomes': [], 'phase': 'catalogue',
-                                  'expected_publication_revision': cabinet.publication_revision})
+                                  'expected_publication_revision': cabinet.publication_revision,
+                                  **({'selection_policy':selection_policy.material()} if selection_policy is not None else {})})
+                    if selection_policy is not None:
+                        from .models import PortableJourneyState
+                        journey,_=PortableJourneyState.objects.get_or_create(cabinet=cabinet,defaults={
+                            'created_at':self.authority.now(),'updated_at':self.authority.now()})
+                        PortableJourneyState.objects.filter(pk=journey.pk).update(
+                            next_noise=selection_policy.noise,updated_at=self.authority.now())
             except IntegrityError:
                 raise AuthorityFault('IDEMPOTENCY_CONFLICT', 409) from None
             if cabinet.data_schema_version==2:
                 from .portable_taste_history import capture_committed
                 capture_committed(self.authority,self.session_ref,self.profile_ref,origin_run_ref=str(row.pk))
             return row
+
+    def freeze_selection(self,run_ref):
+        """Freeze deterministic local selection evidence before selector use."""
+        from .enhance_selection import RunSelectionPolicy,selection_seed
+        with self.mutation() as (cabinet,current):
+            row=self._run(cabinet,run_ref);self._match(row,current)
+            material=row.evidence.get('selection_policy')
+            if material is None:return None,None
+            from django.db.migrations.recorder import MigrationRecorder
+            require(MigrationRecorder.Migration.objects.filter(app='shelf',name='0030_run_selection_retention').exists(),
+                    'CAPABILITY_UNAVAILABLE',503)
+            ga._synthesis_guards()
+            require(type(material) is dict and set(material)=={'version','noise'})
+            policy=RunSelectionPolicy(**material)
+            require(len(row.collection_digest)==64,'RUN_STALE',409)
+            seed=selection_seed(policy,str(row.pk),row.portable_bindings['bindings']['snapshot_revision'],row.collection_digest)
+            if 'selection_seed' in row.evidence:
+                require(row.evidence['selection_seed']==seed and row.evidence.get('selection_policy_digest')==policy.digest)
+            else:
+                self._change(row,evidence=dict(row.evidence,selection_seed=seed,selection_policy_digest=policy.digest))
+            return policy,seed
 
     def status(self, run_ref):
         with self.scope() as cabinet:
@@ -352,7 +386,7 @@ class CabinetStore:
         return value
 
     @sensitive_variables()
-    def publish(self, run_ref, *, manifest, expected_publication_revision, allowed_candidates):
+    def publish(self, run_ref, *, manifest, expected_publication_revision, allowed_candidates,selection_report=None):
         with self.mutation() as (cabinet, current):
             row = self._run(cabinet, run_ref)
             self._match(row, current)
@@ -364,6 +398,11 @@ class CabinetStore:
                     'REVISION_CONFLICT', 409)
             require(expected_publication_revision == row.evidence['expected_publication_revision'], 'REVISION_CONFLICT', 409)
             value = self.validate_manifest(manifest, current, allowed_candidates)
+            if selection_report is not None:
+                from .enhance_selection import checked_selection_report
+                selection_report=checked_selection_report(selection_report,current.registry.categories,
+                    policy_digest=row.evidence.get('selection_policy_digest'),seed=row.evidence.get('selection_seed'),
+                    selected_keys={card['key'] for group in value['categories'] for card in group['cards']})
             revision = cabinet.publication_revision + 1
             with ga._write_window():
                 publication = PortableCabinetManifest.objects.create(cabinet=cabinet, run=row,
@@ -374,7 +413,8 @@ class CabinetStore:
                         active_manifest_ref=publication.pk, publication_revision=revision)
             require(changed == 1, 'REVISION_CONFLICT', 409)
             self._change(row, portable_stage='published', evidence=dict(row.evidence,
-                publication_revision=revision, publication_ref=str(publication.pk)))
+                publication_revision=revision, publication_ref=str(publication.pk),
+                **({'selection_report':selection_report} if selection_report is not None else {})))
             return publication
 
     def classify_publication(self, cabinet, publication, current):
@@ -444,6 +484,7 @@ class CabinetStore:
         so comparing its old taste view on exit would roll back the privacy work.
         """
         from .models import _content_digest
+        from .enhance_selection import redacted_selection_evidence
         import json
         with self.scope(sensitive=False) as cabinet:
             rows = SynthesisRun.objects.filter(profile=cabinet.profile, installation=cabinet.installation,
@@ -462,7 +503,7 @@ class CabinetStore:
                     if row.content_redacted_at is None:
                         updated = SynthesisRun.objects.filter(pk=row.pk, revision=row.revision, content_redacted_at__isnull=True).update(
                             content_redacted_at=self.authority.now(), content_digest=_content_digest(json.dumps(row.output, ensure_ascii=False), json.dumps(row.evidence, ensure_ascii=False)),
-                            output={}, evidence={}, revision=row.revision + 1, updated_at=self.authority.now())
+                            output={}, evidence=redacted_selection_evidence(row.evidence), revision=row.revision + 1, updated_at=self.authority.now())
                         require(updated == 1, 'REVISION_CONFLICT', 409)
                         changed = True
                 if changed:
@@ -501,8 +542,11 @@ class CabinetStore:
                 and outcome[0] == str(row.transport_request_id), 'AUTHORITY_DENIED', 403)
             if row.content_redacted_at is not None:
                 require(outcome[1] in ('proven_no_send', 'completed'), 'AUTHORITY_DENIED', 403)
+                from .enhance_selection import redacted_selection_evidence
+                retained=redacted_selection_evidence(row.evidence)
+                require(row.evidence==retained,'CONTRACT_INVALID',422)
                 return self._change(row, state='failed' if outcome[1] == 'proven_no_send' else 'completed',
-                    portable_stage='failed' if outcome[1] == 'proven_no_send' else 'validated', output={}, evidence={})
+                    portable_stage='failed' if outcome[1] == 'proven_no_send' else 'validated', output={}, evidence=retained)
             if outcome[1] == 'proven_no_send':
                 return self._change(row, state='failed', portable_stage='failed',
                     evidence=dict(row.evidence, code='SOURCE_UNAVAILABLE'))
