@@ -47,6 +47,25 @@ def events_command(now, *, page_size=1):
                      '--url', 'https://api.moshtix.com/v1/graphql']
 
 
+class PublicTransportError(SourceError):
+    """Safe failure detail from the public reader, compatible with SourceError.
+
+    Reasons classify only what this invocation observed. A child exit code is
+    not an HTTP status or proof of a historical failure's cause. Never attach
+    stderr, response bytes, a command or an OS exception message here.
+    """
+    REASONS = frozenset({'response_limit', 'invalid_envelope', 'child_exit',
+                         'process_start', 'process_io'})
+
+    def __init__(self, reason, exit_code=None):
+        if (type(reason) is not str or reason not in self.REASONS
+                or exit_code is not None and (reason != 'child_exit' or type(exit_code) is not int
+                    or not -255 <= exit_code <= 255 or exit_code == 0)):
+            raise ValueError('Invalid public transport diagnostic.')
+        self.reason, self.exit_code = reason, exit_code
+        super().__init__(reason)
+
+
 def _send(command, *, max_bytes=MAX_BYTES):
     """Bound stdout in parent memory too, including unknown-length responses."""
     child = None
@@ -69,22 +88,23 @@ def _send(command, *, max_bytes=MAX_BYTES):
                 else:
                     output.extend(block)
                     if len(output) > max_bytes + 4:
-                        raise SourceError('Response budget exceeded.')
+                        raise PublicTransportError('response_limit')
             child.wait(timeout=max(0.001, deadline - time.monotonic()))
         if child.returncode == 28:
             raise TimeoutError
         if child.returncode:
-            raise SourceError('Public transport failed.')
+            raise PublicTransportError('child_exit', child.returncode
+                if type(child.returncode) is int and -255 <= child.returncode <= 255 else None)
         body, separator, code = output.rpartition(b'\n')
         if not separator or len(code) != 3 or not code.isdigit():
-            raise SourceError('Invalid HTTP envelope.')
+            raise PublicTransportError('invalid_envelope')
         return int(code), bytes(body)
     except subprocess.TimeoutExpired:
         raise TimeoutError from None
     except TimeoutError:
         raise
     except (OSError, subprocess.SubprocessError):
-        raise SourceError('Public transport failed.') from None
+        raise PublicTransportError('process_start' if child is None else 'process_io') from None
     finally:
         if child is not None:
             try:
