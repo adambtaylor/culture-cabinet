@@ -6,7 +6,7 @@ from uuid import UUID
 from django.test import SimpleTestCase, override_settings
 from django.utils.safestring import mark_safe
 
-from shelf.guided_journey_presentation import render_guided_journey, guided_journey_context, CATEGORIES, STEPS
+from shelf.guided_journey_presentation import render_guided_journey, guided_journey_context, CATEGORIES, STEPS, A1_STEPS
 from .test_onboarding_experience_views import Document, Poison
 
 
@@ -55,6 +55,26 @@ def provider(p):
 
 def forbidden_processor(request):
     raise AssertionError('Request processor invoked')
+
+
+def a1_projection(step='events_location', state='unset', postcode='0800'):
+    """Primitive row shape pinned by Taste's actual interfaces-a1-01 producer."""
+    p = projection()
+    p['step'] = step
+    p['steps'] = [dict(step=s, label=s.replace('_', ' ').title(), state='current' if s == step else 'pending') for s in A1_STEPS]
+    for row in p['actions']['step'].values(): row['fields']['step'] = step
+    saved = state != 'unset'
+    common = dict(profile_ref=p['profile_ref'], journey_ref=p['journey_ref'], expected_revision=p['revision'])
+    actions = {}
+    for number, action in enumerate(('save', 'skip', 'remove')):
+        fields = {**common, 'command_id': ref(80+number), 'action': action}
+        if action == 'save': fields.update(country='AU', postcode=postcode if saved else '', radius_km=25)
+        actions[action] = form('/cabinet/journey/location', fields, enabled=action != 'remove' or saved)
+    p['location'] = dict(country='AU' if saved else None, postcode=postcode if saved else None,
+        radius_km=25 if saved else None, location_revision=1 if saved else 0, state=state,
+        dataset_revision='a'*64, approximation_notice='Postal reference estimates are approximate.',
+        attribution='GeoNames Australian postal data, CC BY 4.0; normalized by Culture Cabinet.', actions=actions)
+    return p
 
 
 class GuidedJourneyPresentationTests(SimpleTestCase):
@@ -216,3 +236,72 @@ class GuidedJourneyPresentationTests(SimpleTestCase):
         self.assertEqual({a['data-category'] for t, a in doc.tags if 'data-category' in a}, set(CATEGORIES))
         p['categories'][-1]['category'] = 'visual_artist'
         with self.assertRaises(ValueError): guided_journey_context(p)
+
+    def test_location_step_uses_actual_six_step_order_and_blank_optional_native_form(self):
+        p = a1_projection(); _, html, doc = self.render(p)
+        self.assertEqual([row['step'] for row in guided_journey_context(p)['steps']], list(A1_STEPS))
+        self.assertIn('data-journey-step="events_location"', html)
+        self.assertIn('id="events-location" open', html)
+        postcode = next(i for i in doc.inputs if i.get('name') == 'postcode')
+        self.assertEqual(postcode['value'], '')
+        self.assertEqual(postcode['pattern'], '[0-9]{4}')
+        self.assertEqual(postcode['type'], 'text')
+        self.assertIn('Australia (currently supported)', html)
+        self.assertIn('Save location and continue', html)
+        self.assertIn('keep any saved setting', html)
+        self.assertIn('used only if you explicitly save', html)
+        data = guided_journey_context(p)['location']
+        self.assertEqual({f['name'] for f in data['actions']['skip']['fields']},
+                         {'profile_ref', 'journey_ref', 'expected_revision', 'command_id', 'action'})
+        self.assertFalse(data['actions']['remove']['enabled'])
+        self.assertFalse(any(i.get('name') in ('latitude', 'longitude', 'distance') for i in doc.inputs))
+
+    def test_saved_leading_zero_and_unmapped_unavailable_states_are_truthful_and_nonblocking(self):
+        for state in ('mapped', 'unmapped', 'dataset_unavailable'):
+            p = a1_projection(state=state); _, html, doc = self.render(p)
+            self.assertEqual(next(i for i in doc.inputs if i.get('name') == 'postcode')['value'], '0800')
+            self.assertIn('Saved home postcode: 0800', html)
+            self.assertIn('Preferred radius: 25 km', html)
+            self.assertIn('Unknown locations remain visible', html)
+            self.assertIn('not automatically excluded', html)
+            self.assertIn('CC BY 4.0', html)
+            self.assertIn('Postal reference estimates are approximate.', html)
+            if state == 'unmapped': self.assertIn('does not prove the postcode is invalid', html)
+            if state == 'dataset_unavailable': self.assertIn('your setting remains saved', html)
+            data = guided_journey_context(p)['location']
+            self.assertTrue(data['actions']['skip']['enabled'])
+            self.assertTrue(data['actions']['remove']['enabled'])
+
+    def test_location_native_routes_current_bindings_and_display_values_fail_closed(self):
+        for change in ('profile', 'route', 'unicode', 'radius', 'remove_unset', 'markup', 'skip_extra'):
+            p = a1_projection(); row = p['location']['actions']['save']
+            if change == 'profile': row['fields']['profile_ref'] = ref(99)
+            elif change == 'route': row['form_action'] = 'https://fictional.invalid/location'
+            elif change == 'unicode': row['fields']['postcode'] = '０８００'
+            elif change == 'radius': row['fields']['radius_km'] = True
+            elif change == 'remove_unset': p['location']['actions']['remove']['enabled'] = True
+            elif change == 'markup': p['location']['attribution'] = mark_safe('<script>bad</script>')
+            else: p['location']['actions']['skip']['fields']['postcode'] = '0800'
+            with self.subTest(change=change), self.assertRaises(ValueError): self.render(p)
+
+    def test_location_access_from_art_events_and_cabinet_uses_existing_get_with_fragment(self):
+        p = a1_projection('finish', 'mapped'); _, html, doc = self.render(p)
+        self.assertIn('href="#events-location"', html)
+        self.assertEqual({a['data-category'] for t, a in doc.tags if 'data-category' in a}, set(CATEGORIES))
+        from .test_card_action_presentation import template_settings
+        from django.template.loader import render_to_string
+        with override_settings(TEMPLATES=template_settings()):
+            cabinet = render_to_string('cabinet/portable_cabinet.html', {'enhancement_base': 'test_card_base.html',
+                'profile_ref': ref(1), 'published': False})
+        self.assertIn('/setup/journey?profile_ref=' + ref(1) + '#events-location', cabinet)
+        self.assertNotIn('step=events_location', cabinet)
+
+    def test_rejected_location_command_displays_current_values_without_submitted_context(self):
+        p = a1_projection(state='mapped'); p.update(request=Poison(), postcode='DO-NOT-ECHO')
+        _, html, _ = self.render(p, status=422)
+        self.assertIn('That change was not accepted', html)
+        self.assertIn('Nothing is retried automatically', html)
+        self.assertIn('Saved home postcode: 0800', html)
+        self.assertNotIn('DO-NOT-ECHO', html)
+        _, html, _ = self.render(p, status=409)
+        self.assertIn('Your setup changed', html)

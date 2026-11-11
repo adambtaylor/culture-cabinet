@@ -288,6 +288,7 @@
       {% else %}<p><a href="/setup/cabinet?profile_ref={{ profile_ref|urlencode }}">Choose a model connection</a> before considering Enhance. Sources, consent and working inference must also be available.</p>{% endif %}
     </div>
   </div>
+  {% if profile_ref %}<p><a href="/setup/journey?profile_ref={{ profile_ref|urlencode }}#events-location">Events and Art location settings</a></p>{% endif %}
   <p><a class="cabinet-action" href="/cabinet/obtain/tv/{% if profile_ref %}?profile_ref={{ profile_ref|urlencode }}{% endif %}">Obtain a TV episode</a></p>
   {% if taste_history_available and profile_ref %}<p><a href="/cabinet/taste/history?profile_ref={{ profile_ref|urlencode }}">Taste history</a> · Inspect and compare your recorded choices.</p>{% endif %}
   {% if feedback_available %}<p><a class="cabinet-preferences-link" href="{{ feedback_url }}">Preferences and notes</a> · Add or change your responses before another Enhance round.</p>{% endif %}
