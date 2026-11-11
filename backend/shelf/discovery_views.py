@@ -20,6 +20,8 @@ from shelf.models import DiscoveryState
 from shelf.provider_views import _profile
 from shelf.authority import SELECTION_KEY
 from shelf.feedback_scale import REACTION_LABELS, clean_note
+from shelf.event_source_registry import (SOURCES as EVENT_SOURCES, LEGACY_ALIASES,
+                                         source_cache_key, source_controls)
 
 DECK_KEY = 'discovery_feedback_decks_v1'
 QUEUES = (('all', 'Music & events'), ('artist', 'Music (Bands)'))
@@ -31,7 +33,8 @@ class ActionForm(forms.Form):
     mode = forms.ChoiceField(choices=[(v, v) for v in ('household', 'sample')])
     revision = forms.IntegerField(min_value=0)
     nonce = forms.CharField(max_length=200)
-    operation = forms.ChoiceField(choices=[(v, v) for v in ('respond', 'save', 'unsave', 'undo', 'restart', 'radio', 'events', 'venue303', 'forum', 'rrr', 'rrr_detail', 'beat', 'beat_detail', 'pbs', 'tribe', 'soundsystems', 'gallery')])
+    operation = forms.ChoiceField(choices=[(v, v) for v in ('respond', 'save', 'unsave', 'undo', 'restart', 'event_source', 'radio', 'events', 'venue303', 'forum', 'rrr', 'rrr_detail', 'beat', 'beat_detail', 'pbs', 'tribe', 'soundsystems', 'gallery')])
+    source_id = forms.ChoiceField(required=False, choices=[(key, value.label) for key, value in EVENT_SOURCES.items()])
     key = forms.CharField(required=False, max_length=160)
     choice = forms.ChoiceField(required=False, choices=CHOICE_LABELS)
     queue = forms.ChoiceField(required=False, choices=QUEUES)
@@ -49,9 +52,14 @@ class ActionForm(forms.Form):
         if 'queue' in self.data and not data.get('queue'):
             self.add_error('queue', 'Choose an available queue.')
         # Preserve the byte-for-byte historical receipt input when absent.
-        for field in ('note', 'queue'):
+        for field in ('note', 'queue', 'source_id'):
             if field not in self.data:
                 data.pop(field, None)
+        if data.get('operation') == 'event_source':
+            if not data.get('source_id'):
+                self.add_error('source_id', 'Choose an available source.')
+        elif data.get('source_id'):
+            self.add_error('source_id', 'Unexpected source for this action.')
         return data
 
 
@@ -306,6 +314,7 @@ def _context(request, profile, mode, queue, category, stored, cards):
         'events': [row for row in selected if row['card'].kind in ('venue', 'event')],
         'more_source_events': more, 'responses': responses,
         'lanes': ranked['lanes'], 'sources': sources.source_statuses(), 'registry': sources.registry(),
+        'event_sources': source_controls(),
         'choices': CHOICE_LABELS, 'choice_options': CHOICE_LABELS, 'reaction_options': REACTION_LABELS,
         'can_undo': state['can_undo'], 'available': available, 'revision': revision,
         'feedback_enabled': available and mode == 'household',
@@ -375,29 +384,39 @@ def action(request, profile_id):
     queue = data.get('queue') or 'all'
     if _partial(request) and data['operation'] != 'respond':
         raise ValueError('Only explicit responses use partial requests.')
-    public = data['operation'] in ('radio', 'events', 'venue303', 'forum', 'rrr', 'rrr_detail', 'beat', 'beat_detail', 'pbs', 'tribe', 'soundsystems', 'gallery')
+    public = data['operation'] in ('event_source', 'radio', 'events', 'venue303', 'forum', 'rrr', 'rrr_detail', 'beat', 'beat_detail', 'pbs', 'tribe', 'soundsystems', 'gallery')
     if ('note' in data and data['operation'] != 'respond') or public and queue != 'all':
         raise ValueError('Invalid source response fields.')
     if data['operation'] in ('rrr_detail', 'beat_detail'):
         _read_event_detail(request, profile_id, data)
-    elif data['operation'] in ('radio', 'events', 'venue303', 'forum', 'rrr', 'beat', 'pbs', 'tribe', 'soundsystems', 'gallery'):
+    elif data['operation'] in ('event_source', 'radio', 'events', 'venue303', 'forum', 'rrr', 'beat', 'pbs', 'tribe', 'soundsystems', 'gallery'):
         seeds = {c.key: c for c in sources.household_candidates()
                  if c.kind == 'artist' and c.key.startswith('musicbrainz:artist:')}
         if (data['mode'] != 'household' or data['choice']
                 or (data['operation'] == 'radio' and (data['key'] not in seeds or not data['radio_mode']))
-                or (data['operation'] in ('events', 'venue303', 'forum', 'rrr', 'beat', 'pbs', 'tribe', 'soundsystems', 'gallery') and (data['key'] or data['radio_mode']))):
+                or (data['operation'] in ('event_source', 'events', 'venue303', 'forum', 'rrr', 'beat', 'pbs', 'tribe', 'soundsystems', 'gallery') and (data['key'] or data['radio_mode']))):
             return _error(request, 'Invalid public source form.', 400)
         reserved = storage.reserve_public(request, profile_id, data)
         if reserved is not None:
             seed = data['key'].split(':')[-1] if data['key'] else ''
-            result = sources.fetch_public(data['operation'], seed, data['radio_mode'], timezone.now())
+            source_id = data.get('source_id') if data['operation'] == 'event_source' else LEGACY_ALIASES.get(data['operation'])
+            if data['operation'] == 'event_source':
+                result = sources.fetch_public('event_source', seed, data['radio_mode'], timezone.now(), source_id=source_id)
+            else:
+                result = sources.fetch_public(data['operation'], seed, data['radio_mode'], timezone.now())
             with transaction.atomic():
                 storage.check_public_result(request, profile_id, reserved)
                 entries = public_entries(request, profile_id)
-                entries[(data['operation'], seed, data['radio_mode'])] = {
+                # Canonicalize aliases so a failed refresh through either form
+                # replaces the same source result, without erasing other sources.
+                entry_key = source_cache_key(source_id) if source_id else (data['operation'], seed, data['radio_mode'])
+                source_label = EVENT_SOURCES[source_id].label if source_id else {
+                    'radio': 'ListenBrainz artist radio', 'beat': 'Beat Magazine',
+                    'tribe': 'Tribe Soundsystem RSS', 'soundsystems': 'Sound Systems of Melbourne',
+                    'gallery': 'Gertrude / Australian Print Workshop'}[data['operation']]
+                entries[entry_key] = {
                     'outcome': result, 'at': timezone.now(),
-                    'source': {'radio': 'ListenBrainz artist radio', 'events': 'Moshtix',
-                               'venue303': '303 gigs and events', 'forum': 'Forum Melbourne shows', 'rrr': 'Triple R events', 'beat': 'Beat Magazine', 'pbs': 'PBS Events', 'tribe': 'Tribe Soundsystem RSS', 'soundsystems': 'Sound Systems of Melbourne', 'gallery': 'Gertrude / Australian Print Workshop'}[data['operation']]}
+                    'source': source_label}
                 PUBLIC_CACHE.set(cache_key(request, profile_id), entries, timeout=900)
     else:
         if data['radio_mode']:
