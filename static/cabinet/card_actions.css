@@ -20,3 +20,6 @@
 .noise-control { max-width: 38rem; margin-block: .8rem; padding: .8rem; border: 1px solid #858a7d; }
 .noise-control input[type=range] { width: 100%; min-height: 2.8rem; accent-color: #354e3c; }
 .noise-endpoints { display: flex; justify-content: space-between; gap: 1rem; flex-wrap: wrap; }
+.local-event-display { margin-block: .8rem; padding-block: .8rem; border-block: 1px solid #b6bda9; overflow-wrap: anywhere; }
+.local-event-display summary { min-height: 2.8rem; padding-block: .6rem; cursor: pointer; }
+.local-event-display dt { font-weight: 600; } .local-event-display dd { margin-inline: 0; }
