@@ -108,3 +108,63 @@ class LocalEventPreferenceTests(NativeFeedbackCase):
         row.refresh_from_db();self.assertEqual((row.home_postcode,row.radius_km),('0800',25))
         self.assertFalse(FeedbackEvent.objects.exists())
         self.assertFalse(PortableSourceCheckAttempt.objects.exists())
+
+
+from .test_portable_feedback_views import NativeFeedbackOutcomeTests
+
+
+class LocalPublicationTests(NativeFeedbackOutcomeTests):
+    def test_actual_local_publication_native_overlay_and_location_drift_refuse_old_publish_and_display(self):
+        from shelf.disclosure import canonical_bytes
+        from shelf.enhance_contract import EnhanceIntent
+        from shelf.models import PortableCabinetManifest
+        self.consent(self.profile_ref)
+        journey=PortableJourney(self.authority);initial=journey.project(self.ref,profile_ref=self.profile_ref)
+        common=dict(profile_ref=self.profile_ref,journey_ref=initial['journey_ref'],expected_revision=0,
+                    command_id=str(uuid.uuid4()))
+        saved=journey.location(self.ref,**common,action='save',country='AU',postcode='3000')
+        store=self.enhance._store(self.ref,self.profile_ref,str(self.config.pk))
+        current=store.current()
+        row=store.admit(EnhanceIntent(str(uuid.uuid4()),str(uuid.uuid4()),str(uuid.uuid4()),current.bindings),
+                        local_context=current.local_context)
+        facts={'venue.address.country':'AU','venue.address.postcode':'3000','gallery.opening_starts_at':'2026-01-05T19:00:00+11:00',
+               'gallery.exhibition_starts_on':'2026-01-01','gallery.exhibition_ends_on':'2026-01-31',
+               'gallery.timezone':'Australia/Melbourne','gallery.date_precision':'date_only'}
+        card=dict(key='fixture:gallery:1',category='gallery',title='Fictional permitted exhibition',medium='gallery',
+            provider='fixture',source_id='1',source_url='https://example.invalid/gallery/1',
+            identity_status='fixture_identity_only',evidence_type='fixture_not_live',
+            observed_at=self.clock.wall.isoformat(),valid_until=self.expires.isoformat(),
+            rights_ref='fixture-no-durable-rights',source_roots=['fixture-local-evidence'],facts=[
+                dict(id='fact:'+key,property=key,value=value,observation_ref='fixture-local-evidence')
+                for key,value in facts.items()])
+        outcomes=[dict(category=k,state='fresh' if k=='gallery' else 'unavailable',candidate_count=int(k=='gallery'),
+            code='OK' if k=='gallery' else 'CAPABILITY_UNAVAILABLE') for k in self.enhance.registry.categories]
+        row=store.checkpoint(str(row.pk),stage='awaiting_preview',outcomes=outcomes,
+            metadata={'phase':'inference','submitted_refs':{'signals':[],'candidates':[
+                {'key':card['key'],'evidence_refs':card['source_roots']+[fact['id'] for fact in card['facts']]}]}},
+            collection_digest='c'*64,body_digest='b'*64,sealed_run_digest='d'*64)
+        row=store.reserve(str(row.pk),body_digest=row.body_digest,expected_revision=row.revision)
+        store.record_result(str(row.pk),canonical_bytes(dict(schema='cabinet-inference-result/v1',associations=None,
+            candidate_assessments=[dict(candidate_key=card['key'],decision='uncertain',signal_keys=[],
+                evidence_refs=card['source_roots'],hypothesis='Synthetic local publication only.')])))
+        manifest=dict(schema='cabinet-manifest/v1',categories=[dict(category=k,state=value['state'],
+            code=value['code'],cards=[card] if k=='gallery' else []) for k,value in
+            zip(self.enhance.registry.categories,outcomes)],for_you=[])
+        publication=store.publish(str(row.pk),manifest=manifest,expected_publication_revision=0,allowed_candidates=[card])
+        current=self.enhance.current_for_interaction(self.ref,profile_ref=self.profile_ref)
+        overlay=current['local_event_display'][card['key']]
+        self.assertEqual((overlay['publication_ref'],overlay['publication_revision']), (str(publication.pk),1))
+        self.assertEqual((overlay['distance_basis'],overlay['radius_band']),('postcode','in_radius'))
+        page,context=self.landing(profile_ref=self.profile_ref,category='gallery')
+        self.assertEqual(page.status_code,200)
+        rendered=next(group for group in context['categories'] if group['category']=='gallery')['cards'][0]
+        self.assertEqual(rendered['local_event_display']['presentation_schema'],'local-event-display-presentation/v1')
+        self.assertContains(page,overlay['distance_label']);self.assertContains(page,'2026-01-31')
+        self.assertNotIn(b'Artist identity verified',page.content)
+        journey.location(self.ref,**{**common,'expected_revision':saved['revision'],'command_id':str(uuid.uuid4())},
+                         action='save',country='AU',postcode='0800',radius_km=100)
+        with self.assertRaises(ga.AuthorityFault):
+            store.publish(str(row.pk),manifest=manifest,expected_publication_revision=0,allowed_candidates=[card])
+        with self.assertRaises(ga.AuthorityFault):
+            self.enhance.current_for_interaction(self.ref,profile_ref=self.profile_ref)
+        self.assertIsNotNone(PortableCabinetManifest.objects.get().content_redacted_at)

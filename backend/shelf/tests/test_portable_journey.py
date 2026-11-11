@@ -258,7 +258,10 @@ class JourneyPrepareInterruptionTests(ServiceCase):
             raise AuthorityFault('CAPABILITY_UNAVAILABLE',503)
         with patch.object(self.enhance,'start',side_effect=interrupted),self.assertRaises(AuthorityFault):
             journey.prepare(self.ref,**fields)
-        parent=PortableJourneyCommand.objects.get();self.assertEqual(parent.state,'reserved')
+        # Admission also records a history point; inspect this exact parent,
+        # rather than treating all coordination metadata as one singleton.
+        parent=PortableJourneyCommand.objects.get(kind='journey.prepare',command_id=fields['command_id'])
+        self.assertEqual(parent.state,'reserved')
         self.assertEqual(SynthesisRun.objects.count(),1)
         resumed=journey.prepare(self.ref,**fields)
         parent.refresh_from_db();self.assertEqual(parent.state,'committed')

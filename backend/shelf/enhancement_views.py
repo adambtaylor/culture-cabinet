@@ -886,7 +886,11 @@ def portable_cabinet(request):
             target = feedback_target_ref(profile_ref, card['candidate_key'])
             local_display=interaction.get('local_event_display',{}).get(card['candidate_key'])
             if local_display is not None:
-                card['local_event_display']=local_display
+                from .card_action_presentation import local_event_display_context
+                card['local_event_display']=local_event_display_context(local_display,
+                    candidate_key=card['candidate_key'],category=row['category'],profile_ref=profile_ref,
+                    publication_ref=interaction['publication_ref'],
+                    publication_revision=interaction['publication_revision'])
             from .card_action_presentation import card_action_context
             card['card_actions'] = card_action_context(CardActions(request.portable_authority,service=service).project(
                 session_ref,profile_ref=profile_ref,target_ref=target))

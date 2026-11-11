@@ -156,6 +156,17 @@ class TasteHistoryTests(NativeFeedbackCase):
             self.history.index(self.ref,profile_ref=self.profile_ref)
 
 
+    def test_crash_after_feedback_commit_is_missing_history_and_exact_replay_never_backfills_a_point(self):
+        fields=self.note_fields(text='Current note after a fictional checkpoint fault')
+        with patch('shelf.portable_taste_history.capture_native_mutation',side_effect=RuntimeError('Synthetic checkpoint gap')):
+            with self.assertRaises(RuntimeError):self.post('/cabinet/taste',fields)
+        self.assertEqual(FeedbackEvent.objects.count(),1)
+        self.assertFalse(PortableJourneyCommand.objects.filter(kind='taste.checkpoint').exists())
+        self.assertEqual(self.post('/cabinet/taste',fields).status_code,303)
+        self.assertEqual(FeedbackEvent.objects.count(),1)
+        self.assertEqual(self.history.index(self.ref,profile_ref=self.profile_ref)['checkpoints'],[])
+
+
 from .test_portable_feedback_views import NativeFeedbackOutcomeTests
 
 
