@@ -66,6 +66,11 @@ def _bar_open(now):
     return bar_open()
 
 
+def _moons24(now):
+    from shelf.event_listing_transport import moons24
+    return moons24()
+
+
 def _parse_rrr(raw, *, now, retrieved_at):
     from shelf.rrr_events import parse_listing
     return parse_listing(raw, retrieved_at=retrieved_at)
@@ -93,6 +98,11 @@ def _parse_moshtix(raw, *, now, retrieved_at):
 
 def _parse_bar_open(raw, *, now, retrieved_at):
     from shelf.bar_open_events import parse_listing
+    return parse_listing(raw, retrieved_at=retrieved_at)
+
+
+def _parse_moons24(raw, *, now, retrieved_at):
+    from shelf.moons24_events import parse_listing
     return parse_listing(raw, retrieved_at=retrieved_at)
 
 
@@ -160,6 +170,10 @@ def _descriptor(row):
         'bar_open': (_bar_open, _parse_bar_open, 524288,
                 'Partial Bar Open coverage: the official Make It Up Club page only; '
                 'venue-wide dated inventory is unverified.'),
+        'moons24': (_moons24, _parse_moons24, 524288,
+                'Partial 24 Moons coverage: current-week plus later programme, up to nine leads '
+                'within eight weeks. Unknown dates remain unverified; source links open the '
+                'programme, not an exact session or a checked seller.'),
     }
     if source_id in active:
         acquire, parse, limit, coverage = active[source_id]
