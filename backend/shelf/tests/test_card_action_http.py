@@ -71,3 +71,68 @@ class CardActionHTTPTests(NativeFeedbackOutcomeTests):
         historical=self.http.get('/cabinet/actions/'+values['command_id']+'/',**self.headers)
         self.assertContains(historical,'Feedback receipt')
         self.assertNotIn('script-src',historical['Content-Security-Policy'])
+
+
+    def assert_card_refusal(self,response,status):
+        self.assertEqual(response.status_code,status)
+        self.assertContains(response,'Your card response is not confirmed',status_code=status)
+        self.assertContains(response,'href="/setup"',status_code=status)
+        self.assertContains(response,'href="/setup/cabinet"',status_code=status)
+        self.assertNotIn(b'<form',response.content)
+        self.assertNotIn(b'enhance/v1',response.content)
+        self.assertNotIn(b'Enhance progress',response.content)
+        self.assertNotIn(b'PRIVATE fixture card title',response.content)
+        self.assertEqual(response['Cache-Control'],'no-store')
+        self.assertEqual(response['X-Content-Type-Options'],'nosniff')
+        self.assertNotIn('Location',response)
+
+    def test_native_stale_confirmation_and_absent_session_refuse_action_and_undo_without_effects(self):
+        fields=self.prepare();self.clock.advance(301)
+        self.assert_card_refusal(self.post('/cabinet/actions/',fields),401)
+        undo=dict(profile_ref=self.profile_ref,original_command_id=fields['command_id'],
+            command_id=str(uuid.uuid4()),interest_revision=0,saved_revision=0)
+        self.assert_card_refusal(self.post('/cabinet/actions/undo/',undo),401)
+        session=self.http.session;session.pop('portable_session');session.save()
+        self.assert_card_refusal(self.post('/cabinet/actions/',fields),401)
+        self.assert_card_refusal(self.post('/cabinet/actions/undo/',undo),401)
+        self.assertEqual(FeedbackEvent.objects.count(),0)
+        self.assertFalse(PortableJourneyCommand.objects.filter(kind__in=['card.action','card.undo']).exists())
+
+    def test_native_json_refusal_keeps_original_closed_shape_status_and_no_redirect(self):
+        from urllib.parse import urlencode
+        fields=self.prepare();self.clock.advance(301)
+        response=self.http.post('/cabinet/actions/',urlencode(fields),
+            content_type='application/x-www-form-urlencoded',HTTP_ACCEPT='application/json',
+            HTTP_X_CSRFTOKEN=self.csrf(),**self.headers)
+        self.assertEqual(response.status_code,401)
+        self.assertEqual(response.json(),{'ok':False,'code':'UNAUTHENTICATED'})
+        self.assertEqual(response['Cache-Control'],'no-store');self.assertNotIn('Location',response)
+        self.assertEqual(FeedbackEvent.objects.count(),0)
+        self.assertFalse(PortableJourneyCommand.objects.filter(kind__in=['card.action','card.undo']).exists())
+
+    def test_native_successful_action_and_undo_keep_303_and_exact_command_replay(self):
+        fields=self.prepare();response=self.post('/cabinet/actions/',fields)
+        self.assertEqual(response.status_code,303)
+        undo=dict(profile_ref=self.profile_ref,original_command_id=fields['command_id'],
+            command_id=str(uuid.uuid4()),interest_revision=1,saved_revision=0)
+        response=self.post('/cabinet/actions/undo/',undo);self.assertEqual(response.status_code,303)
+        self.assertEqual(self.post('/cabinet/actions/undo/',undo).status_code,303)
+        self.assertEqual(FeedbackEvent.objects.count(),2)
+        self.assertEqual(PortableJourneyCommand.objects.filter(kind__in=['card.action','card.undo']).count(),2)
+
+    def test_native_post_effect_refusal_never_claims_not_saved_or_automatically_replays(self):
+        from unittest.mock import patch
+        from shelf.card_actions import CardActions
+        from shelf.portable_authority import AuthorityFault
+        fields=self.prepare();original=CardActions.apply
+        def after_commit(instance,*args,**kwargs):
+            original(instance,*args,**kwargs)
+            raise AuthorityFault('UNKNOWN_RECONCILIATION_REQUIRED',409)
+        with patch.object(CardActions,'apply',after_commit):
+            response=self.post('/cabinet/actions/',fields)
+        self.assert_card_refusal(response,409)
+        self.assertNotIn(b'not saved',response.content.lower())
+        self.assertEqual(FeedbackEvent.objects.count(),1)
+        self.assertEqual(PortableJourneyCommand.objects.filter(kind='card.action',state='committed').count(),1)
+        self.assertEqual(self.post('/cabinet/actions/',fields).status_code,303)
+        self.assertEqual(FeedbackEvent.objects.count(),1)
