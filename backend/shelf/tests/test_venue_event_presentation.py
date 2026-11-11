@@ -200,3 +200,84 @@ class EventRegistryPresentationTests(SimpleTestCase):
         self.assertIn('time not recorded', html)
         self.assertIn('opening a reference manually does not acquire listings into Cabinet', html)
         self.assertNotIn('observation_ref', html)  # No invented visual/saved-reference port.
+
+
+@override_settings(ROOT_URLCONF='cabinet.provider_urls')
+class SavedReferencePresentationTests(SimpleTestCase):
+    """Closed producer-port rows, not a source-retention or native-caller proof."""
+    def rows(self):
+        from shelf.discovery_sources import Candidate
+        events = parse_listing(listing(card(clock='7:30 PM'), card(clock='9:30 PM')),
+                               retrieved_at=FETCHED, provenance='fixture')
+        rows = []
+        for event in events:
+            identity = Candidate(event.key, 'CURRENT-TITLE-MUST-NOT-RETURN', 'event', '303',
+                'supplied-snapshot', 1, FETCHED, url=None)
+            reference = dict(schema='event-saved-reference/v1', source_id='venue303',
+                official_url='https://303.net.au/gigs-events/fictional-interface-test',
+                occurrence_ref=event.occurrence_ref, occurrence_basis=event.occurrence_basis,
+                retention_policy_ref='fixture-event-private-bookmark-reference/v1')
+            rows.append(dict(card=identity, reference_only=True, saved_reference=reference,
+                freshness='Stale — source details expired; current details unverified',
+                for_you={'text': 'CURRENT-RECOMMENDATION-MUST-NOT-RETURN', 'version': 'old'},
+                why=['OLD-EXPLANATION-MUST-NOT-RETURN'], choice='interested', saved=True,
+                note='My <own> note'))
+        return rows
+
+    def render_rows(self, rows, **extra):
+        facts = dict(selected_profile={'pk': 1, 'label': 'Fictional cabinet'}, available=True,
+            mode='household', revision=7, nonce='FICTIONAL-NONCE', queue='all', csrf_token='s'*64,
+            action_url='/profiles/1/discovery/action/', events=[], responses=rows, public_results=[],
+            choice_options=[('interested', 'Interested')])
+        facts.update(extra)
+        return render_to_string('cabinet/discovery.html', facts)
+
+    def test_checked_shared_url_references_keep_distinct_occurrences_and_explicit_stale_meaning(self):
+        rows = self.rows(); html = self.render_rows(rows); doc = Forms(html)
+        self.assertNotEqual(rows[0]['card'].key, rows[1]['card'].key)
+        self.assertNotEqual(rows[0]['saved_reference']['occurrence_ref'], rows[1]['saved_reference']['occurrence_ref'])
+        self.assertEqual([a['data-card-key'] for a in doc.articles], [r['card'].key for r in rows])
+        self.assertEqual(html.count('Original source page; current details unverified'), 2)
+        self.assertEqual(html.count('https://303.net.au/gigs-events/fictional-interface-test'), 2)
+        for row in rows:
+            self.assertIn(row['saved_reference']['occurrence_ref'], html)
+            self.assertIn(row['saved_reference']['occurrence_basis'], html)
+        self.assertIn('Different sessions may share this page', html)
+        self.assertIn('not a new recommendation or a ticket check', html)
+        for absent in ('CURRENT-TITLE-MUST-NOT-RETURN', 'CURRENT-RECOMMENDATION-MUST-NOT-RETURN',
+                       'OLD-EXPLANATION-MUST-NOT-RETURN', '<strong>For you</strong>',
+                       'Source-listed date or range:', 'Source rank', 'Retrieval:',
+                       'fixture-event-private-bookmark-reference/v1'):
+            self.assertNotIn(absent, html)
+        for form in doc.forms:
+            if any(i.get('name') == 'key' for i in form['inputs']):
+                fields = {i['name']: i.get('value') for i in form['inputs']}
+                self.assertEqual(fields['csrfmiddlewaretoken'], 's'*64)
+                self.assertEqual(fields['nonce'], 'FICTIONAL-NONCE')
+                self.assertEqual(fields['revision'], '7')
+                self.assertFalse(set(fields) & {'official_url', 'saved_reference', 'occurrence_ref'})
+        self.assertIn('Remove local discovery save', html)
+        self.assertIn('My &lt;own&gt; note', html)
+
+    def test_absent_checked_reference_preserves_human_state_without_backfilling_from_card_url(self):
+        row = self.rows()[0]
+        row['saved_reference'] = None
+        row['card'] = replace(row['card'], url='https://example.invalid/do-not-backfill')
+        html = self.render_rows([row])
+        self.assertIn('No checked source link is available', html)
+        self.assertIn('Only your saved response identity is shown', html)
+        self.assertNotIn('https://example.invalid/do-not-backfill', html)
+        self.assertNotIn('Original source page;', html)
+        self.assertNotIn('<strong>For you</strong>', html)
+        self.assertIn(row['card'].key, html)
+        self.assertIn('Your current response: interested', html)
+        self.assertIn('Remove local discovery save', html)
+
+    def test_link_needs_reference_only_mode_and_checked_schema_not_arbitrary_candidate_metadata(self):
+        for change in ('ordinary', 'sample', 'schema'):
+            row = self.rows()[0]; extra = {}
+            if change == 'ordinary': row['reference_only'] = False
+            elif change == 'sample': extra['mode'] = 'sample'
+            else: row['saved_reference'] = {**row['saved_reference'], 'schema': 'untrusted/v0'}
+            html = self.render_rows([row], **extra)
+            self.assertNotIn('https://303.net.au/gigs-events/fictional-interface-test', html)
