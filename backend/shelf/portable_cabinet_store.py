@@ -213,6 +213,9 @@ class CabinetStore:
                                   'expected_publication_revision': cabinet.publication_revision})
             except IntegrityError:
                 raise AuthorityFault('IDEMPOTENCY_CONFLICT', 409) from None
+            if cabinet.data_schema_version==2:
+                from .portable_taste_history import capture_committed
+                capture_committed(self.authority,self.session_ref,self.profile_ref,origin_run_ref=str(row.pk))
             return row
 
     def status(self, run_ref):

@@ -1,3 +1,4 @@
+from shelf import portable_taste_history_views as taste_history
 """Separate portable URLconf; legacy entrypoints keep their original routes."""
 from django.urls import path
 from shelf import portable_setup_views as views
@@ -50,6 +51,12 @@ urlpatterns = [
     path('cabinet/source/musicbrainz/artist/configure', sources.musicbrainz_artist_configure),
     path('cabinet/source/musicbrainz/artist/consent', sources.musicbrainz_artist_consent),
     path('cabinet/taste/artist', sources.artist),
+    path('cabinet/taste/history', taste_history.page),
+    path('cabinet/taste/history/style.css', taste_history.style),
+    path('cabinet/taste/history/preview', taste_history.preview),
+    path('cabinet/taste/history/restore', taste_history.restore),
+    path('cabinet/taste/history/undo', taste_history.undo),
+    path('cabinet/taste/history/<uuid:checkpoint_ref>', taste_history.compare),
     path('cabinet/taste', feedback.intake),
     path('cabinet/feedback', feedback.card_mutate),
     path('cabinet/consent', enhance.portable_inference_consent),

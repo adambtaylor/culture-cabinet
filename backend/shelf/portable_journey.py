@@ -323,6 +323,8 @@ class PortableJourney:
                 result=dict(profile_ref=profile_ref,journey_ref=journey_ref,revision=journey.revision,
                     entry_ref=entry_ref,saved_revision=accepted['revision'],event_ref=accepted['event_ref'])
                 PortableJourneyCommand.objects.filter(pk=prior.pk).update(state='committed',result=result)
+            from .portable_taste_history import capture_committed
+            capture_committed(self.authority,session_ref,profile_ref,origin_command_ref=command_id)
             return result
 
 

@@ -520,6 +520,11 @@ def apply_restriction(raw, frame, r, *, audit=None):
             else: revision=last['revision']
             raw.execute(f'UPDATE shelf_feedbackprojection SET value=NULL,effective_event_id=NULL,erased=1,revision=? WHERE {key}',(revision,*args))
         raw.execute("UPDATE shelf_mutationreceipt SET state='retired',payload_sha256=NULL WHERE profile_id=?",(profile,))
+        # A complete point covers the whole supported vector. Erasing any stream
+        # retires its old points/previews/receipts instead of implying a partial
+        # vector proves absence. Immutable command identity remains audit-only.
+        if raw.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='shelf_portablejourneycommand'").fetchone():
+            raw.execute("UPDATE shelf_portablejourneycommand SET state='retired',result='{}' WHERE cabinet_id IN (SELECT profile_id FROM shelf_profilecabinetstate WHERE profile_id=?) AND kind IN ('taste.checkpoint','taste.preview','taste.restore','taste.undo')",(profile,))
         if audit:
             from datetime import datetime, timezone
             raw.execute("INSERT OR IGNORE INTO shelf_mutationreceipt (actor_id,mutation_id,profile_id,operation_family,state,created_at) VALUES (?,?,?,'feedback.erase','retired',?)",

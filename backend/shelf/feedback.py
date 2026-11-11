@@ -340,6 +340,8 @@ def mutate(*, actor, profile_id, command):
                 with immediate(), writer_window(actor, profile_id):
                     result = mutate_in_transaction(actor=actor, profile_id=profile_id,
                         command=command, barrier=barrier)
+                from shelf.portable_taste_history import capture_native_mutation
+                capture_native_mutation(actor,profile_id,command)
                 return result
             except Exception as error:
                 if not is_busy(error): raise

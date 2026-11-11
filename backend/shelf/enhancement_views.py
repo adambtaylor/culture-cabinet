@@ -825,6 +825,7 @@ def portable_cabinet(request):
         raise AuthorityFault('AUTHORITY_DENIED', 403)
     service, session_ref = _portable_service(request)
     context = {'entry': False, 'profile_label': profile['label'], 'profile_ref': profile_ref,
+               'taste_history_available': True,
                'connection_ref': connection_ref, 'categories': [], 'published': False,
                # C4: the current producer has no independent durable-attribution
                # signal. Do not offer success until its accepted contract lands;
