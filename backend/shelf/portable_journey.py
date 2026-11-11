@@ -291,7 +291,8 @@ class PortableJourney:
                 validate_visual_artist(cabinet,profile_ref,entry_ref,title)
             if prior is None:
                 from .models import FeedbackTarget,FeedbackEvent,MutationReceipt
-                target=FeedbackTarget.objects.filter(source_namespace='owner-stated-favourite',
+                namespace='owner-stated-visual-artist' if category=='visual_artist' else 'owner-stated-favourite'
+                target=FeedbackTarget.objects.filter(source_namespace=namespace,
                     source_key=profile_ref+':'+entry_ref,kind='item').first()
                 ga._require(not remove or target is not None,'REVISION_CONFLICT',409)
                 if target is not None:

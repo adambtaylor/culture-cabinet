@@ -82,3 +82,29 @@ class LocalEventPreferenceTests(NativeFeedbackCase):
         projection=journey.project(self.ref,profile_ref=self.profile_ref)['location']
         self.assertEqual((projection['postcode'],projection['radius_km'],projection['state']),('3000',100,'mapped'))
         self.assertIn('GeoNames',projection['attribution'])
+
+    def test_normal_six_step_location_form_save_reload_error_and_optional_prepare(self):
+        from shelf.models import PortableSourceCheckAttempt
+        journey,common=self.initial()
+        first=journey.step(self.ref,**common,step='providers',action='skip')
+        second=journey.step(self.ref,**{**common,'expected_revision':first['revision'],
+            'command_id':str(uuid.uuid4())},step='favourites',action='skip')
+        page=self.http.get('/setup/journey',{'profile_ref':self.profile_ref},**self.headers)
+        self.assertEqual(page.status_code,200)
+        self.assertContains(page,'data-journey-step="events_location"')
+        self.assertContains(page,'/cabinet/journey/location')
+        result=self.post('/cabinet/journey/location',{**common,'expected_revision':second['revision'],
+            'command_id':str(uuid.uuid4()),'action':'save','country':'AU','postcode':'0800'})
+        self.assertEqual(result.status_code,303)
+        reloaded=self.http.get(result['Location'],**self.headers)
+        self.assertEqual(reloaded.status_code,200)
+        self.assertContains(reloaded,'data-journey-step="prepare"')
+        self.assertContains(reloaded,'0800')
+        self.assertContains(reloaded,'GeoNames')
+        row=PortableJourneyState.objects.get()
+        refused=self.post('/cabinet/journey/location',{**common,'expected_revision':row.revision,
+            'command_id':str(uuid.uuid4()),'action':'save','country':'AU','postcode':'０８００'})
+        self.assertEqual(refused.status_code,422)
+        row.refresh_from_db();self.assertEqual((row.home_postcode,row.radius_km),('0800',25))
+        self.assertFalse(FeedbackEvent.objects.exists())
+        self.assertFalse(PortableSourceCheckAttempt.objects.exists())
