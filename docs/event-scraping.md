@@ -117,7 +117,7 @@ read then failed in transport; no live parser-shape success is claimed for eithe
 
 `event_source_registry.SOURCES` is the finite 35-source catalogue. A descriptor
 contains fixed acquisition/parser functions, official targets, origin groups,
-coverage and retention limits. Only five existing producers are implemented:
+coverage and retention limits. The initial E4 slice connected five existing producers:
 RRR, PBS, 303, Forum and Moshtix. Registration is not acquisition readiness;
 unimplemented sources return an honest unavailable result without network I/O.
 Forum's real access guard remains unchanged. Metadata supplied to templates never
@@ -152,3 +152,35 @@ fresh-session identity persistence. Exact saved-reference URL restoration is a
 separate narrow persistence decision: an opaque saved ID is not advertised as a
 complete source reference. No new source store, native Enhance activation,
 scheduler, source expansion, model call or private browser access is added.
+
+### 24 Moons (E5 first slice)
+
+`moons24` adds only the fixed official `/events` programme and its exact robots
+target to the shared bounded listing transport. The first robots response allowed
+the path with the existing ten-second minimum; listing and robots reads share
+that origin's existing reservation mechanism. No seller, archive, social page,
+detail link, API or script endpoint is fetched. Other source gates stay intact.
+
+The small parser recognizes BOTH `this-week` and `further-upcoming` sections.
+An empty later-events section does not erase the current-week cards. Card names
+come from the event anchor's heading, not the Friday/Saturday wrapper heading.
+Explicit dates and AEDT/AEST offsets are checked against Melbourne on both days
+of an overnight range. Missing years/offsets remain unknown and are never filled
+from the week or retrieval date. Stale-only, malformed or unrecognized programmes
+fail visibly; a bounded empty result requires explicit empty markers and a
+current recognized week. Existing 48-card/9-lead/eight-week limits remain.
+
+Official links open the programme, whose card anchors advertise external sellers;
+they do not claim to navigate to an exact session or establish available tickets.
+Occurrence identities use explicit ranges. Conflicting simultaneous cards on
+that shared programme URL retain distinct unresolved snapshot observations;
+titles do not merge them. Source tags remain separate attributed notices.
+
+The actual guarded source action at `0e56fc7` acquired one HTTP200 programme
+response (26167 bytes) and produced two current dated leads with correct card
+names, replay/GET extra acquisitions zero and taste-history rows zero. The earlier
+`4c0337f` handler observation had correct dates but incorrectly used weekday titles;
+that semantic failure and its correction are retained separately. These receipts
+are live acquisition/handler evidence, not a browser or working-source acceptance.
+No body or image archive, durable source-reference grant or native activation is
+introduced. The 24 Moons release remains independent of PR83's recovery/UI tails.
