@@ -184,3 +184,19 @@ that semantic failure and its correction are retained separately. These receipts
 are live acquisition/handler evidence, not a browser or working-source acceptance.
 No body or image archive, durable source-reference grant or native activation is
 introduced. The 24 Moons release remains independent of PR83's recovery/UI tails.
+
+### Affordable Art Fair Melbourne access hold (E6)
+
+The exact robots readiness request returned HTTP403 (5495 bytes). It supplied
+no usable policy decision; this does not establish a permanent publisher ban.
+The fixed Melbourne listing remains closed before reservation or I/O, and its
+closed descriptor reports access unconfirmed/permission-required with no guessed
+fair dates, sessions, artists, stock or current empty state. No listing, alternate
+route, redirect, login, archive or hidden endpoint was requested.
+
+The normal guarded action records a source-local unavailable-access result;
+GET and nonce replay make no request and write no taste history. Tests cover the
+exact robots target, closed listing gate, zero-I/O collector and actual normal
+authenticated action/render/replay. They establish safe handling of this blocker,
+not fair acquisition, a verified run/session parser, browser or working acceptance.
+Legitimate access evidence is still required before the listing can be read.
