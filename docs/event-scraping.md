@@ -112,3 +112,43 @@ I/O; the driver renders `permission-required`. A later exact source-access
 resolution is needed to open that path. Parser/caller fixtures do not change this
 access fact. 303's robots request allowed its fixed listing, whose one integrated
 read then failed in transport; no live parser-shape success is claimed for either.
+
+## Closed shared source action (E4)
+
+`event_source_registry.SOURCES` is the finite 35-source catalogue. A descriptor
+contains fixed acquisition/parser functions, official targets, origin groups,
+coverage and retention limits. Only five existing producers are implemented:
+RRR, PBS, 303, Forum and Moshtix. Registration is not acquisition readiness;
+unimplemented sources return an honest unavailable result without network I/O.
+Forum's real access guard remains unchanged. Metadata supplied to templates never
+contains executable callables or source-supplied configuration.
+
+The new ordinary action is `operation=event_source` with a closed `source_id`.
+It requires the existing household mode, revision, nonce and CSRF fields, with
+empty key/radio/choice fields. Other actions reject a nonempty source ID. Missing
+legacy fields remain absent in receipt input. The source ID participates in the
+existing whole-request digest, so a nonce cannot switch to another source.
+
+Generic and legacy controls address the same source cache slot. Failed refresh
+through either control replaces stale success for that source while preserving
+other sources. Current actor/profile/grant checks still run before and after I/O;
+GET, reload and identical POST replay send nothing. PBS retains its fixed public
+URL, shared ten-second reservation, parser/date/notice rules and 15-minute cache.
+Moshtix keeps its exact existing one-row API query and shares the previous normal
+response validation with its generic control; the distinct nine-row helper is
+not substituted and no new provider query is introduced.
+
+Experience owns the registry controls in the discovery template. Its context is
+`event_sources`, a tuple of plain dictionaries with `source_id`, `label`,
+`implemented`, `access_state`, `official_urls`, `origin_groups`, `coverage`,
+`retention_seconds` and `unavailable_message`. Existing result rows still contain
+`source`, `at` and `outcome`; source output and notices stay escaped. Metadata
+origin grouping is not a second limiter: acquisition delegates to the existing
+origin-specific reservation/backoff functions and their current receipt paths.
+
+The normal handler tests cover source-ID substitution, legacy/generic refresh
+isolation, replay/GET/no-I/O, authority/CSRF/revocation, responses/save/undo and
+fresh-session identity persistence. Exact saved-reference URL restoration is a
+separate narrow persistence decision: an opaque saved ID is not advertised as a
+complete source reference. No new source store, native Enhance activation,
+scheduler, source expansion, model call or private browser access is added.

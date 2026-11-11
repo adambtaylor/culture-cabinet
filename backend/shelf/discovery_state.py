@@ -112,8 +112,15 @@ def public_authorized(request, profile_id):
 
 def reserve_public(request, profile_id, data):
     """Consume a nonce before I/O, without adding a human choice/history event."""
-    if data['mode'] != 'household' or data['operation'] not in ('radio', 'events', 'venue303', 'forum', 'rrr', 'rrr_detail', 'beat', 'beat_detail', 'pbs', 'tribe', 'soundsystems', 'gallery'):
+    if data['mode'] != 'household' or data['operation'] not in ('event_source', 'radio', 'events', 'venue303', 'forum', 'rrr', 'rrr_detail', 'beat', 'beat_detail', 'pbs', 'tribe', 'soundsystems', 'gallery'):
         raise ValueError('Invalid public operation.')
+    if data['operation'] == 'event_source':
+        from shelf.event_source_registry import get_source
+        get_source(data.get('source_id'))
+        if data.get('key') or data.get('radio_mode') or data.get('choice'):
+            raise ValueError('Unexpected event source fields.')
+    elif data.get('source_id'):
+        raise ValueError('Unexpected event source ID.')
     nonce = data['nonce']
     digest = hashlib.sha256(json.dumps(dict(data), sort_keys=True).encode()).hexdigest()
     from shelf.grant_authority import writer_window
