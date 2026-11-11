@@ -286,6 +286,7 @@
       {% else %}<p><a href="/setup/cabinet?profile_ref={{ profile_ref|urlencode }}">Choose a model connection</a> before considering Enhance. Sources, consent and working inference must also be available.</p>{% endif %}
     </div>
   </div>
+  {% if profile_ref %}<p><a href="/setup/journey?profile_ref={{ profile_ref|urlencode }}#events-location">Events and Art location settings</a></p>{% endif %}
   <p><a class="cabinet-action" href="/cabinet/obtain/tv/{% if profile_ref %}?profile_ref={{ profile_ref|urlencode }}{% endif %}">Obtain a TV episode</a></p>
   {% if feedback_available %}<p><a class="cabinet-preferences-link" href="{{ feedback_url }}">Preferences and notes</a> · Add or change your responses before another Enhance round.</p>{% endif %}
   {% if round_url and not round_blocks_start %}<p class="cabinet-round-status" role="status"><a href="{{ round_url }}">Review this round’s recorded status</a>{% if round_pending %}. Pending, failed or uncertain work does not replace the publication shown below.{% endif %}</p>{% endif %}
