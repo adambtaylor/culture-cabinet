@@ -60,9 +60,12 @@ def parse_listing(raw,*,retrieved_at,provenance='live-automated'):
         title=label(_one(node.find('h3','event-card-heading')).text())
         # Hover panels reuse the subtitle class for artist/venue prose. Only
         # the observed plain subtitle field is the explicit date label.
-        dates=_one([part for part in node.find('div','event-card-subtitle')
-                    if part.attrs.get('class','').split()==['event-card-subtitle']])
-        wording=label(dates.text());first,last=_dates(wording)
+        labels={label(part.text()) for part in node.find('div','event-card-subtitle')
+                    if part.attrs.get('class','').split()==['event-card-subtitle']}
+        # The actual first card repeats the plain date field. Permit repeated
+        # labels only when their text agrees; conflicting dates still fail.
+        if len(labels)!=1:raise SourceError('Missing or conflicting Fringe date labels.')
+        wording=labels.pop();first,last=_dates(wording)
         urls={urljoin(LISTING_URL,anchor.attrs.get('href','')) for anchor in node.find('a')}
         urls={url for url in urls if re.fullmatch(r'https://www\.melbournefringe\.com\.au/whats-on/events/[a-z0-9][a-z0-9-]*/?',url)}
         if len(urls)!=1:raise SourceError('Exact unambiguous Fringe event URL required.')

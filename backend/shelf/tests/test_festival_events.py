@@ -47,6 +47,12 @@ class FringeEventTests(TestCase):
         for text in ('12 - 18 Nov','31 Feb 2026','30 Dec - 6 Jan 2026'):
             with self.subTest(text=text),self.assertRaises(SourceError):self.parse(listing(card(dates=text)))
 
+    def test_repeated_date_fields_must_agree(self):
+        raw=listing().replace(b'<img',b'<div class="event-card-subtitle">12 - 18 Nov 2026</div><img')
+        self.assertEqual(len(self.parse(raw)),1)
+        with self.assertRaises(SourceError):
+            self.parse(raw.replace(b'12 - 18 Nov 2026</div><img',b'13 - 18 Nov 2026</div><img'))
+
     def test_past_only_listing_is_unavailable_not_current_empty(self):
         with self.assertRaises(event_scraping.ProgrammeUnavailable):
             self.parse(listing(card(dates='12 - 18 Oct 2026')))
