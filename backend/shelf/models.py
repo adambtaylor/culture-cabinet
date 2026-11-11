@@ -819,8 +819,21 @@ class PortableJourneyState(models.Model):
     slots = models.JSONField(default=dict)
     connections = models.JSONField(default=dict)
     run_ref = models.UUIDField(null=True)
+    home_country = models.CharField(max_length=2, null=True)
+    home_postcode = models.CharField(max_length=4, null=True)
+    radius_km = models.PositiveSmallIntegerField(null=True)
+    location_revision = models.PositiveBigIntegerField(default=0)
+    next_noise = models.PositiveSmallIntegerField(default=25)
     created_at = models.DateTimeField()
     updated_at = models.DateTimeField()
+
+    class Meta:
+        constraints = [
+            models.CheckConstraint(condition=(models.Q(home_country__isnull=True,
+                home_postcode__isnull=True,radius_km__isnull=True) | models.Q(home_country='AU',
+                home_postcode__isnull=False,radius_km__isnull=False,radius_km__gte=1,radius_km__lte=500)),name='journey_local_setting'),
+            models.CheckConstraint(condition=models.Q(next_noise__lte=100),name='journey_noise_range'),
+        ]
 
 
 class PortableJourneyCommand(models.Model):

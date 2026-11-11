@@ -127,7 +127,7 @@ def _feedback(view):
                 'medium': current.target.category, 'roots': []}
         node = _node(view, 'feedback:' + str(effective), card, 'typed_feedback',
                      {'signal': signal, 'scope': scope, 'value': body})
-        if current.target.source_namespace=='owner-stated-favourite':
+        if current.target.source_namespace in ('owner-stated-favourite','owner-stated-visual-artist'):
             # A title supplied by the owner is personal text, never a provider
             # identity. Its separate text permission remains necessary.
             node['identity_status']='unresolved_personal'

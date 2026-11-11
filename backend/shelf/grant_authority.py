@@ -286,7 +286,8 @@ def _connection(authority, session_ref, connection_ref, *, purpose=None):
     candidate = PortableConnection.objects.filter(pk=_uuid(connection_ref),
         installation_id=authority.boundary.installation_id, removed=False).first()
     if candidate is not None and candidate.adapter in ('moshtix_public', 'tmdb_movie', 'tmdb_tv', 'hardcover',
-                                                      'musicbrainz_recording', 'musicbrainz_artist', 'apple_podcast'):
+                                                      'musicbrainz_recording', 'musicbrainz_artist', 'apple_podcast',
+                                                      'apw','gertrude'):
         # Public source consent never borrows a processor key or its validation.
         # The source issuer separately checks current rights and exact operation.
         _require(purpose == 'catalogue_lookup')
@@ -398,7 +399,7 @@ def _synthesis_guards():
     prior = import_module('shelf.migrations.0021_portable_disclosure_authority').TRIGGERS
     broker = import_module('shelf.migrations.0022_portable_enhance_state').TRIGGERS
     normalize = lambda sql: sql.strip().removesuffix(';').rstrip()
-    current = import_module('shelf.migrations.0028_guided_owner_journey')
+    current = import_module('shelf.migrations.0029_local_selection_preferences')
     try:
         definitions = current.effective_inventory(connection.connection)
     except RuntimeError:
@@ -443,7 +444,10 @@ def _broker_history_row(row, state):
     require(PortableConnection.objects.filter(pk=row['portable_connection_id'],
                                              installation_id=state.installation_id).exists())
     record = row['portable_bindings']
-    require(type(record) is dict and set(record) == {'bindings', 'categories', 'source_revision'})
+    require(type(record) is dict and set(record) in (
+        {'bindings','categories','source_revision'},
+        {'bindings','categories','source_revision','local_selection_digest'}))
+    if 'local_selection_digest' in record:require(sha(record['local_selection_digest']))
     binding = record['bindings']
     require(type(binding) is dict and set(binding) == set(EnhanceBindings.__dataclass_fields__))
     bound = EnhanceBindings(**binding)
@@ -459,8 +463,9 @@ def _broker_history_row(row, state):
     require(type(record['source_revision']) is str and 0 < len(record['source_revision']) <= 300)
     # Reuse the broker's existing intent definition and canonical codec. Mutable
     # stage/attempt/receipt fields are deliberately absent from this fingerprint.
-    expected = digest(canonical_bytes({'schema': VERSION, 'bindings': vars(bound),
-                                      'refresh_nonce': str(row['refresh_nonce'])}))
+    material={'schema':VERSION,'bindings':vars(bound),'refresh_nonce':str(row['refresh_nonce'])}
+    if 'local_selection_digest' in record:material['local_selection_digest']=record['local_selection_digest']
+    expected = digest(canonical_bytes(material))
     require(sha(row['input_digest']) and row['input_digest'] == expected)
     require(type(row['revision']) is int and row['revision'] >= 0
             and type(row['attempts']) is int and row['attempts'] in (0, 1)

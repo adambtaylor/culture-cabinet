@@ -151,6 +151,24 @@ def favourite(request, remove=False):
 @require_POST
 @csrf_protect
 @_errors
+def location(request):
+    action=request.POST.get('action')
+    ga._require(action in ('save','skip','remove'),'CONTRACT_INVALID',422)
+    names=COMMON|{'action'}
+    if action=='save':
+        names|={'country','postcode'}
+        if 'radius_km' in request.POST:names|={'radius_km'}
+    value=_values(request,names)
+    if 'radius_km' in value:
+        from .portable_source_views import _revision
+        value['radius_km']=_revision(value['radius_km'])
+    result=PortableJourney(request.portable_authority).location(request.session.get('portable_session'),**value)
+    return _redirect(result['profile_ref'])
+
+
+@require_POST
+@csrf_protect
+@_errors
 def prepare(request):
     result = PortableJourney(request.portable_authority).prepare(request.session.get('portable_session'),
         **_values(request, COMMON | {'connection_ref', 'client_key', 'refresh_nonce'}))

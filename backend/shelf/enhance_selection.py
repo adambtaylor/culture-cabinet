@@ -18,7 +18,7 @@ def preference_strength(signal):
 
 
 class GroundedSelector:
-    def build(self, output, submitted, outcomes, *, snapshot=None):
+    def build(self, output, submitted, outcomes, *, snapshot=None, local_context=None):
         candidates = submitted['candidates']
         signals = [{key: row[key] for key in ('key', 'medium')} for row in submitted['profile']['signals']]
         references = [{'key': row['key'], 'evidence_refs': sorted(set(row['source_roots']) |
@@ -48,25 +48,28 @@ class GroundedSelector:
                 strength = max(positives) if positives else -1 if -1 in weights else 0
                 # Evidence/decision tier remains first. Permission-filtered,
                 # cited preference uses max, so duplicates and Obtain cannot stack.
-                ranked.append((-score, -strength, card['provider'], card['key'], card, assessment))
-            ranked.sort(key=lambda row: row[:4])
-            # Bounded round-robin diversity within equal evidence/decision scores;
-            # stable keys break ties, and private provenance never supplies ranks.
+                from .local_event_ranking import rank_key
+                band,distance=rank_key(local_context,card)
+                ranked.append((-score,-strength,band,distance,card['provider'],card['key'],card,assessment))
+            ranked.sort(key=lambda row: row[:6])
+            # Equal evidence/taste tiers use local radius bands and known distance.
+            # Provider diversity/stable keys still resolve equal local ranks.
+            # The source/model pool has already been validated and is unchanged.
             ordered = []
-            for score in sorted({row[:2] for row in ranked}):
+            for score in sorted({row[:4] for row in ranked}):
                 buckets = {}
                 for row in ranked:
-                    if row[:2] == score:
-                        buckets.setdefault(row[2], []).append(row)
+                    if row[:4] == score:
+                        buckets.setdefault(row[4], []).append(row)
                 while any(buckets.values()):
                     for provider in sorted(buckets):
                         if buckets[provider]:
                             ordered.append(buckets[provider].pop(0))
             selected = ordered[:20] if outcome.state == 'fresh' else []
-            cards = [row[4] for row in selected]
+            cards = [row[6] for row in selected]
             state = 'fresh' if cards else 'empty_bounded' if outcome.state == 'fresh' else outcome.state
             categories.append(dict(category=outcome.category, state=state, code=outcome.code, cards=cards))
-            for _, negative_strength, _, _, card, assessment in selected:
+            for _,negative_strength,_,_,_,_,card,assessment in selected:
                 inferred = bool(assessment['signal_keys'])
                 explanations.append(dict(candidate_key=card['key'],
                     kind='inferred' if inferred else 'source',

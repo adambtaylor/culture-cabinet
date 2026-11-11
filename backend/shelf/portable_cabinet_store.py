@@ -64,6 +64,7 @@ class CurrentState:
     source_revision: str
     expires_at: datetime
     source_views: tuple = ()
+    local_context: object = None
 
     def record(self):
         require(type(self.view) is ga.AuthorityView and type(self.bindings) is EnhanceBindings
@@ -81,8 +82,14 @@ class CurrentState:
         require(type(self.source_revision) is str and 0 < len(self.source_revision) <= 300)
         require(type(self.expires_at) is datetime and self.expires_at.utcoffset() == timedelta(0)
             and self.expires_at <= self.view.expires_at)
-        return {'bindings': vars(self.bindings).copy(), 'categories': list(self.registry.categories),
-                'source_revision': self.source_revision}
+        value={'bindings': vars(self.bindings).copy(), 'categories': list(self.registry.categories),
+               'source_revision': self.source_revision}
+        if self.local_context is not None:
+            from .local_event_preferences import LocalEventContext
+            require(type(self.local_context) is LocalEventContext and
+                self.local_context.profile_ref==self.bindings.profile_ref)
+            value['local_selection_digest']=self.local_context.digest
+        return value
 
 
 class StateProvider(ABC):
@@ -173,13 +180,18 @@ class CabinetStore:
             rows = rows.exclude(pk=exclude)
         require(not rows.exists(), 'UNKNOWN_RECONCILIATION_REQUIRED', 409)
 
-    def admit(self, intent):
+    def admit(self, intent, *, local_context=None):
         require(type(intent) is EnhanceIntent)
         client, refresh = ga._uuid(intent.client_key), ga._uuid(intent.refresh_nonce)
-        fingerprint = digest(canonical_bytes({'schema': VERSION, 'bindings': vars(intent.bindings),
-                                              'refresh_nonce': str(refresh)}))
         with self.mutation() as (cabinet, current):
             require(intent.bindings == current.bindings, 'PREVIEW_STALE', 409)
+            if local_context is not None:
+                require(current.local_context is not None and local_context.digest==current.local_context.digest,
+                        'PREVIEW_STALE',409)
+            material={'schema':VERSION,'bindings':vars(intent.bindings),'refresh_nonce':str(refresh)}
+            if current.local_context is not None:
+                material['local_selection_digest']=current.local_context.digest
+            fingerprint=digest(canonical_bytes(material))
             prior = SynthesisRun.objects.filter(installation=cabinet.installation, actor=cabinet.actor,
                 profile=cabinet.profile, contract_version=VERSION, client_key=client).first()
             if prior is not None:

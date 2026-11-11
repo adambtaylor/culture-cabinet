@@ -210,7 +210,7 @@ class EnhanceService:
     def _normal_context(self, session_ref, profile_ref):
         from .current_profile import CurrentProfile
         from .source_authority import SourceAuthority
-        from .source_adapters import MediaBackend, MoshtixBackend, registered_source
+        from .source_adapters import MediaBackend, MoshtixBackend, GallerySourceBackend, registered_source
         from .source_collection import SourceCollection, CollectionClock
         from .discovery_transport import MediaHostLimiter, MoshtixHostLimiter
         with ga.recovery_guard(self.authority, session_ref, profile_ref=profile_ref), self.authority._lock:
@@ -229,7 +229,7 @@ class EnhanceService:
             sources, backends, configured, limiters = [], {}, {}, {}
             for row in rows:
                 if row.adapter not in ('tmdb_movie', 'tmdb_tv', 'hardcover', 'moshtix_public',
-                                       'musicbrainz_recording', 'musicbrainz_artist', 'apple_podcast'):
+                                       'musicbrainz_recording', 'musicbrainz_artist', 'apple_podcast','apw','gertrude'):
                     continue
                 issuer = SourceAuthority(self.authority, session_ref, profile_ref=profile_ref,
                     connection_ref=str(row.pk), policy_provider=self._policy_provider)
@@ -237,7 +237,9 @@ class EnhanceService:
                 require(name not in backends, 'REVISION_CONFLICT', 409)
                 sources.append(issuer)
                 try:
-                    if name == 'apple_podcast':
+                    if name in ('apw','gertrude'):
+                        backend=GallerySourceBackend(name,issuer,clock=clock)
+                    elif name == 'apple_podcast':
                         from .apple_podcast_native import ApplePodcastBackend
                         backend = ApplePodcastBackend(issuer, MediaHostLimiter('apple_podcast'), clock=clock)
                     elif name in ('musicbrainz_recording', 'musicbrainz_artist'):
@@ -483,7 +485,7 @@ class EnhanceService:
         planned = coordinator.plan(query_view, current.registry, run_ref=run_ref,
             client_key=str(client), refresh_nonce=str(refresh), **arguments)
         require(type(planned) is PlannedEnhance)
-        row = store.admit(planned.intent)
+        row = store.admit(planned.intent,local_context=current.local_context)
         if str(row.pk) != run_ref:
             return self._public(row, session_ref)
         self._install_preview(store, row, 'catalogue', planned, planned.plan.body,
@@ -723,7 +725,8 @@ class EnhanceService:
                 require(completed.state == 'completed', 'RUN_STALE', 409)
                 submitted = read_json(read_json(memory['body'])['input'].encode())
                 from .enhance_selection import GroundedSelector
-                arguments = {'snapshot': profile_snapshot.capture(work.inference_view)} if type(self.selector) is GroundedSelector else {}
+                arguments = {'snapshot': profile_snapshot.capture(work.inference_view),
+                    'local_context':store.current().local_context} if type(self.selector) is GroundedSelector else {}
                 manifest = self.selector.build(completed.output, submitted,
                     self._settled_outcomes(memory, work.collected.seal.outcomes), **arguments)
                 expected_revision = completed.evidence['expected_publication_revision']
@@ -777,7 +780,7 @@ class EnhanceService:
                     'publication_revision': publication.publication_revision, 'manifest': manifest, 'code': 'OK'}
 
     def current_for_interaction(self, session_ref, *, profile_ref):
-        with ga.recovery_guard(self.authority, session_ref, profile_ref=profile_ref):
+        with ga.recovery_guard(self.authority, session_ref, profile_ref=profile_ref),self.authority._lock:
             cabinet, _ = ga._bound(self.authority, session_ref, profile_ref)
             if cabinet.active_manifest_ref is None:
                 return {'schema': 'cabinet-current/v1', 'published': False,
@@ -789,12 +792,30 @@ class EnhanceService:
             require(publication is not None, 'PREVIEW_STALE', 409)
             store = self._store(session_ref, profile_ref, str(publication.run.portable_connection_id))
             publication, manifest, classification = store.read_for_interaction()
+            from .local_event_ranking import display,LOCAL_CATEGORIES
+            current=store.current()
+            overlays={}
+            if current.local_context is not None:
+                # Names pass the same sole purpose/lineage filter as inference.
+                # No old prompt, raw denied title or cached explanation is read.
+                prepared=disclosure.prepare(profile_snapshot.capture(current.view),current.view.grants,
+                    current.view.context,[],{},{},now=self.authority.now())
+                require(prepared.ok,prepared.code,403)
+                profile=read_json(prepared.profile_bytes)['profile']
+                names=tuple(signal['title'] for signal in profile['signals']
+                    if signal['medium']=='visual_artist' and signal['basis']=='typed_feedback'
+                    and signal['value']['signal']=='saved' and signal['value']['value']=={'value':True})
+                overlays={card['key']:display(current.local_context,card,publication_ref=str(publication.pk),
+                    publication_revision=publication.publication_revision,now=self.authority.now(),
+                    permitted_visual_names=names) for group in manifest['categories'] for card in group['cards']
+                    if card['category'] in LOCAL_CATEGORIES}
             from .portable_reactions import target_ref
             return {'schema': 'cabinet-current/v1', 'published': True,
                 'publication_ref': str(publication.pk), 'publication_revision': publication.publication_revision,
                 'reaction_targets': {card['key']: target_ref(str(profile_ref), card['key'])
                     for group in manifest['categories'] for card in group['cards']},
-                'manifest': manifest, 'ranking_state': 'feedback_pending' if classification == 'feedback_only' else 'fresh',
+                'manifest': manifest,'local_event_display':overlays,
+                'ranking_state': 'feedback_pending' if classification == 'feedback_only' else 'fresh',
                 'code': 'OK'}
 
     def _saved_access(self, session_ref, profile_ref, *, action='save'):

@@ -15,9 +15,23 @@ SIGNALS = ('interest', 'enjoyment')
 ITEM_NAMESPACE = 'owner-stated-item'
 NOTE_NAMESPACE = 'owner-stated-category-note'
 FAVOURITE_NAMESPACE = 'owner-stated-favourite'
-NATIVE_NAMESPACES = (NAMESPACE, ITEM_NAMESPACE, NOTE_NAMESPACE, FAVOURITE_NAMESPACE)
+VISUAL_ARTIST_NAMESPACE = 'owner-stated-visual-artist'
+NATIVE_NAMESPACES = (NAMESPACE, ITEM_NAMESPACE, NOTE_NAMESPACE, FAVOURITE_NAMESPACE, VISUAL_ARTIST_NAMESPACE)
 ENTRY_SIGNALS = ('interest', 'enjoyment', 'note')
 MAX_ENTRIES = 100
+
+
+def validate_visual_artist(state,profile_ref,entry_ref,title):
+    """Exact local duplicate/slot bound; never resolve a person from a name."""
+    import unicodedata
+    normalized=lambda value:' '.join(unicodedata.normalize('NFC',value).split()).casefold()
+    targets=FeedbackTarget.objects.filter(source_namespace=VISUAL_ARTIST_NAMESPACE,
+        source_key__startswith=profile_ref+':',deleted=False,
+        feedbackprojection__profile_id=state.profile_id,feedbackprojection__signal='saved',
+        feedbackprojection__scope='item',feedbackprojection__value={'value':True})
+    others=[target for target in targets if target.source_key!=profile_ref+':'+entry_ref]
+    ga._require(len(others)<5 and all(normalized(target.title)!=normalized(title) for target in others),
+                'REVISION_CONFLICT',409)
 
 
 def typed_body(signal, *, value=None, text=None, experienced_ack=False):
@@ -241,17 +255,21 @@ class PortableTasteInputs:
     def mutate_favourite(self, session_ref, profile_ref, *, entry_ref, mutation_id,
                          base_revision, category, title=None, remove=False):
         from .category_registry import KEYS
-        ga._require(category in KEYS and type(remove) is bool, 'CONTRACT_INVALID', 422)
+        ga._require(category in (*KEYS,'visual_artist') and type(remove) is bool, 'CONTRACT_INVALID', 422)
         profile_ref, entry_ref = str(ga._uuid(profile_ref)), str(ga._uuid(entry_ref))
         mutation_id = str(ga._uuid(mutation_id)); ga._revision(base_revision)
         ga._require(remove or type(title) is str and 1 <= len(title) <= 200 and bool(title.strip())
             and not any(ord(c) < 32 or ord(c) == 127 for c in title), 'CONTRACT_INVALID', 422)
         with ga.current_writer(self.authority, session_ref, profile_ref) as state:
             actor = get_user_model().objects.get(pk=state.actor_id)
+            namespace=VISUAL_ARTIST_NAMESPACE if category=='visual_artist' else FAVOURITE_NAMESPACE
             with transaction.atomic(), ga.writer_window(actor, state.profile_id):
+                if category=='visual_artist' and not remove and not MutationReceipt.objects.filter(
+                        actor=actor,mutation_id=mutation_id).exists():
+                    validate_visual_artist(state,profile_ref,entry_ref,title)
                 target, created = FeedbackTarget.objects.get_or_create(
-                    source_namespace=FAVOURITE_NAMESPACE, source_key=profile_ref+':'+entry_ref,
-                    defaults=dict(id=uuid.uuid5(ga._uuid(profile_ref), FAVOURITE_NAMESPACE+':'+entry_ref),
+                    source_namespace=namespace, source_key=profile_ref+':'+entry_ref,
+                    defaults=dict(id=uuid.uuid5(ga._uuid(profile_ref), namespace+':'+entry_ref),
                                   kind='item', category=category, title=title or ''))
                 ga._require(not target.deleted and target.category == category and (remove or target.title == title)
                     and (not created or not remove), 'REVISION_CONFLICT', 409)

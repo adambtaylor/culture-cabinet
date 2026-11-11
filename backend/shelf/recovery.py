@@ -892,7 +892,7 @@ def _fictional_target(target):
 def _effective_guards(raw):
     from importlib import import_module
     import re
-    current = import_module('shelf.migrations.0028_guided_owner_journey')
+    current = import_module('shelf.migrations.0029_local_selection_preferences')
     try:
         definitions = current.effective_inventory(raw)
     except RuntimeError:
