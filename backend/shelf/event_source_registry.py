@@ -66,6 +66,11 @@ def _moons24(now):
     return moons24()
 
 
+def _linden(now):
+    from shelf.event_listing_transport import linden
+    return linden()
+
+
 def _parse_rrr(raw, *, now, retrieved_at):
     from shelf.rrr_events import parse_listing
     return parse_listing(raw, retrieved_at=retrieved_at)
@@ -93,6 +98,11 @@ def _parse_moshtix(raw, *, now, retrieved_at):
 
 def _parse_moons24(raw, *, now, retrieved_at):
     from shelf.moons24_events import parse_listing
+    return parse_listing(raw, retrieved_at=retrieved_at)
+
+
+def _parse_linden(raw, *, now, retrieved_at):
+    from shelf.linden_events import parse_listing
     return parse_listing(raw, retrieved_at=retrieved_at)
 
 
@@ -161,11 +171,17 @@ def _descriptor(row):
                 'Partial 24 Moons coverage: current-week plus later programme, up to nine leads '
                 'within eight weeks. Unknown dates remain unverified; source links open the '
                 'programme, not an exact session or a checked seller.'),
+        'linden': (_linden, _parse_linden, 524288,
+                'Partial Linden coverage: up to nine current-region leads within eight weeks. '
+                'Local clocks have no verified timezone; audience notices remain source statements. '
+                'Confirm attendance and current conditions with Linden.'),
     }
     if source_id in active:
         acquire, parse, limit, coverage = active[source_id]
         return EventSourceDescriptor(**common, acquire=acquire, parse=parse, coverage=coverage,
             access_state='access-unverified' if source_id == 'forum' else 'implemented-unproved',
+            unavailable_message=('No eligible current Linden programme was established in this bounded read; '
+                'this is not proof of no events.') if source_id=='linden' else 'This source is not connected yet.',
             max_bytes=limit, retention_seconds=900,
             policy_scope='Existing bounded factual-link scope only; no model or redistribution grant.')
     blocked = {
