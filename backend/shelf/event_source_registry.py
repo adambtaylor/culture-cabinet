@@ -61,6 +61,11 @@ def _moshtix(now):
     return events(now)  # Accepted one-row normal query, not the nine-row helper.
 
 
+def _west_space(now):
+    from shelf.event_listing_transport import west_space
+    return west_space()
+
+
 def _parse_rrr(raw, *, now, retrieved_at):
     from shelf.rrr_events import parse_listing
     return parse_listing(raw, retrieved_at=retrieved_at)
@@ -84,6 +89,11 @@ def _parse_forum(raw, *, now, retrieved_at):
 def _parse_moshtix(raw, *, now, retrieved_at):
     from shelf.discovery_sources import parse_public_event_response
     return parse_public_event_response(raw, now=now, retrieved_at=retrieved_at)
+
+
+def _parse_west_space(raw, *, now, retrieved_at):
+    from shelf.west_space_events import parse_listing
+    return parse_listing(raw, retrieved_at=retrieved_at)
 
 
 # Finite owner/Architecture catalogue, not an expandable client-controlled list.
@@ -147,11 +157,17 @@ def _descriptor(row):
         'moshtix': (_moshtix, _parse_moshtix, 131072,
                 'Partial Moshtix coverage: one public event in VIC within eight weeks; '
                 'status and ticket availability unverified.'),
+        'west_space': (_west_space, _parse_west_space, 524288,
+                'Partial West Space coverage: one programme index, up to nine overlapping/current '
+                'or next-eight-week runs. A date range is not an opening, daily hours or a confirmed session.'),
     }
     if source_id in active:
         acquire, parse, limit, coverage = active[source_id]
         return EventSourceDescriptor(**common, acquire=acquire, parse=parse, coverage=coverage,
             access_state='access-unverified' if source_id == 'forum' else 'implemented-unproved',
+            unavailable_message=('No supported current or next-eight-week programme run was established '
+                'on this page; this is not proof of no events.') if source_id=='west_space' else
+                'This source is not connected yet.',
             max_bytes=limit, retention_seconds=900,
             policy_scope='Existing bounded factual-link scope only; no model or redistribution grant.')
     blocked = {
