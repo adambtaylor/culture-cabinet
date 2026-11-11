@@ -1087,6 +1087,146 @@ def pending_evidence_fixture():
     return evidence
 
 
+# Frozen NONSECRET actual receipts: hermetic raw-byte/parser/third-link regression.
+DIALOG_ACTUAL_FAILURE = r'''{
+  "id": "K1-A4A-ACTUAL-CONTINUATION-TERMINAL-02",
+  "date": "2026-11-11",
+  "observed_terminal_utc": "2026-11-11T02:59:29.066617+00:00",
+  "state": "NOT_READY_ACTUAL_INPUT_GEOMETRY_REFUSAL_RETAINED",
+  "accepted_head": "cbd02e446609fa89d86e45f6eb04a35f83bce221",
+  "merged_main": "6efcc3185ee03564d5ad41e89233157f3c72ad87",
+  "helper_sha256": "6dc69b1a38578e028e90f846efd4723c62bb7ed3ae70ba29f8547bf01a4c4905",
+  "retirement": "PASS exact ended ce102960 null/pre-master pointer archived then CAS-retired; both immutable ancestors retained; no OS orphan located/deleted.",
+  "launcher_correction": "An initial here-document wrapper made stdin non-TTY; helper refused TTY_REQUIRED before positive receipt, monitor, IPC or Create. Failure/start record retained. Same accepted helper was then launched directly in an actual PTY; no source/driver change or repeated Create.",
+  "creation_operation_id": "b8cc865d-df30-46da-969a-cf7fa40c6eba",
+  "requested_label": "CultureCabinet8d51ac84657f4162acb559873d8b3ab8",
+  "returned_prompt_ref": "/org/freedesktop/secrets/prompt/p3",
+  "returned_collection_ref": null,
+  "protocol_observation": {
+    "acknowledgement": "ACKNOWLEDGED",
+    "completion": "UNOBSERVED",
+    "termination": "UNOBSERVED"
+  },
+  "terminal_status": "CORRECTED_PROVISION_REFUSED_NO_RETRY / UNAVAILABLE; exec session25970 exit1",
+  "original_bounds": "One original120s monitor/provision bound; no extension or input fallback. Internal numeric deadline not exported. Source did not retain a TIMEOUT event: termination remains UNOBSERVED, not relabelled.",
+  "input": {
+    "stage": "INPUT_REFUSED_NO_RETRY",
+    "attempts": 0,
+    "actual_fields_verified": false,
+    "focus_edit_Create_actions": 0,
+    "private_passphrase_generated_or_entered": false,
+    "precise_cause": "Accepted same-dialog pre-input binding requires corresponding compositor/AT-SPI bounds. Actual ACTIVE GCR dialog SCREEN extents (0,0,517,262) do not equal compositor logical (-107,-29,518,262) or observed-scale2 physical bounds. _select_dialog found zero matching candidates and refused before nonce/control traversal or focus/input.",
+    "readonly_recheck": "Exact new owned GCR PID31844/window0xb728f3122720 only; same refusal; no fill/focus/action invoked. Monitor origin0,0 and scale2 supported, so bounds correspondence is the concrete failed gate."
+  },
+  "storage": {
+    "canary_state": "NOT_STARTED",
+    "master_phase": "NOT_STARTED",
+    "file_binding": null,
+    "verified_filename": null,
+    "dummy_write": "UNRUN",
+    "fresh_helper_retrieval": "UNRUN",
+    "normal_native_retrieval": "UNRUN",
+    "empty_and_transition_negatives": "UNRUN"
+  },
+  "cleanup": {
+    "known_proof_parent_pid": 31808,
+    "proof_parent_exited": true,
+    "helper_caller": ":1.21914",
+    "helper_caller_has_owner": false,
+    "exact_owned_prompt_window_remaining": false,
+    "monitor_thread": "Returned INPUT_REFUSED_NO_RETRY with0 attempts; parent subsequently exited.",
+    "collection_cleanup": "No captured exact collection identity; no OS collection/file deletion, scan, guessed cleanup or oldPrompt replay. Pending pointer and possible unknown OS outcome preserved.",
+    "shared_GCR_or_keyring_service_killed": false
+  },
+  "counts": {
+    "approved_collection_create_attempts": 1,
+    "old_prompt_calls": 0,
+    "input_or_canary_or_master_writes": 0,
+    "provider_model_requests": 0,
+    "real_key_reads_or_requests": 0,
+    "core_browser_launches": 0
+  },
+  "next_precise_dependency": "Root routes a supported same-owned-dialog identity strategy for real GTK/GCR Wayland coordinates, with H1 containment preserved; do not merely accept0,0 or loosen the reviewed guard. The new exact b8cc865d PROMPT_PENDING/ACK/no-input/null-result/zero-master attempt also needs its bounded disposition before any new Create, because accepted retirement is pinned only to ce102960. No current runtime remains to recover or replay its prompt.",
+  "legitimate_key_entry_dependency": "Only after accepted input readiness, actual returned identity/canary-linked encrypted-file proof, dummy persistence, terminal closure/fresh-helper retrieval and required negatives may Root separately route normal native retrieval and legitimate owner key entry. No actual private custodian value was generated/entered by this denied input run.",
+  "evidence": {
+    "/home/tang/.codex/visualizations/2026/11/08/01a1b94d-3181-7451-84dc-55d2d7d637f8/api-wiring-2026-11-10/owned-gnome-a4a-retire-02.json": "33d9028675ba237391ce83dcac074d5bac2bcae12fb43fa89cab92e63b55d1b0",
+    "/home/tang/.codex/visualizations/2026/11/08/01a1b94d-3181-7451-84dc-55d2d7d637f8/api-wiring-2026-11-10/owned-gnome-a4a-positive-02.json": "fab97b368ea32df24906f86d90e2b94d3a44da4e76dcd8709045de9a0b0a0641",
+    "/home/tang/.codex/visualizations/2026/11/08/01a1b94d-3181-7451-84dc-55d2d7d637f8/api-wiring-2026-11-10/owned-gnome-a4a-input-02.json": "d71a2cab22c6b42bc5af87d6e7da636a770658274d5fbc0a9d70f6d79a798c99",
+    "/home/tang/.codex/visualizations/2026/11/08/01a1b94d-3181-7451-84dc-55d2d7d637f8/api-wiring-2026-11-10/k1-a4a-actual-input-metadata-02.json": "47389a0a1967820b0d03a07b9887fd8ff2e850400174dfaf8a88227d41afcc57",
+    "/home/tang/.codex/visualizations/2026/11/08/01a1b94d-3181-7451-84dc-55d2d7d637f8/api-wiring-2026-11-10/k1-a4a-owned-caller-closed-02.json": "d9c7800d5765b61dcdc0b90945953fea970691d8dc0a6b99c470b17525060b3f",
+    "/home/tang/.codex/visualizations/2026/11/08/01a1b94d-3181-7451-84dc-55d2d7d637f8/api-wiring-2026-11-10/k1-a4a-run-custody-start-02.json": "42f756e4ae33e2e83c00b48a5753e9ddf1a13ff0af19a0133e448693ce7fb94f",
+    "/home/tang/.codex/visualizations/2026/11/08/01a1b94d-3181-7451-84dc-55d2d7d637f8/api-wiring-2026-11-10/k1-a4a-run-custody-active-02.json": "5a157726022b8b1cf37858dfc8b0e792d3b7b5515b2e01514564c25abed5fcc4",
+    "/home/tang/.codex/visualizations/2026/11/08/01a1b94d-3181-7451-84dc-55d2d7d637f8/api-wiring-2026-11-10/owned-gnome-a4a-proof-08.py": "3f4fb808940757363fd83ec09c5ac5bc1c8f133b3ba920fa5c7574b18922a845",
+    "/home/tang/.codex/visualizations/2026/11/08/01a1b94d-3181-7451-84dc-55d2d7d637f8/api-wiring-2026-11-10/owned-gcr-labelled-driver-07.py": "02c2b11397596ef6d463c1774abdb822472510c655057cee06e04ccc04aa3416",
+    "/home/tang/.local/state/culture-cabinet-key-store/abandoned-f6ed3437-1f93-4564-8a6d-e558e5dd6462.json": "184e1a5ac45fe03f4bd59659c3dca3dc15d2a67b873c619c86009533a09a9dfb",
+    "/home/tang/.local/state/culture-cabinet-key-store/abandoned-ce102960-02f0-4697-8008-371439a02d04.json": "fe7a79afb45e22a6ac1d7b4cc4080d4ac5c60d1abc5f494277aa19900c12cc77",
+    "/home/tang/.local/state/culture-cabinet-key-store/selection.json": "861c04607e5f6d39b078a935cdaee96a1a73730a5fb028055fe486607e4dd6c9"
+  }
+}
+'''.encode('utf-8')
+
+DIALOG_ACTUAL_POSITIVE = r'''{
+  "candidate": "cbd02e446609fa89d86e45f6eb04a35f83bce221",
+  "source_sha256": "6dc69b1a38578e028e90f846efd4723c62bb7ed3ae70ba29f8547bf01a4c4905",
+  "stage": "CORRECTED_PROVISION_REFUSED_NO_RETRY",
+  "parent_pid": 31808,
+  "no_real_key": true,
+  "provider_requests": 0,
+  "provision_status": "UNAVAILABLE",
+  "selection": {
+    "canary_prompt_ref": null,
+    "canary_ref": null,
+    "canary_state": "NOT_STARTED",
+    "continuation_archive": "ce102960-02f0-4697-8008-371439a02d04",
+    "creation_operation_id": "b8cc865d-df30-46da-969a-cf7fa40c6eba",
+    "decoded_identifier": null,
+    "file_binding": null,
+    "keyring_directory": "/home/tang/.local/share/keyrings",
+    "master_phase": "NOT_STARTED",
+    "prompt_observation": {
+      "acknowledgement": "ACKNOWLEDGED",
+      "completion": "UNOBSERVED",
+      "termination": "UNOBSERVED"
+    },
+    "requested_label": "CultureCabinet8d51ac84657f4162acb559873d8b3ab8",
+    "returned_collection_ref": null,
+    "returned_prompt_ref": "/org/freedesktop/secrets/prompt/p3",
+    "schema": "cabinet-key-store-selection/v2",
+    "service_provenance": {
+      "caller": ":1.21914",
+      "implementation": "gnome-keyring-51.1",
+      "service_owner": ":1.0",
+      "service_uid": 1000
+    },
+    "state": "PROMPT_PENDING",
+    "terminal_fact": null,
+    "verified_filename": null
+  }
+}
+'''.encode('utf-8')
+
+DIALOG_ACTUAL_INPUT = r'''{
+  "stage": "INPUT_REFUSED_NO_RETRY",
+  "attempts": 0,
+  "actual_gcr_fields_verified": false,
+  "passphrase_output": false,
+  "completion_confirmed": false,
+  "input_events": [],
+  "error_type": "RuntimeError"
+}
+'''.encode('utf-8')
+
+DIALOG_ACTUAL_CALLER = r'''{
+  "operation_id": "b8cc865d-df30-46da-969a-cf7fa40c6eba",
+  "caller": ":1.21914",
+  "caller_has_owner": false,
+  "method": "NameHasOwner exact owned caller only",
+  "prompt_calls": 0,
+  "secret_calls": 0
+}
+'''.encode('utf-8')
+
+
 class PinnedReceiptDecoderTests(unittest.TestCase):
     def sample(self, **changes):
         return {'evidence': pending_evidence_fixture(), 'observed': 'dummy-only', **changes}
@@ -1414,6 +1554,167 @@ class PromptObservationTests(unittest.TestCase):
         self.assertIn(('completion', 'RETURNED'), observed)
         self.assertIn(('termination', 'CALL_FAILED'), observed)
         self.assertNotIn(('termination', 'TIMEOUT'), observed)
+
+
+class OwnedDialogRetirementTests(unittest.TestCase):
+    def set_pending(self, value):
+        PendingPromptRetirementTests.set_pending(self, value)
+
+    def setUp(self):
+        PendingPromptRetirementTests.setUp(self)
+        store.retire_prompt_pending_dummy(self.pending_failure, self.terminal)
+        self.second = self.directory / store._pending_archive_name()
+        self.predecessor = self.second.read_bytes()
+        self.enterContext(patch.object(store, 'DIALOG_PREDECESSOR_SHA', hashlib.sha256(self.predecessor).hexdigest()))
+        self.value = json.loads(DIALOG_ACTUAL_POSITIVE)['selection']
+        self.original = store.canonical(self.value)
+        self.assertEqual(hashlib.sha256(self.original).hexdigest(), store.DIALOG_SELECTION_SHA)
+        self.pointer.write_bytes(self.original)
+        self.pointer.chmod(0o600)
+        self.closed = self.enterContext(patch.object(store._SecretBackend, '_dialog_caller_closed', return_value=True))
+
+    def retire(self, failure=DIALOG_ACTUAL_FAILURE, positive=DIALOG_ACTUAL_POSITIVE,
+               entered=DIALOG_ACTUAL_INPUT, caller=DIALOG_ACTUAL_CALLER):
+        return store.retire_owned_dialog_dummy(failure, positive, entered, caller)
+
+    def assert_untouched(self):
+        self.assertTrue(self.pointer.exists())
+        self.assertFalse((self.directory / store._dialog_archive_name()).exists())
+
+    def test_actual_receipt_bytes_full_three_link_retirement_reread_and_continuation(self):
+        self.assertEqual(hashlib.sha256(DIALOG_ACTUAL_FAILURE).hexdigest(), store.DIALOG_FAILURE_SHA)
+        self.assertEqual(hashlib.sha256(DIALOG_ACTUAL_POSITIVE).hexdigest(), store.DIALOG_TERMINAL_SHA)
+        self.assertEqual(hashlib.sha256(DIALOG_ACTUAL_INPUT).hexdigest(), store.DIALOG_INPUT_SHA)
+        self.assertEqual(hashlib.sha256(DIALOG_ACTUAL_CALLER).hexdigest(), store.DIALOG_CALLER_SHA)
+        raw = store._dialog_archive(self.original, DIALOG_ACTUAL_FAILURE, DIALOG_ACTUAL_POSITIVE)
+        self.assertLessEqual(len(raw), 32768)
+        first = (self.directory / store._archive_name()).read_bytes()
+        self.assertEqual(self.retire(), store.DIALOG_OPERATION)
+        self.assertFalse(self.pointer.exists())
+        archive = self.directory / store._dialog_archive_name()
+        self.assertEqual(archive.stat().st_mode & 0o777, 0o400)
+        saved = store._validate_pending_archive(archive.read_bytes())
+        self.assertEqual(saved['failure_receipt'].encode(), DIALOG_ACTUAL_FAILURE)
+        self.assertEqual(saved['terminal_receipt'].encode(), DIALOG_ACTUAL_POSITIVE)
+        self.assertEqual(saved['original_selection'].encode(), self.original)
+        self.assertEqual(self.second.read_bytes(), self.predecessor)
+        self.assertEqual((self.directory / store._archive_name()).read_bytes(), first)
+        store._check_continuation(store.DIALOG_OPERATION)
+        for link in (None, store.OLD_DUMMY_OPERATION, store.PENDING_OPERATION):
+            with self.assertRaises(store.Refused):
+                store._check_continuation(link)
+
+    def test_wrong_input_caller_failure_or_positive_refuses_before_connect(self):
+        for index, raw in enumerate((DIALOG_ACTUAL_FAILURE, DIALOG_ACTUAL_POSITIVE,
+                                     DIALOG_ACTUAL_INPUT, DIALOG_ACTUAL_CALLER)):
+            args = [DIALOG_ACTUAL_FAILURE, DIALOG_ACTUAL_POSITIVE, DIALOG_ACTUAL_INPUT, DIALOG_ACTUAL_CALLER]
+            args[index] = raw + b' '
+            with self.subTest(index=index), patch.object(store._SecretBackend, '_connect') as connect, self.assertRaises(store.Refused):
+                self.retire(*args)
+            connect.assert_not_called()
+            self.assert_untouched()
+
+    def test_live_current_caller_refuses_without_archive_or_provision(self):
+        self.closed.return_value = False
+        with patch.object(store, '_provision_worker') as provision, self.assertRaises(store.Refused):
+            self.retire()
+        provision.assert_not_called()
+        self.assert_untouched()
+
+    def test_identity_ack_completed_and_progress_changes_refuse(self):
+        cases = ({'creation_operation_id': store.PENDING_OPERATION},
+                 {'returned_prompt_ref': '/org/freedesktop/secrets/prompt/other'},
+                 {'service_provenance': {**self.value['service_provenance'], 'caller': ':1.9'}},
+                 {'state': 'CREATED_UNVERIFIED', 'returned_collection_ref': store.COLLECTION_ROOT + 'owned'},
+                 {'canary_state': 'CREATE_PENDING'}, {'master_phase': 'WRITE_PENDING'},
+                 {'prompt_observation': {**self.value['prompt_observation'], 'completion': 'RETURNED'}},
+                 {'prompt_observation': {**self.value['prompt_observation'], 'termination': 'TIMEOUT'}})
+        for changes in cases:
+            raw = store.canonical({**self.value, **changes})
+            self.pointer.write_bytes(raw)
+            with self.subTest(changes=changes), patch.object(store, 'DIALOG_SELECTION_SHA', hashlib.sha256(raw).hexdigest()), \
+                 patch.object(store._SecretBackend, '_connect') as connect, self.assertRaises(store.Refused):
+                self.retire()
+            connect.assert_not_called()
+            self.assert_untouched()
+
+    def test_replaced_inode_or_changed_bytes_after_archive_prevent_unlink(self):
+        read = store._read_private_at
+        reads = []
+        def race(directory, name, *args):
+            if name == 'selection.json':
+                reads.append(name)
+                if len(reads) == 2:
+                    replacement = self.directory / 'replacement'
+                    replacement.write_bytes(self.original)
+                    replacement.chmod(0o600)
+                    os.replace(replacement, self.pointer)
+            return read(directory, name, *args)
+        with patch.object(store, '_read_private_at', side_effect=race), self.assertRaises(store.Refused):
+            self.retire()
+        self.assertEqual(self.pointer.read_bytes(), self.original)
+        self.assertTrue((self.directory / store._dialog_archive_name()).exists())
+
+    def test_fsync_interruption_identical_replay_and_mismatched_archive(self):
+        with patch.object(store.os, 'fsync', side_effect=OSError()), self.assertRaises(OSError):
+            self.retire()
+        self.assertTrue(self.pointer.exists())
+        archive = self.directory / store._dialog_archive_name()
+        raw, inode = archive.read_bytes(), archive.stat().st_ino
+        self.retire()
+        self.assertEqual(archive.read_bytes(), raw)
+        self.assertEqual(archive.stat().st_ino, inode)
+        store._check_continuation(store.DIALOG_OPERATION)
+
+    def test_ancestor_absence_or_hash_mismatch_refuses_before_pointer_or_provision(self):
+        self.second.chmod(0o600)
+        self.second.write_bytes(self.predecessor + b' ')
+        self.second.chmod(0o400)
+        with patch.object(store, '_provision_worker') as provision, self.assertRaises(store.Refused):
+            self.retire()
+        provision.assert_not_called()
+        self.assert_untouched()
+        self.second.unlink()
+        with self.assertRaises(FileNotFoundError):
+            self.retire()
+        self.assert_untouched()
+
+    def test_third_tombstone_needs_both_ancestors_and_cannot_use_second_under_wrong_name(self):
+        third = self.directory / store._dialog_archive_name()
+        third.write_bytes(self.predecessor)
+        third.chmod(0o400)
+        with self.assertRaises(store.Refused):
+            store._check_continuation(store.DIALOG_OPERATION)
+        third.unlink()
+        self.retire()
+        self.second.unlink()
+        with self.assertRaises(FileNotFoundError):
+            store._check_continuation(store.DIALOG_OPERATION)
+
+    def test_terminal_only_entry_and_input_progress_refuse(self):
+        with patch.object(store.os, 'isatty', return_value=False), self.assertRaises(store.Refused):
+            self.retire()
+        value = json.loads(DIALOG_ACTUAL_INPUT)
+        value['attempts'] = 1
+        raw = store.canonical(value)
+        with patch.object(store, 'DIALOG_INPUT_SHA', hashlib.sha256(raw).hexdigest()), self.assertRaises(store.Refused):
+            self.retire(entered=raw)
+        self.assert_untouched()
+
+    def test_mismatched_third_archive_is_not_overwritten(self):
+        archive = self.directory / store._dialog_archive_name()
+        archive.write_bytes(b'foreign archived bytes')
+        archive.chmod(0o400)
+        with self.assertRaises(store.Refused):
+            self.retire()
+        self.assertEqual(archive.read_bytes(), b'foreign archived bytes')
+        self.assertEqual(self.pointer.read_bytes(), self.original)
+
+    def test_third_continuation_requires_first_ancestor_too(self):
+        self.retire()
+        (self.directory / store._archive_name()).unlink()
+        with self.assertRaises(FileNotFoundError):
+            store._check_continuation(store.DIALOG_OPERATION)
 
 
 class FileDummyCollection(DummyCollection):

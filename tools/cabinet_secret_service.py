@@ -48,6 +48,14 @@ PENDING_SELECTION_SHA = 'eb0206238b146a1e8df4002d44675ca84b7dce7b1f9d14c595157b3
 PENDING_FAILURE_SHA = '13168d5968f1cab2d8df0de4c79b1e2a162c159df59d22b9b31bd417ca00c034'
 PENDING_TERMINAL_SHA = '8b970353668e5e1c314353d82c85325497f5f71ed0963c8e3c5b0a9debc3a713'
 PENDING_PREDECESSOR_SHA = '184e1a5ac45fe03f4bd59659c3dca3dc15d2a67b873c619c86009533a09a9dfb'
+DIALOG_OPERATION = 'b8cc865d-df30-46da-969a-cf7fa40c6eba'
+DIALOG_SELECTION_SHA = '861c04607e5f6d39b078a935cdaee96a1a73730a5fb028055fe486607e4dd6c9'
+DIALOG_FAILURE_SHA = '6ad9a7a99c0277e5ca53425c450cd8b1332a2b8206508ddb6ea4565af9691dcf'
+DIALOG_TERMINAL_SHA = 'fab97b368ea32df24906f86d90e2b94d3a44da4e76dcd8709045de9a0b0a0641'
+DIALOG_INPUT_SHA = 'd71a2cab22c6b42bc5af87d6e7da636a770658274d5fbc0a9d70f6d79a798c99'
+DIALOG_CALLER_SHA = 'd9c7800d5765b61dcdc0b90945953fea970691d8dc0a6b99c470b17525060b3f'
+DIALOG_METADATA_SHA = '47389a0a1967820b0d03a07b9887fd8ff2e850400174dfaf8a88227d41afcc57'
+DIALOG_PREDECESSOR_SHA = 'fe7a79afb45e22a6ac1d7b4cc4080d4ac5c60d1abc5f494277aa19900c12cc77'
 STATUS = frozenset(('AVAILABLE', 'LOCKED', 'MISSING', 'UNAVAILABLE', 'CONFLICT',
                     'CORRUPT', 'UNKNOWN', 'REMOVED'))
 REQUEST_FIELDS = frozenset(('version', 'operation', 'record_kind', 'binding',
@@ -193,7 +201,7 @@ def strict_json(raw):
 
 
 def _pending_failure_json(raw):
-    """Only the exact retained receipt may have attribution-path keys.
+    """Only the two exact retained failure receipts may have attribution-path keys.
 
     Evidence paths differ from RPC field names: four original keys are 129-139
     bytes. Check the unchanged production digest BEFORE the private exception;
@@ -202,7 +210,9 @@ def _pending_failure_json(raw):
     keep 128 bytes. Archive wrappers stay strict; embedded receipts stay original
     strings so subsequent validation checks their exact raw-byte hashes again.
     """
-    require(type(raw) is bytes and hashlib.sha256(raw).hexdigest() == PENDING_FAILURE_SHA)
+    # Two closed, immutable receipt kinds; callers cannot supply a hash/limit.
+    require(type(raw) is bytes and hashlib.sha256(raw).hexdigest() in
+            (PENDING_FAILURE_SHA, DIALOG_FAILURE_SHA))
     return _decode_json(raw, pinned_evidence_paths=True)
 
 
@@ -820,7 +830,7 @@ def _selection_shape(value, *, allow_pending=False):
         if value[field] is not None:
             _object_ref(value[field])
     if value['continuation_archive'] is not None:
-        require(value['continuation_archive'] in (OLD_DUMMY_OPERATION, PENDING_OPERATION))
+        require(value['continuation_archive'] in (OLD_DUMMY_OPERATION, PENDING_OPERATION, DIALOG_OPERATION))
     require(value['terminal_fact'] in (None, 'UNCERTAIN_OR_REFUSED'))
     require(value['canary_state'] in ('NOT_STARTED', 'CREATE_PENDING', 'CREATED', 'DELETE_PENDING', 'DELETED'))
     require(value['master_phase'] in ('NOT_STARTED', 'WRITE_PENDING', 'PRESENT'))
@@ -1129,6 +1139,14 @@ class _SecretBackend:
         self._verify_service()
         return reply.unpack()[0] is False
 
+    def _dialog_caller_closed(self):
+        self._verify_service()
+        reply = self._dbus('org.freedesktop.DBus', '/org/freedesktop/DBus',
+            'org.freedesktop.DBus', 'NameHasOwner', self.GLib.Variant('(s)', (':1.21914',)))
+        require(reply.get_type_string() == '(b)')
+        self._verify_service()
+        return reply.unpack()[0] is False
+
     def _unlocked(self):
         self._prove()
         result = self._dbus(self.owner, self.path, 'org.freedesktop.DBus.Properties', 'Get',
@@ -1432,29 +1450,95 @@ def _pending_receipts(original, failure, terminal):
     return value
 
 
+def _dialog_archive_name():
+    return 'abandoned-' + DIALOG_OPERATION + '.json'
+
+
+def _dialog_selection(value):
+    _selection_shape(value, allow_pending=True)
+    require(value['state'] == 'PROMPT_PENDING' and value['creation_operation_id'] == DIALOG_OPERATION
+            and value['requested_label'] == 'CultureCabinet8d51ac84657f4162acb559873d8b3ab8'
+            and value['service_provenance']['caller'] == ':1.21914'
+            and value['service_provenance']['service_owner'] == ':1.0'
+            and value['returned_prompt_ref'] == '/org/freedesktop/secrets/prompt/p3'
+            and value['continuation_archive'] == PENDING_OPERATION
+            and value['canary_state'] == value['master_phase'] == 'NOT_STARTED'
+            and value['terminal_fact'] is None
+            and value['prompt_observation'] == {'acknowledgement': 'ACKNOWLEDGED',
+                'completion': 'UNOBSERVED', 'termination': 'UNOBSERVED'})
+    for field in ('returned_collection_ref', 'decoded_identifier', 'verified_filename',
+                  'file_binding', 'canary_ref', 'canary_prompt_ref'):
+        require(value[field] is None)
+
+
+def _dialog_receipts(original, failure, terminal):
+    for raw, expected in ((original, DIALOG_SELECTION_SHA), (failure, DIALOG_FAILURE_SHA),
+                          (terminal, DIALOG_TERMINAL_SHA)):
+        require(type(raw) is bytes and hashlib.sha256(raw).hexdigest() == expected)
+    value, failed, ended = strict_json(original), _pending_failure_json(failure), strict_json(terminal)
+    _dialog_selection(value)
+    require(ended['selection'] == value and ended['stage'] == 'CORRECTED_PROVISION_REFUSED_NO_RETRY'
+            and ended['provision_status'] == 'UNAVAILABLE' and ended['no_real_key'] is True
+            and ended['provider_requests'] == 0
+            and failed['creation_operation_id'] == DIALOG_OPERATION
+            and failed['returned_collection_ref'] is None
+            and failed['protocol_observation'] == value['prompt_observation']
+            and failed['input']['attempts'] == failed['input']['focus_edit_Create_actions'] == 0
+            and failed['input']['private_passphrase_generated_or_entered'] is False
+            and failed['storage']['canary_state'] == failed['storage']['master_phase'] == 'NOT_STARTED'
+            and failed['cleanup']['proof_parent_exited'] is True
+            and failed['cleanup']['helper_caller'] == ':1.21914'
+            and failed['cleanup']['helper_caller_has_owner'] is False
+            and failed['cleanup']['exact_owned_prompt_window_remaining'] is False)
+    # The exact terminal string pins these external proofs. Their paths remain
+    # attribution only; never open a path taken from the archived evidence map.
+    require({DIALOG_INPUT_SHA, DIALOG_CALLER_SHA, DIALOG_METADATA_SHA}
+            <= set(failed['evidence'].values()))
+    return value
+
+
+def _dialog_input_proofs(input_receipt, caller_receipt):
+    for raw, expected in ((input_receipt, DIALOG_INPUT_SHA), (caller_receipt, DIALOG_CALLER_SHA)):
+        require(type(raw) is bytes and hashlib.sha256(raw).hexdigest() == expected)
+    entered, caller = strict_json(input_receipt), strict_json(caller_receipt)
+    require(entered['stage'] == 'INPUT_REFUSED_NO_RETRY' and entered['attempts'] == 0
+            and entered['actual_gcr_fields_verified'] is False and entered['passphrase_output'] is False
+            and entered['completion_confirmed'] is False and entered['input_events'] == []
+            and caller['operation_id'] == DIALOG_OPERATION and caller['caller'] == ':1.21914'
+            and caller['caller_has_owner'] is False and caller['prompt_calls'] == caller['secret_calls'] == 0)
+
+
+def _archive_identity(operation_id):
+    """Only the two named prompt dispositions, never a caller-supplied recipe."""
+    if operation_id == DIALOG_OPERATION:
+        return {'selection_sha256': DIALOG_SELECTION_SHA, 'failure_sha256': DIALOG_FAILURE_SHA,
+            'terminal_sha256': DIALOG_TERMINAL_SHA, 'original_caller': ':1.21914', 'service_owner': ':1.0',
+            'returned_prompt_ref': '/org/freedesktop/secrets/prompt/p3', 'prior_archive': PENDING_OPERATION,
+            'prior_archive_sha256': DIALOG_PREDECESSOR_SHA}
+    require(operation_id == PENDING_OPERATION)
+    return {'selection_sha256': PENDING_SELECTION_SHA, 'failure_sha256': PENDING_FAILURE_SHA,
+        'terminal_sha256': PENDING_TERMINAL_SHA, 'original_caller': ':1.20377', 'service_owner': ':1.0',
+        'returned_prompt_ref': '/org/freedesktop/secrets/prompt/p2', 'prior_archive': OLD_DUMMY_OPERATION,
+        'prior_archive_sha256': PENDING_PREDECESSOR_SHA}
+
+
 def _validate_pending_archive(raw):
     archive = strict_json(raw)
     _shape(archive, ('schema', 'operation_id', 'original_selection', 'failure_receipt', 'terminal_receipt',
         'selection_sha256', 'failure_sha256', 'terminal_sha256', 'original_caller', 'service_owner',
         'returned_prompt_ref', 'prior_archive', 'prior_archive_sha256', 'caller_closed', 'disposition',
         'returned_collection_ref', 'os_orphan_deleted', 'possible_collection_exists'))
-    require(archive['schema'] == 'cabinet-abandoned-prompt/v1'
-            and archive['operation_id'] == PENDING_OPERATION
-            and archive['selection_sha256'] == PENDING_SELECTION_SHA
-            and archive['failure_sha256'] == PENDING_FAILURE_SHA
-            and archive['terminal_sha256'] == PENDING_TERMINAL_SHA
-            and archive['original_caller'] == ':1.20377' and archive['service_owner'] == ':1.0'
-            and archive['returned_prompt_ref'] == '/org/freedesktop/secrets/prompt/p2'
-            and archive['prior_archive'] == OLD_DUMMY_OPERATION
-            and archive['prior_archive_sha256'] == PENDING_PREDECESSOR_SHA
-            and archive['caller_closed'] is True
+    expected = _archive_identity(archive['operation_id'])
+    require(all(archive[key] == value for key, value in expected.items())
+            and archive['schema'] == 'cabinet-abandoned-prompt/v1' and archive['caller_closed'] is True
             and archive['disposition'] == 'ABANDONED_PREMASTER_PROMPT_UNRESOLVED'
-            and archive['returned_collection_ref'] is None
-            and archive['os_orphan_deleted'] is False and archive['possible_collection_exists'] == 'unknown')
+            and archive['returned_collection_ref'] is None and archive['os_orphan_deleted'] is False
+            and archive['possible_collection_exists'] == 'unknown')
     for field in ('original_selection', 'failure_receipt', 'terminal_receipt'):
         require(type(archive[field]) is str)
-    _pending_receipts(*(archive[field].encode('utf-8') for field in
-                        ('original_selection', 'failure_receipt', 'terminal_receipt')))
+    validate = _dialog_receipts if archive['operation_id'] == DIALOG_OPERATION else _pending_receipts
+    validate(*(archive[field].encode('utf-8') for field in
+               ('original_selection', 'failure_receipt', 'terminal_receipt')))
     return archive
 
 
@@ -1466,8 +1550,17 @@ def _predecessor_archive(directory):
     return raw
 
 
+def _dialog_predecessor(directory):
+    raw, identity = _read_private_at(directory, _pending_archive_name())
+    require(stat.S_IMODE(identity[4]) == 0o400
+            and hashlib.sha256(raw).hexdigest() == DIALOG_PREDECESSOR_SHA
+            and _validate_pending_archive(raw)['operation_id'] == PENDING_OPERATION)
+    _predecessor_archive(directory)
+    return raw
+
+
 def _check_continuation(reference):
-    require(reference is None or reference in (OLD_DUMMY_OPERATION, PENDING_OPERATION))
+    require(reference is None or reference in (OLD_DUMMY_OPERATION, PENDING_OPERATION, DIALOG_OPERATION))
     try:
         directory = _open_checked_directory(str(Path(SELECTION).parent))
     except FileNotFoundError:
@@ -1475,12 +1568,24 @@ def _check_continuation(reference):
         return
     try:
         try:
+            dialog_raw, identity = _read_private_at(directory, _dialog_archive_name())
+        except FileNotFoundError:
+            dialog_raw = None
+        if dialog_raw is not None:
+            require(stat.S_IMODE(identity[4]) == 0o400
+                    and _validate_pending_archive(dialog_raw)['operation_id'] == DIALOG_OPERATION)
+            _dialog_predecessor(directory)
+            # A third tombstone requires all three fixed links. Neither older
+            # reference can authorize a new creation after this disposition.
+            require(reference == DIALOG_OPERATION)
+            return
+        try:
             pending_raw, identity = _read_private_at(directory, _pending_archive_name())
         except FileNotFoundError:
             pending_raw = None
         if pending_raw is not None:
             require(stat.S_IMODE(identity[4]) == 0o400)
-            _validate_pending_archive(pending_raw)
+            require(_validate_pending_archive(pending_raw)['operation_id'] == PENDING_OPERATION)
             _predecessor_archive(directory)
             # The second tombstone makes the first link insufficient forever.
             require(reference == PENDING_OPERATION)
@@ -1497,16 +1602,16 @@ def _check_continuation(reference):
         os.close(directory)
 
 
-def _write_pending_archive(directory, raw):
+def _write_prompt_archive(directory, name, raw):
     try:
-        fd = os.open(_pending_archive_name(), os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
+        fd = os.open(name, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
                      0o600, dir_fd=directory)
     except FileExistsError:
-        existing, identity = _read_private_at(directory, _pending_archive_name())
+        existing, identity = _read_private_at(directory, name)
         require(existing == raw and stat.S_IMODE(identity[4]) == 0o400)
         # A preceding attempt may have stopped at fsync(file). Revalidate and
         # sync the identical file again before treating the archive as durable.
-        fd = os.open(_pending_archive_name(), os.O_RDONLY | os.O_NOFOLLOW, dir_fd=directory)
+        fd = os.open(name, os.O_RDONLY | os.O_NOFOLLOW, dir_fd=directory)
         try:
             require(_file_identity(os.fstat(fd)) == identity)
             os.fsync(fd)
@@ -1522,6 +1627,58 @@ def _write_pending_archive(directory, raw):
         finally:
             os.close(fd)
     os.fsync(directory)
+
+
+def _write_pending_archive(directory, raw):
+    _write_prompt_archive(directory, _pending_archive_name(), raw)
+
+
+def _dialog_archive(original, failure, terminal):
+    archive = {'schema': 'cabinet-abandoned-prompt/v1', 'operation_id': DIALOG_OPERATION,
+        'original_selection': original.decode('utf-8'), 'failure_receipt': failure.decode('utf-8'),
+        'terminal_receipt': terminal.decode('utf-8'), **_archive_identity(DIALOG_OPERATION),
+        'caller_closed': True, 'disposition': 'ABANDONED_PREMASTER_PROMPT_UNRESOLVED',
+        'returned_collection_ref': None, 'os_orphan_deleted': False, 'possible_collection_exists': 'unknown'}
+    raw = canonical(archive)
+    # The actual retained terminal is larger than its predecessor. Prove the
+    # existing bound before any backend/archive/pointer mutation; never widen it.
+    require(len(raw) <= 32768)
+    _validate_pending_archive(raw)
+    return raw
+
+
+def retire_owned_dialog_dummy(failure_receipt, terminal_receipt, input_receipt, caller_receipt, *, timeout=10.0):
+    """Only ended b8cc865d, zero input/master, with the full immutable chain.
+
+    This is not a prompt replay/reset and does not prove no OS object exists.
+    All four retained input/caller/result receipts are checked before connecting;
+    the archived terminal itself pins the ancillary receipts for later rereads.
+    """
+    require(os.getuid() == UID and os.isatty(0)
+            and type(timeout) in (int, float) and 0 < timeout <= 10)
+    _dialog_input_proofs(input_receipt, caller_receipt)
+    for raw, expected in ((failure_receipt, DIALOG_FAILURE_SHA), (terminal_receipt, DIALOG_TERMINAL_SHA)):
+        require(type(raw) is bytes and hashlib.sha256(raw).hexdigest() == expected)
+    deadline = time.monotonic() + timeout
+    with mutation_lock(deadline):
+        directory = _open_checked_directory(str(Path(SELECTION).parent))
+        try:
+            original, identity = _read_private_at(directory, 'selection.json', 4096)
+            require(stat.S_IMODE(identity[4]) == 0o600)
+            _dialog_receipts(original, failure_receipt, terminal_receipt)
+            _dialog_predecessor(directory)
+            raw = _dialog_archive(original, failure_receipt, terminal_receipt)
+            backend = object.__new__(_SecretBackend)
+            backend._connect(deadline)
+            require(backend._dialog_caller_closed())
+            _write_prompt_archive(directory, _dialog_archive_name(), raw)
+            current, current_identity = _read_private_at(directory, 'selection.json', 4096)
+            require(current == original and current_identity == identity)
+            os.unlink('selection.json', dir_fd=directory)
+            os.fsync(directory)
+            return DIALOG_OPERATION
+        finally:
+            os.close(directory)
 
 
 def retire_prompt_pending_dummy(failure_receipt, terminal_receipt, *, timeout=10.0):
@@ -1640,7 +1797,7 @@ def provision(*, timeout=120.0, continuation_archive=None):
     A pending setup intent is not implicitly retried or adopted.
     """
     require(os.isatty(0) and type(timeout) in (int, float) and 0 < timeout <= 120)
-    require(continuation_archive is None or continuation_archive in (OLD_DUMMY_OPERATION, PENDING_OPERATION))
+    require(continuation_archive is None or continuation_archive in (OLD_DUMMY_OPERATION, PENDING_OPERATION, DIALOG_OPERATION))
     operation_id = str(uuid.uuid4())
     result = {'status': 'UNAVAILABLE', 'collection_ref': None}
     read_fd, write_fd = os.pipe()
@@ -1730,7 +1887,7 @@ def _main(argv):
         operation_id, response_fd = _uuid(argv[3]), int(argv[5])
         continuation = None
         if len(argv) == 8:
-            require(argv[6] == '--continuation-archive' and argv[7] in (OLD_DUMMY_OPERATION, PENDING_OPERATION))
+            require(argv[6] == '--continuation-archive' and argv[7] in (OLD_DUMMY_OPERATION, PENDING_OPERATION, DIALOG_OPERATION))
             continuation = argv[7]
         _check_pipe(response_fd, os.O_WRONLY)
         deadline = time.monotonic() + 120
