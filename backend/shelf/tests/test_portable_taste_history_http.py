@@ -73,3 +73,25 @@ class TasteHistoryHTTPTests(NativeFeedbackCase):
         self.assertEqual(self.post('/cabinet/taste/history/preview',{**values,'expected_state_digest':'0'*9000}).status_code,422)
         self.assertEqual(PortableJourneyCommand.objects.count(),count)
         self.assertEqual(FeedbackEvent.objects.count(),1)
+
+    def test_original_native_maybe_interest_remains_displayable_comparable_and_restorable(self):
+        from shelf.models import FeedbackProjection
+        history=TasteHistory(self.authority)
+        first=self.fields(value='maybe')
+        self.assertEqual(self.post('/cabinet/taste',first).status_code,303)
+        point=PortableJourneyCommand.objects.get(kind='taste.checkpoint',
+            result__origin_command_ref=first['mutation_id']).result
+        newer={**first,'value':'yes','base_revision':1,'mutation_id':str(uuid.uuid4())}
+        self.assertEqual(self.post('/cabinet/taste',newer).status_code,303)
+        path='/cabinet/taste/history/'+point['checkpoint_ref']
+        compared=self.http.get(path,{'profile_ref':self.profile_ref},**self.headers)
+        self.assertEqual(compared.status_code,200)
+        self.assertContains(compared,'Maybe')
+        fields=Forms(compared.content).rows['/cabinet/taste/history/preview'];fields.pop('csrfmiddlewaretoken',None)
+        response=self.post('/cabinet/taste/history/preview',fields);self.assertEqual(response.status_code,303)
+        preview=self.http.get(response['Location'],**self.headers)
+        self.assertEqual(preview.status_code,200);self.assertContains(preview,'Maybe')
+        fields=Forms(preview.content).rows['/cabinet/taste/history/restore'];fields.pop('csrfmiddlewaretoken',None)
+        fields['confirmed']='restore_taste_choices'
+        self.assertEqual(self.post('/cabinet/taste/history/restore',fields).status_code,303)
+        self.assertEqual(FeedbackProjection.objects.get(signal='interest').value,{'value':'maybe','basis':'anticipated'})
