@@ -184,3 +184,36 @@ that semantic failure and its correction are retained separately. These receipts
 are live acquisition/handler evidence, not a browser or working-source acceptance.
 No body or image archive, durable source-reference grant or native activation is
 introduced. The 24 Moons release remains independent of PR83's recovery/UI tails.
+
+### Linden current public programmes (E6)
+
+The thin Linden adapter reads only the fixed official public-programmes page's
+`s8-datarepeater1_ajaxcontainer` region. The separately identified past-events
+repeater is excluded. Each current boxed card supplies one heading, date/time
+paragraph and one consistent official `/event-rsvp/` destination; no RSVP,
+detail, archive pagination, script or image endpoint is requested.
+
+The exact robots read returned200/77 bytes and allowed the page at the existing
+ten-second origin floor. An initial strict card-field inspection failed because
+Oncord emits bare width/height attributes on image tags. The source adapter
+ignores image tags entirely, retaining the shared tree's strict checks for useful
+markup. Visible text boundaries preserve dates, clocks, venue/audience notices
+and labels such as `Ages 2+` and `Ages 8-16`. Names and age labels never create
+verified artist identities, public eligibility, prices or ticket availability.
+
+Explicit weekday/calendar dates are checked; missing years stay unknown. Local
+clock ranges distinguish occurrences without inventing a timezone or absolute
+instant. An overnight clock without a following date does not gain a guessed end
+day. Session-scoped cancellations reconcile before the eight-week projection;
+malformed/challenge pages are invalid and recognized out-of-window-only cards
+are unavailable. Shared limits remain 512 KiB,48 scanned cards,nine leads and
+fifteen-minute content retention. No durable source-reference grant is supplied.
+
+Twenty-nine focused parser/transport/registry/engine/normal-handler checks pass.
+One actual guarded action at `2de95d6` made one fixed HTTP200 read (96908 bytes)
+and returned four current events with correct source dates, local clock ranges
+and audience notices. POST/replay returned302 and render200, with no extra read
+on replay/reload and no taste history. Fixture response/save/Undo/fresh-session
+checks remain distinct from that live acquisition and from actual browser and
+independent working-source acceptance. The first failed inspection is retained;
+no repeated status probe or automatic retry occurred.

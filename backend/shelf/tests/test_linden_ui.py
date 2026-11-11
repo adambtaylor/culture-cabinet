@@ -40,4 +40,3 @@ class LindenUITests(TestCase):
             self.assertEqual(self.client.post(self.action,
                 self.form('event_source',source_id='linden')).status_code,404)
         self.assertEqual(views.PUBLIC_CACHE._cache,{})
-

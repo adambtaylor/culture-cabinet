@@ -76,4 +76,3 @@ class LindenParserTests(TestCase):
             listing().replace(b'<p>',b'<p ambiguous>'),listing(*(card(str(i)) for i in range(49)))):
             with self.subTest(raw=raw[:50]),self.assertRaises(SourceError):self.parse(raw)
         self.assertEqual(len(self.parse(listing(*(card(str(i)) for i in range(48))))),9)
-
