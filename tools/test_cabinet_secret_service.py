@@ -2045,6 +2045,200 @@ class PasswordPairRetirementTests(unittest.TestCase):
         connect.assert_not_called();self.assert_untouched()
 
 
+# Frozen nonsecret actual receipts, embedded so tests never read operator state.
+OWNER_ENROLLMENT = b'{\n  "state": "CANCELLED_OR_UNCERTAIN_NO_RETRY",\n  "stage": "enroll",\n  "source_head": "7af0023c70f1fde66b4da94bfb2557dd5f57974c",\n  "source_tree": "bedcd9cb5e77de06772d98b22fe82108350f687d",\n  "keyring_helper_sha256": "3466ea63ed310dae59bde7ce4d55eabcdeac8bd6d6717d1596cfe2098a925697",\n  "wrapper_sha256": "4e3729d41d3ad74093b1cc5a2b258c75b9a32ddf9e67ad530c8c6f51bb6e1bc4",\n  "profile": "owner-operated-os/v1",\n  "custody_mode": "owner_os_prompt",\n  "real_key": false,\n  "provider_calls": 0,\n  "started_utc": "2026-11-11T08:48:03.972137+00:00",\n  "parent_generation": [\n    1616904,\n    135612024\n  ],\n  "provision_bound_seconds": 120,\n  "owner_os_prompt_only": true,\n  "provision_effect_pending": true,\n  "provision_result": {\n    "status": "UNAVAILABLE",\n    "collection_ref": null\n  },\n  "error_type": "RuntimeError",\n  "reason": "PROVISION_UNAVAILABLE_OR_UNCERTAIN_NO_RETRY",\n  "owned_metadata_callers_closed": [],\n  "cancelled": false,\n  "handled_signals": [],\n  "last_selection": {\n    "canary_prompt_ref": null,\n    "canary_ref": null,\n    "canary_state": "NOT_STARTED",\n    "continuation_archive": "1cc2bd37-8f62-420d-928d-ec9c28945013",\n    "creation_operation_id": "2806e95c-fcb6-4ab8-94a7-b090bc52affc",\n    "decoded_identifier": null,\n    "file_binding": null,\n    "keyring_directory": "/home/tang/.local/share/keyrings",\n    "master_phase": "NOT_STARTED",\n    "prompt_observation": {\n      "acknowledgement": "ACKNOWLEDGED",\n      "completion": "UNOBSERVED",\n      "termination": "UNOBSERVED"\n    },\n    "requested_label": "CultureCabineta915d0e1fe954b27bb810365171828e2",\n    "returned_collection_ref": null,\n    "returned_prompt_ref": "/org/freedesktop/secrets/prompt/p5",\n    "schema": "cabinet-key-store-selection/v2",\n    "service_provenance": {\n      "caller": ":1.24305",\n      "implementation": "gnome-keyring-51.1",\n      "service_owner": ":1.0",\n      "service_uid": 1000\n    },\n    "state": "PROMPT_PENDING",\n    "terminal_fact": null,\n    "verified_filename": null\n  }\n}\n'
+OWNER_BINDING = b'{\n  "state": "ACTUAL_OWNER_PROMPT_PENDING",\n  "selection_sha256": "6d962b12224290b5820c7258797462f57e714bbe7d23cb5775415c56f8f47779",\n  "selection": {\n    "canary_prompt_ref": null,\n    "canary_ref": null,\n    "canary_state": "NOT_STARTED",\n    "continuation_archive": "1cc2bd37-8f62-420d-928d-ec9c28945013",\n    "creation_operation_id": "2806e95c-fcb6-4ab8-94a7-b090bc52affc",\n    "decoded_identifier": null,\n    "file_binding": null,\n    "keyring_directory": "/home/tang/.local/share/keyrings",\n    "master_phase": "NOT_STARTED",\n    "prompt_observation": {\n      "acknowledgement": "ACKNOWLEDGED",\n      "completion": "UNOBSERVED",\n      "termination": "UNOBSERVED"\n    },\n    "requested_label": "CultureCabineta915d0e1fe954b27bb810365171828e2",\n    "returned_collection_ref": null,\n    "returned_prompt_ref": "/org/freedesktop/secrets/prompt/p5",\n    "schema": "cabinet-key-store-selection/v2",\n    "service_provenance": {\n      "caller": ":1.24305",\n      "implementation": "gnome-keyring-51.1",\n      "service_owner": ":1.0",\n      "service_uid": 1000\n    },\n    "state": "PROMPT_PENDING",\n    "terminal_fact": null,\n    "verified_filename": null\n  },\n  "no_password_read_or_input": true,\n  "owner_ready": "DIRECT_REPLY_CONFIRMED_THROUGH_ROOT",\n  "original_bound_seconds": 120\n}\n'
+OWNER_TERMINAL = b'{\n  "id": "OWNER_OS_ACTUAL_2806_TERMINAL_AND_CLEANUP_01",\n  "state": "ENDED_UNAVAILABLE_NO_REPLAY_NO_STORAGE_ACCEPTANCE",\n  "observed_utc": "2026-11-11T08:56:21.642822+00:00",\n  "accepted_packet_sha256": "090ce5d504b680a56f0e3a89572223c4737008ba24eccdea34a01ccdd9982dd6",\n  "source_head": "7af0023c70f1fde66b4da94bfb2557dd5f57974c",\n  "source_tree": "bedcd9cb5e77de06772d98b22fe82108350f687d",\n  "keyring_helper_sha256": "3466ea63ed310dae59bde7ce4d55eabcdeac8bd6d6717d1596cfe2098a925697",\n  "wrapper_sha256": "4e3729d41d3ad74093b1cc5a2b258c75b9a32ddf9e67ad530c8c6f51bb6e1bc4",\n  "retirement": {\n    "receipt": "/home/tang/.codex/visualizations/2026/11/08/01a1b94d-3181-7451-84dc-55d2d7d637f8/api-wiring-2026-11-10/owner-os-positive-v2/owner-retire-01.json",\n    "sha256": "7643482cd49c7ffc59148480f646fdde8a49433133efa677d8f3fbaaa2f5c5ec",\n    "state": "PASS",\n    "operation": "1cc2bd37-8f62-420d-928d-ec9c28945013"\n  },\n  "prompt_binding": {\n    "receipt": "/home/tang/.codex/visualizations/2026/11/08/01a1b94d-3181-7451-84dc-55d2d7d637f8/api-wiring-2026-11-10/owner-os-positive-v2/owner-actual-prompt-binding-01.json",\n    "sha256": "57a9bf752bce0cdc09fdf012a46fbc7bb0ffabcb9ebcf71c5ba21041a04e7807"\n  },\n  "enrollment": {\n    "receipt": "/home/tang/.codex/visualizations/2026/11/08/01a1b94d-3181-7451-84dc-55d2d7d637f8/api-wiring-2026-11-10/owner-os-positive-v2/owner-enroll-01.json",\n    "sha256": "0750f70efee6b6864bf665e22da8b04f2e1cb47445199efdcbb937f340bb7b62",\n    "exit_code": 1,\n    "original_bound_seconds": 120,\n    "root_observed_elapsed_ms": 120133,\n    "result": {\n      "status": "UNAVAILABLE",\n      "collection_ref": null\n    },\n    "cancelled": false,\n    "reason": "PROVISION_UNAVAILABLE_OR_UNCERTAIN_NO_RETRY"\n  },\n  "preserved_selection": {\n    "canary_prompt_ref": null,\n    "canary_ref": null,\n    "canary_state": "NOT_STARTED",\n    "continuation_archive": "1cc2bd37-8f62-420d-928d-ec9c28945013",\n    "creation_operation_id": "2806e95c-fcb6-4ab8-94a7-b090bc52affc",\n    "decoded_identifier": null,\n    "file_binding": null,\n    "keyring_directory": "/home/tang/.local/share/keyrings",\n    "master_phase": "NOT_STARTED",\n    "prompt_observation": {\n      "acknowledgement": "ACKNOWLEDGED",\n      "completion": "UNOBSERVED",\n      "termination": "UNOBSERVED"\n    },\n    "requested_label": "CultureCabineta915d0e1fe954b27bb810365171828e2",\n    "returned_collection_ref": null,\n    "returned_prompt_ref": "/org/freedesktop/secrets/prompt/p5",\n    "schema": "cabinet-key-store-selection/v2",\n    "service_provenance": {\n      "caller": ":1.24305",\n      "implementation": "gnome-keyring-51.1",\n      "service_owner": ":1.0",\n      "service_uid": 1000\n    },\n    "state": "PROMPT_PENDING",\n    "terminal_fact": null,\n    "verified_filename": null\n  },\n  "selection_sha256": "6d962b12224290b5820c7258797462f57e714bbe7d23cb5775415c56f8f47779",\n  "selection_identity": [\n    57,\n    1042776,\n    1000,\n    1000,\n    33152,\n    1,\n    830,\n    1794386884106007671,\n    1794386884108007672\n  ],\n  "cleanup": {\n    "original_parent_generation": [\n      1616904,\n      135612024\n    ],\n    "original_parent_generation_ended": true,\n    "original_caller": ":1.24305",\n    "caller_has_owner": false,\n    "gcr_windows_present": 0,\n    "accepted_provision_client_returned": true,\n    "helper_child": "Accepted source provision finally returned and wrapper exited; child reaping attributed to exact accepted client. No helper PID invented or orphan scan.",\n    "agent_password_keeper_ever_started": false,\n    "live_agent_password_custody": false,\n    "prompt_methods_after_exit": 0,\n    "collection_or_file_deletion": 0,\n    "os_collection_orphan_disposition": "UNKNOWN; no returned identity/no guessed cleanup target"\n  },\n  "actual_facts": {\n    "prompt_method_acknowledged": true,\n    "completed_result_retained": false,\n    "collection_ref": null,\n    "file_binding": null,\n    "canary": "NOT_STARTED",\n    "master": "NOT_STARTED",\n    "dummy_put": "NOT_STARTED",\n    "fresh_read": "NOT_STARTED",\n    "owner_native_handoff": "NOT_CREATED",\n    "native_proof": "NOT_STARTED",\n    "provider_calls": 0,\n    "real_key_used": false\n  },\n  "owner_observation": {\n    "source": "Direct owner messages relayed by Root",\n    "saw_expected_dialog": false,\n    "viewing": "remote desktop window on Mac",\n    "same_compositor_output_workspace_verified": false,\n    "rendered_dialog_observed_by_agent": false,\n    "password_or_widget_contents_inspected": false\n  },\n  "failure_scope": "Original owner-operated prompt did not supply retained Completed before original120s result UNAVAILABLE. ACK/expired client is not proof that no collection exists, and no exact cancellation/dismissal subtype is invented.",\n  "next": "No reenroll/replay/fresh-read. Root diagnoses actual remote-view/session match and routes exact ended2806 pointer disposition if needed. Existing hard-coded1cc2 retirement is not a generic2806 reset. Preserve raw current pointer/archive chain and all receipts."\n}\n'
+OWNER_RETIREMENT = b'{\n  "state": "PASS",\n  "stage": "retire",\n  "source_head": "7af0023c70f1fde66b4da94bfb2557dd5f57974c",\n  "source_tree": "bedcd9cb5e77de06772d98b22fe82108350f687d",\n  "keyring_helper_sha256": "3466ea63ed310dae59bde7ce4d55eabcdeac8bd6d6717d1596cfe2098a925697",\n  "wrapper_sha256": "4e3729d41d3ad74093b1cc5a2b258c75b9a32ddf9e67ad530c8c6f51bb6e1bc4",\n  "profile": "owner-operated-os/v1",\n  "custody_mode": "owner_os_prompt",\n  "real_key": false,\n  "provider_calls": 0,\n  "started_utc": "2026-11-11T08:47:58.308553+00:00",\n  "retirement_effect_pending": true,\n  "retirement_returned_operation": "1cc2bd37-8f62-420d-928d-ec9c28945013",\n  "retirement_archive_chain": [\n    {\n      "operation_id": "f6ed3437-1f93-4564-8a6d-e558e5dd6462",\n      "archive_sha256": "184e1a5ac45fe03f4bd59659c3dca3dc15d2a67b873c619c86009533a09a9dfb"\n    },\n    {\n      "operation_id": "ce102960-02f0-4697-8008-371439a02d04",\n      "archive_sha256": "fe7a79afb45e22a6ac1d7b4cc4080d4ac5c60d1abc5f494277aa19900c12cc77"\n    },\n    {\n      "operation_id": "b8cc865d-df30-46da-969a-cf7fa40c6eba",\n      "archive_sha256": "9d6ada8785c4d05c8d4c77bb56754391ebe812da8d624273a4e0fef291d4819d"\n    },\n    {\n      "operation_id": "1cc2bd37-8f62-420d-928d-ec9c28945013",\n      "archive_sha256": "96de05d1e92531b76ce8d998e7ca7a1b24798bdf7df8a75b19219ea3e6dfd89d"\n    }\n  ],\n  "owned_metadata_callers_closed": [],\n  "cancelled": false,\n  "handled_signals": []\n}\n'
+
+class OwnerPromptRetirementTests(unittest.TestCase):
+    def set_pending(self, value):
+        PendingPromptRetirementTests.set_pending(self, value)
+
+    def setUp(self):
+        PasswordPairRetirementTests.setUp(self)
+        store.retire_password_pair_dummy(PAIR_ACTUAL_FAILURE, PAIR_ACTUAL_POSITIVE,
+                                        PAIR_ACTUAL_INPUT, PAIR_ACTUAL_CALLER)
+        self.fourth = self.directory / store._pair_archive_name()
+        self.fourth_bytes = self.fourth.read_bytes()
+        digest = hashlib.sha256(self.fourth_bytes).hexdigest()
+        self.enterContext(patch.object(store, 'OWNER_PROMPT_PREDECESSOR_SHA', digest))
+        retired = json.loads(OWNER_RETIREMENT)
+        retired['retirement_archive_chain'][-1]['archive_sha256'] = digest
+        self.retirement = store.canonical(retired)
+        self.enterContext(patch.object(store, 'OWNER_PROMPT_RETIREMENT_SHA', hashlib.sha256(self.retirement).hexdigest()))
+        terminal = json.loads(OWNER_TERMINAL)
+        terminal['retirement']['sha256'] = store.OWNER_PROMPT_RETIREMENT_SHA
+        self.terminal = store.canonical(terminal)
+        self.enterContext(patch.object(store, 'OWNER_PROMPT_TERMINAL_SHA', hashlib.sha256(self.terminal).hexdigest()))
+        self.value = json.loads(OWNER_BINDING)['selection']
+        self.original = store.canonical(self.value)
+        self.assertEqual(hashlib.sha256(self.original).hexdigest(), store.OWNER_PROMPT_SELECTION_SHA)
+        self.pointer.write_bytes(self.original); self.pointer.chmod(0o600)
+        self.closed = self.enterContext(patch.object(store._SecretBackend, '_owner_prompt_caller_closed', return_value=True))
+        self.ended = self.enterContext(patch.object(store, '_owner_prompt_parent_ended', return_value=True))
+
+    def retire(self, enrollment=None, binding=None, terminal=None, retirement=None):
+        return store.retire_owner_prompt_dummy(
+            OWNER_ENROLLMENT if enrollment is None else enrollment,
+            OWNER_BINDING if binding is None else binding,
+            self.terminal if terminal is None else terminal,
+            self.retirement if retirement is None else retirement)
+
+    def untouched(self):
+        self.assertEqual(self.pointer.read_bytes(), self.original)
+        self.assertFalse((self.directory / store._owner_prompt_archive_name()).exists())
+
+    def test_five_links_archive_exact_bytes_and_reject_every_old_continuation(self):
+        ancestors = {p.name: p.read_bytes() for p in self.directory.glob('abandoned-*')}
+        self.assertEqual(self.retire(), store.OWNER_PROMPT_OPERATION)
+        archive = self.directory / store._owner_prompt_archive_name()
+        self.assertEqual(archive.stat().st_mode & 0o777, 0o400)
+        self.assertLessEqual(len(archive.read_bytes()), 32768)
+        saved = store._validate_owner_prompt_archive(archive.read_bytes())
+        for field, raw in (('original_selection',self.original), ('enrollment_receipt',OWNER_ENROLLMENT),
+                ('prompt_binding_receipt',OWNER_BINDING), ('terminal_receipt',self.terminal),
+                ('retirement_receipt',self.retirement)):
+            self.assertEqual(saved[field].encode(),raw)
+        for name, raw in ancestors.items(): self.assertEqual((self.directory/name).read_bytes(),raw)
+        self.assertFalse(self.pointer.exists())
+        store._check_continuation(store.OWNER_PROMPT_OPERATION)
+        for old in (None,store.OLD_DUMMY_OPERATION,store.PENDING_OPERATION,store.DIALOG_OPERATION,store.PAIR_OPERATION):
+            with self.subTest(old=old), self.assertRaises(store.Refused): store._check_continuation(old)
+
+    def test_changed_each_receipt_refuses_before_connection(self):
+        for name, raw in (('enrollment',OWNER_ENROLLMENT), ('binding',OWNER_BINDING),
+                          ('terminal',self.terminal), ('retirement',self.retirement)):
+            with self.subTest(name=name), patch.object(store._SecretBackend,'_connect') as connect, self.assertRaises(store.Refused):
+                self.retire(**{name:raw+b' '})
+            connect.assert_not_called();self.untouched()
+
+    def test_live_caller_or_parent_refuses(self):
+        for mock in (self.closed,self.ended):
+            mock.return_value=False
+            with self.assertRaises(store.Refused):self.retire()
+            self.untouched();mock.return_value=True
+
+    def test_changed_exact_selection_or_any_progress_refuses(self):
+        for changes in ({'creation_operation_id':store.PAIR_OPERATION},
+                {'requested_label':'CultureCabinet'+'0'*32},
+                {'returned_prompt_ref':'/org/freedesktop/secrets/prompt/other'},
+                {'service_provenance':{**self.value['service_provenance'],'caller':':1.999'}},
+                {'returned_collection_ref':store.COLLECTION_ROOT+'owned'},
+                {'canary_state':'CREATE_PENDING'}, {'master_phase':'WRITE_PENDING'},
+                {'terminal_fact':'UNCERTAIN_OR_REFUSED'}):
+            changed=store.canonical({**self.value,**changes});self.pointer.write_bytes(changed)
+            with self.subTest(changes=changes),patch.object(store,'OWNER_PROMPT_SELECTION_SHA',hashlib.sha256(changed).hexdigest()),self.assertRaises(store.Refused):self.retire()
+            self.assertFalse((self.directory/store._owner_prompt_archive_name()).exists())
+        self.pointer.write_bytes(self.original)
+
+    def test_cas_race_leaves_new_pointer_and_durable_archive(self):
+        read=store._read_private_at;seen=[]
+        def race(directory,name,*args):
+            if name=='selection.json':
+                seen.append(name)
+                if len(seen)==2:
+                    replacement=self.directory/'replacement';replacement.write_bytes(self.original)
+                    replacement.chmod(0o600);os.replace(replacement,self.pointer)
+            return read(directory,name,*args)
+        with patch.object(store,'_read_private_at',side_effect=race),self.assertRaises(store.Refused):self.retire()
+        self.assertEqual(self.pointer.read_bytes(),self.original)
+        self.assertTrue((self.directory/store._owner_prompt_archive_name()).exists())
+
+    def test_fsync_interruption_identical_archive_recovery(self):
+        with patch.object(store.os,'fsync',side_effect=OSError()),self.assertRaises(OSError):self.retire()
+        self.assertTrue(self.pointer.exists())
+        archive=self.directory/store._owner_prompt_archive_name();raw=archive.read_bytes();inode=archive.stat().st_ino
+        self.retire();self.assertEqual(archive.read_bytes(),raw);self.assertEqual(archive.stat().st_ino,inode)
+        store._check_continuation(store.OWNER_PROMPT_OPERATION)
+
+    def test_foreign_archive_or_changed_missing_predecessor_refuses(self):
+        archive=self.directory/store._owner_prompt_archive_name();archive.write_bytes(b'foreign');archive.chmod(0o400)
+        with self.assertRaises(store.Refused):self.retire()
+        self.assertEqual(archive.read_bytes(),b'foreign');self.assertTrue(self.pointer.exists())
+        archive.unlink();self.fourth.chmod(0o600);self.fourth.write_bytes(self.fourth_bytes+b' ');self.fourth.chmod(0o400)
+        with self.assertRaises(store.Refused):self.retire()
+        self.untouched();self.fourth.unlink()
+        with self.assertRaises(FileNotFoundError):self.retire()
+        self.untouched()
+
+    def test_worker_new_link_reaches_only_one_creation_and_pending_blocks_it(self):
+        from unittest.mock import Mock
+        operation='30000000-0000-4000-8000-000000000003'
+        with patch.object(store,'_Creation') as creation:
+            with self.assertRaises(store.Refused):
+                store._provision_worker(operation,time.monotonic()+10,store.OWNER_PROMPT_OPERATION)
+            creation.assert_not_called()
+        self.retire()
+        fixture=Mock();fixture.create.side_effect=store.Refused()
+        with patch.object(store._SecretBackend,'_verify_service'),patch.object(store,'_Creation',return_value=fixture) as creation:
+            with self.assertRaises(store.Refused):
+                store._provision_worker(operation,time.monotonic()+10,store.OWNER_PROMPT_OPERATION)
+        self.assertEqual(creation.call_args.args[2],store.OWNER_PROMPT_OPERATION)
+        fixture.create.assert_called_once();fixture.bind_file.assert_not_called()
+
+    def test_terminal_and_size_bounds(self):
+        with patch.object(store.os,'isatty',return_value=False),self.assertRaises(store.Refused):self.retire()
+        self.untouched()
+        canonical=store.canonical
+        def oversize(value):
+            raw=canonical(value)
+            return raw+b' '*(32769-len(raw)) if value.get('schema')=='cabinet-abandoned-owner-prompt/v1' else raw
+        with patch.object(store,'canonical',side_effect=oversize),self.assertRaises(store.Refused):self.retire()
+        self.untouched()
+
+    def test_closed_archive_schema_rejects_unknown_fields(self):
+        self.retire();archive=self.directory/store._owner_prompt_archive_name()
+        value=json.loads(archive.read_bytes());value['extra']=True
+        with self.assertRaises(store.Refused):store._validate_owner_prompt_archive(store.canonical(value))
+
+    def test_new_continuation_selection_and_explicit_parent_client(self):
+        self.retire()
+        value=store._new_selection(str(store.uuid.uuid4()),SimpleNamespace(owner=':1.0',connection=SimpleNamespace(get_unique_name=lambda:':1.555')),store.OWNER_PROMPT_OPERATION)
+        store._selection_shape(value,allow_pending=True)
+        with patch.object(store.subprocess,'Popen',side_effect=OSError('captured')) as popen:
+            store.provision(continuation_archive=store.OWNER_PROMPT_OPERATION)
+        self.assertIn(store.OWNER_PROMPT_OPERATION,popen.call_args.args[0])
+
+
+class OwnerPromptActualReceiptTests(unittest.TestCase):
+    def test_exact_actual_receipts_without_operator_state(self):
+        selection=store.canonical(json.loads(OWNER_BINDING)['selection'])
+        store._owner_prompt_receipts(selection,OWNER_ENROLLMENT,OWNER_BINDING,OWNER_TERMINAL,OWNER_RETIREMENT)
+
+    def test_child_cli_forwards_newest_link_without_os_effect(self):
+        operation='30000000-0000-4000-8000-000000000003'
+        with patch.object(store,'_protect_process'), patch.object(store,'_check_pipe'), \
+             patch.object(store,'_provision_worker') as worker, patch.object(store,'_pipe_write'), \
+             patch.object(store.os,'close'):
+            store._main([store.HELPER,'--provision','--operation-id',operation,
+                '--response-fd','99','--continuation-archive',store.OWNER_PROMPT_OPERATION])
+        self.assertEqual(worker.call_args.args[0],operation)
+        self.assertEqual(worker.call_args.args[2],store.OWNER_PROMPT_OPERATION)
+
+    def test_bus_check_is_only_pinned_metadata_and_rejects_changed_service(self):
+        backend=object.__new__(store._SecretBackend)
+        backend.owner=':1.0';backend.GLib=SimpleNamespace(Variant=lambda signature,value:(signature,value))
+        backend._verify_service=lambda:None
+        from unittest.mock import Mock
+        backend._dbus=Mock(return_value=SimpleNamespace(get_type_string=lambda:'(b)',unpack=lambda:(False,)))
+        self.assertTrue(backend._owner_prompt_caller_closed())
+        self.assertEqual(backend._dbus.call_args.args,('org.freedesktop.DBus','/org/freedesktop/DBus',
+            'org.freedesktop.DBus','NameHasOwner',('(s)',(':1.24305',))))
+        backend.owner=':1.9';backend._dbus.reset_mock()
+        with self.assertRaises(store.Refused):backend._owner_prompt_caller_closed()
+        backend._dbus.assert_not_called()
+
+    def test_parent_generation_metadata_exact_reuse_and_absence(self):
+        # Reused numeric PID is harmless; the original live generation refuses.
+        stat_line='1616904 (public name) '+ ' '.join(['0']*19+['135612024'])
+        with patch.object(Path,'stat',return_value=SimpleNamespace(st_uid=1000)),patch.object(Path,'read_text',return_value=stat_line):
+            self.assertFalse(store._owner_prompt_parent_ended())
+        with patch.object(Path,'stat',side_effect=FileNotFoundError):self.assertTrue(store._owner_prompt_parent_ended())
+        with patch.object(Path,'stat',return_value=SimpleNamespace(st_uid=1000)),patch.object(Path,'read_text',return_value=stat_line+'0'):
+            self.assertTrue(store._owner_prompt_parent_ended())
+
+
 class FileDummyCollection(DummyCollection):
     """Test-only ciphertext fixture, NOT an installed/file fallback vault.
 
