@@ -229,6 +229,65 @@ class NativeNoiseNoninterferenceTests(NativeFeedbackCase):
         self.assertFalse(PortableSourceCheckAttempt.objects.exists())
 
 
+    def test_native_cabinet_renders_linked_noise_report_and_exploratory_flags_separate_from_next_default(self):
+        import uuid
+        from shelf.disclosure import canonical_bytes
+        from shelf.enhance_contract import EnhanceIntent,CategoryOutcome
+        from shelf.models import PortableJourneyState,PortableJourneyCommand,FeedbackEvent
+        from shelf.portable_journey import PortableJourney
+        self.consent(self.profile_ref)
+        store=self.enhance._store(self.ref,self.profile_ref,str(self.config.pk))
+        current=store.current()
+        def intent():
+            return EnhanceIntent(str(uuid.uuid4()),str(uuid.uuid4()),str(uuid.uuid4()),store.current().bindings)
+        row=store.admit(intent(),local_context=current.local_context,selection_policy=RunSelectionPolicy(100))
+        cards=[dict(key='fixture:movie:'+str(index),category='movie',title='Synthetic film '+str(index),
+            medium='movie',provider='fixture',source_id=str(index),source_url='https://example.invalid/'+str(index),
+            identity_status='fixture_identity_only',evidence_type='fixture_not_live',
+            observed_at=self.clock.wall.isoformat(),valid_until=self.expires.isoformat(),
+            rights_ref='fixture-no-durable-rights',source_roots=['synthetic-evidence'],facts=[]) for index in range(3)]
+        outcomes=[dict(category=key,state='fresh' if key=='movie' else 'unavailable',
+            candidate_count=3 if key=='movie' else 0,code='OK' if key=='movie' else 'CAPABILITY_UNAVAILABLE')
+            for key in self.enhance.registry.categories]
+        row=store.checkpoint(str(row.pk),stage='awaiting_preview',outcomes=outcomes,
+            metadata={'phase':'inference','submitted_refs':{'signals':[],'candidates':[
+                dict(key=card['key'],evidence_refs=card['source_roots']) for card in cards]}},
+            collection_digest='c'*64,body_digest='b'*64,sealed_run_digest='d'*64)
+        row=store.reserve(str(row.pk),body_digest=row.body_digest,expected_revision=row.revision)
+        output=dict(schema='cabinet-inference-result/v1',associations=None,candidate_assessments=[dict(
+            candidate_key=card['key'],decision='retain',signal_keys=[],evidence_refs=card['source_roots'],
+            hypothesis='Synthetic source-grounded fixture only.') for card in cards])
+        store.record_result(str(row.pk),canonical_bytes(output))
+        policy,seed=store.freeze_selection(str(row.pk));reports=[]
+        manifest=GroundedSelector().build(output,{'profile':{'signals':[]},'candidates':cards},
+            tuple(CategoryOutcome(**value) for value in outcomes),selection_policy=policy,
+            selection_seed=seed,selection_report=reports)
+        store.publish(str(row.pk),manifest=manifest,expected_publication_revision=0,allowed_candidates=cards,
+            selection_report=dict(schema='selection-report/v1',policy_digest=policy.digest,seed=seed,categories=reports))
+        # A later admitted/cancelled choice changes only the next-round default.
+        # The current publication keeps its original policy and per-card report.
+        later=store.admit(intent(),selection_policy=RunSelectionPolicy(25))
+        store.cancel(str(later.pk),expected_revision=later.revision)
+        journey=PortableJourney(self.authority)
+        for _ in range(3):
+            projection=journey.project(self.ref,profile_ref=self.profile_ref)
+            self.assertEqual(self.post('/cabinet/journey/step',projection['actions']['step']['skip']['fields']).status_code,303)
+        self.assertEqual(PortableJourneyState.objects.get().next_noise,25)
+        before=(FeedbackEvent.objects.count(),PortableJourneyCommand.objects.count())
+        page=self.http.get('/cabinet',{'profile_ref':self.profile_ref,'category':'movie'},**self.headers)
+        self.assertEqual(page.status_code,200)
+        self.assertContains(page,'data-noise-run')
+        self.assertContains(page,'Noise 100 · frozen for this round')
+        self.assertContains(page,'not newly learned preferences')
+        exploratory=next(value for value in reports if value['category']=='movie')
+        self.assertTrue(exploratory['exploratory_keys'])
+        self.assertContains(page,'data-selection-exploratory',count=len(exploratory['exploratory_keys']))
+        self.assertContains(page,exploratory['reason'])
+        prepare=self.http.get('/setup/journey',{'profile_ref':self.profile_ref},**self.headers)
+        self.assertContains(prepare,'data-noise-control');self.assertContains(prepare,'value="25"')
+        self.assertEqual((FeedbackEvent.objects.count(),PortableJourneyCommand.objects.count()),before)
+
+
 class SelectionRetentionTests(ServiceCase):
     def published_policy(self):
         from shelf.enhance_contract import CategoryOutcome
