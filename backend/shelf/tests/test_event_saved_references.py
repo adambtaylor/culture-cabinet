@@ -4,7 +4,7 @@ from dataclasses import replace
 from unittest import TestCase
 
 from shelf import event_saved_references as refs
-from shelf.event_source_registry import SOURCES
+from shelf.event_source_registry import SOURCES, SOURCE_NAMESPACES
 from shelf.pbs_events import parse_listing, event_url
 from shelf.tests.test_pbs_events import listing
 from shelf.tests.test_discovery_transport import NOW
@@ -14,9 +14,9 @@ from shelf.event_sources import SOURCES as OLD_SOURCES, official_url
 
 
 def policies():
-    return {**SOURCES, 'pbs': replace(SOURCES['pbs'], reference_policy_ref='synthetic-private-bookmark/v1',
+    return {**SOURCES, 'pbs': replace(SOURCES['pbs'], reference_policy_ref='fixture-event-private-bookmark-reference/v1',
         restriction_namespace='event-source:pbs', reference_url_validator=event_url),
-        'venue303': replace(SOURCES['venue303'], reference_policy_ref='synthetic-private-bookmark/v1',
+        'venue303': replace(SOURCES['venue303'], reference_policy_ref='fixture-event-private-bookmark-reference/v1',
         restriction_namespace='event-source:venue303',
         reference_url_validator=lambda value: official_url(value, OLD_SOURCES['venue303']))}
 
@@ -45,6 +45,16 @@ class SavedReferenceTests(TestCase):
         self.assertIsNone(self.make(card, denied_namespaces={'event-source:pbs'}))
         for forbidden in ('title','starts_at','source_notice','snapshot_sha256','lineup','image'):
             self.assertNotIn(forbidden, reference)
+
+    def test_production_policies_are_null_and_namespaces_are_closed_even_when_disabled(self):
+        self.assertEqual(set(SOURCE_NAMESPACES),{'pbs','rrr','venue303','forum','moshtix'})
+        self.assertNotIn('events',SOURCE_NAMESPACES)
+        for source_id, namespace in SOURCE_NAMESPACES.items():
+            self.assertEqual(SOURCES[source_id].restriction_namespace,namespace)
+            self.assertIsNone(SOURCES[source_id].reference_policy_ref)
+        card=pbs_card()
+        self.assertIsNone(refs.validate_reference(self.make(card),key=card.key,mode='household',
+            provenance=card.provenance,descriptors=SOURCES))
 
     def test_stale_identity_cannot_refill_and_sample_evidence_cannot_cross_modes(self):
         card=pbs_card()
@@ -114,3 +124,7 @@ class SavedReferenceTests(TestCase):
         self.assertEqual(refs.referenced_namespaces(history,descriptors=policies()),{'event-source:pbs'})
         self.assertEqual(refs.referenced_namespaces(redacted,descriptors=policies()),set())
         self.assertEqual(refs.redact_history(history,source_namespaces={'pbs'},descriptors=policies()),history)
+        # Namespace identity survives missing/retired descriptors and no policy.
+        self.assertEqual(refs.redact_history(history,source_namespaces={'event-source:pbs'},
+            descriptors={}),redacted)
+        self.assertEqual(refs.referenced_namespaces(history,descriptors={}),{'event-source:pbs'})

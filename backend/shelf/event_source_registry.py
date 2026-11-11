@@ -10,6 +10,15 @@ from urllib.parse import urlsplit
 
 from shelf.discovery_sources import SourceError
 
+# Restriction identities outlive acquisition and bookmark-policy readiness.
+# This is a closed map, not permission or an event-source:* prefix parser.
+SOURCE_NAMESPACES = MappingProxyType({
+    'pbs': 'event-source:pbs', 'rrr': 'event-source:rrr',
+    'venue303': 'event-source:venue303', 'forum': 'event-source:forum',
+    'moshtix': 'event-source:moshtix',
+})
+REFERENCE_POLICY = 'event-private-bookmark-reference/v1'
+
 
 @dataclass(frozen=True)
 class EventSourceDescriptor:
@@ -26,7 +35,7 @@ class EventSourceDescriptor:
     policy_scope: str = 'Source access and retention remain unverified.'
     # Content-cache retention does not confer persistent bookmark permission.
     # Positive reviewed policies are supplied separately; absent means opaque.
-    reference_policy_ref: str = ''
+    reference_policy_ref: str | None = None
     restriction_namespace: str = ''
     reference_url_validator: Callable | None = None
 
@@ -135,7 +144,8 @@ def _descriptor(row):
     source_id, label, targets, boundary = row
     label = {'rrr': 'Triple R events', 'pbs': 'PBS Events',
              'venue303': '303 gigs and events', 'forum': 'Forum Melbourne shows'}.get(source_id, label)
-    common = dict(source_id=source_id, label=label, targets=targets)
+    common = dict(source_id=source_id, label=label, targets=targets,
+                  restriction_namespace=SOURCE_NAMESPACES.get(source_id, ''))
     active = {
         'rrr': (_rrr, _parse_rrr, 131072,
                 'Partial coverage: up to nine cards from one Triple R listing page. '
