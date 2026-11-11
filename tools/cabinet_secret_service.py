@@ -65,6 +65,13 @@ PAIR_CALLER_SHA = 'ae07d0f7bf7cee1a4e47de5d3a460c0b9dc42643c1bfdb0b67520785fccb4
 PAIR_CONTROLS_SHA = '192410980df337ad9b9468368622b92b648edeb7660fdaed78e1e940f79b88aa'
 PAIR_PREDECESSOR_SHA = '9d6ada8785c4d05c8d4c77bb56754391ebe812da8d624273a4e0fef291d4819d'
 PAIR_RECORDED_CLOCK = 1340075.871266088
+OWNER_PROMPT_OPERATION = '2806e95c-fcb6-4ab8-94a7-b090bc52affc'
+OWNER_PROMPT_SELECTION_SHA = '6d962b12224290b5820c7258797462f57e714bbe7d23cb5775415c56f8f47779'
+OWNER_PROMPT_ENROLLMENT_SHA = '0750f70efee6b6864bf665e22da8b04f2e1cb47445199efdcbb937f340bb7b62'
+OWNER_PROMPT_BINDING_SHA = '57a9bf752bce0cdc09fdf012a46fbc7bb0ffabcb9ebcf71c5ba21041a04e7807'
+OWNER_PROMPT_TERMINAL_SHA = '60eb208ec6443c764016a1c1a1f7c549531908559ff06ae50e3473f94489447a'
+OWNER_PROMPT_RETIREMENT_SHA = '7643482cd49c7ffc59148480f646fdde8a49433133efa677d8f3fbaaa2f5c5ec'
+OWNER_PROMPT_PREDECESSOR_SHA = '96de05d1e92531b76ce8d998e7ca7a1b24798bdf7df8a75b19219ea3e6dfd89d'
 STATUS = frozenset(('AVAILABLE', 'LOCKED', 'MISSING', 'UNAVAILABLE', 'CONFLICT',
                     'CORRUPT', 'UNKNOWN', 'REMOVED'))
 REQUEST_FIELDS = frozenset(('version', 'operation', 'record_kind', 'binding',
@@ -860,7 +867,7 @@ def _selection_shape(value, *, allow_pending=False):
         if value[field] is not None:
             _object_ref(value[field])
     if value['continuation_archive'] is not None:
-        require(value['continuation_archive'] in (OLD_DUMMY_OPERATION, PENDING_OPERATION, DIALOG_OPERATION, PAIR_OPERATION))
+        require(value['continuation_archive'] in (OLD_DUMMY_OPERATION, PENDING_OPERATION, DIALOG_OPERATION, PAIR_OPERATION, OWNER_PROMPT_OPERATION))
     require(value['terminal_fact'] in (None, 'UNCERTAIN_OR_REFUSED'))
     require(value['canary_state'] in ('NOT_STARTED', 'CREATE_PENDING', 'CREATED', 'DELETE_PENDING', 'DELETED'))
     require(value['master_phase'] in ('NOT_STARTED', 'WRITE_PENDING', 'PRESENT'))
@@ -1181,6 +1188,15 @@ class _SecretBackend:
         self._verify_service()
         reply = self._dbus('org.freedesktop.DBus', '/org/freedesktop/DBus',
             'org.freedesktop.DBus', 'NameHasOwner', self.GLib.Variant('(s)', (':1.22631',)))
+        require(reply.get_type_string() == '(b)')
+        self._verify_service()
+        return reply.unpack()[0] is False
+
+    def _owner_prompt_caller_closed(self):
+        self._verify_service()
+        require(self.owner == ':1.0')
+        reply = self._dbus('org.freedesktop.DBus', '/org/freedesktop/DBus',
+            'org.freedesktop.DBus', 'NameHasOwner', self.GLib.Variant('(s)', (':1.24305',)))
         require(reply.get_type_string() == '(b)')
         self._verify_service()
         return reply.unpack()[0] is False
@@ -1678,14 +1694,186 @@ def _pair_predecessor(directory):
     return raw
 
 
+def _owner_prompt_archive_name():
+    return 'abandoned-' + OWNER_PROMPT_OPERATION + '.json'
+
+
+def _owner_prompt_selection(value):
+    _selection_shape(value, allow_pending=True)
+    require(value['state'] == 'PROMPT_PENDING'
+            and value['creation_operation_id'] == OWNER_PROMPT_OPERATION
+            and value['requested_label'] == 'CultureCabineta915d0e1fe954b27bb810365171828e2'
+            and value['service_provenance']['caller'] == ':1.24305'
+            and value['service_provenance']['service_owner'] == ':1.0'
+            and value['returned_prompt_ref'] == '/org/freedesktop/secrets/prompt/p5'
+            and value['continuation_archive'] == PAIR_OPERATION
+            and value['canary_state'] == value['master_phase'] == 'NOT_STARTED'
+            and value['terminal_fact'] is None
+            and value['prompt_observation'] == {'acknowledgement': 'ACKNOWLEDGED',
+                'completion': 'UNOBSERVED', 'termination': 'UNOBSERVED'})
+    for field in ('returned_collection_ref', 'decoded_identifier', 'verified_filename',
+                  'file_binding', 'canary_ref', 'canary_prompt_ref'):
+        require(value[field] is None)
+
+
+def _owner_prompt_receipts(original, enrollment, binding, terminal, retirement):
+    # All authority is compiled raw-byte identity. No evidence path is opened,
+    # and no owner-reported password observation becomes a machine input fact.
+    for raw, expected in ((original, OWNER_PROMPT_SELECTION_SHA),
+            (enrollment, OWNER_PROMPT_ENROLLMENT_SHA), (binding, OWNER_PROMPT_BINDING_SHA),
+            (terminal, OWNER_PROMPT_TERMINAL_SHA), (retirement, OWNER_PROMPT_RETIREMENT_SHA)):
+        require(type(raw) is bytes and hashlib.sha256(raw).hexdigest() == expected)
+    value, enrolled, bound, ended, retired = map(strict_json,
+        (original, enrollment, binding, terminal, retirement))
+    _owner_prompt_selection(value)
+    require(enrolled['last_selection'] == bound['selection'] == ended['preserved_selection'] == value
+            and bound['selection_sha256'] == ended['selection_sha256'] == OWNER_PROMPT_SELECTION_SHA
+            and enrolled['state'] == 'CANCELLED_OR_UNCERTAIN_NO_RETRY'
+            and enrolled['provision_result'] == {'status': 'UNAVAILABLE', 'collection_ref': None}
+            and enrolled['parent_generation'] == [1616904, 135612024]
+            and enrolled['provision_bound_seconds'] == bound['original_bound_seconds'] == 120
+            and retired['state'] == 'PASS' and retired['retirement_returned_operation'] == PAIR_OPERATION
+            and retired['retirement_archive_chain'][-1] == {
+                'operation_id': PAIR_OPERATION, 'archive_sha256': OWNER_PROMPT_PREDECESSOR_SHA})
+    cleanup, facts = ended['cleanup'], ended['actual_facts']
+    require(cleanup['original_parent_generation'] == [1616904, 135612024]
+            and cleanup['original_parent_generation_ended'] is True
+            and cleanup['original_caller'] == ':1.24305' and cleanup['caller_has_owner'] is False
+            and cleanup['agent_password_keeper_ever_started'] is False
+            and cleanup['live_agent_password_custody'] is False
+            and facts['collection_ref'] is facts['file_binding'] is None
+            and facts['canary'] == facts['master'] == facts['dummy_put'] == facts['fresh_read'] == 'NOT_STARTED'
+            and facts['native_proof'] == 'NOT_STARTED' and facts['owner_native_handoff'] == 'NOT_CREATED'
+            and facts['provider_calls'] == 0 and facts['real_key_used'] is False)
+    for receipt in (enrolled, ended, retired):
+        require(receipt['source_head'] == '7af0023c70f1fde66b4da94bfb2557dd5f57974c'
+                and receipt['source_tree'] == 'bedcd9cb5e77de06772d98b22fe82108350f687d'
+                and receipt['keyring_helper_sha256'] == '3466ea63ed310dae59bde7ce4d55eabcdeac8bd6d6717d1596cfe2098a925697')
+    require(ended['enrollment']['sha256'] == OWNER_PROMPT_ENROLLMENT_SHA
+            and ended['prompt_binding']['sha256'] == OWNER_PROMPT_BINDING_SHA
+            and ended['retirement']['sha256'] == OWNER_PROMPT_RETIREMENT_SHA)
+    return value
+
+
+def _validate_owner_prompt_archive(raw):
+    archive = strict_json(raw)
+    _shape(archive, ('schema', 'operation_id', 'original_selection', 'selection_sha256',
+        'enrollment_receipt', 'enrollment_sha256', 'prompt_binding_receipt', 'prompt_binding_sha256',
+        'terminal_receipt', 'terminal_sha256', 'retirement_receipt', 'retirement_sha256',
+        'prior_archive', 'prior_archive_sha256', 'predecessor_chain', 'caller_closed',
+        'parent_generation_ended', 'disposition', 'possible_collection_exists', 'os_orphan_deleted'))
+    require(archive['schema'] == 'cabinet-abandoned-owner-prompt/v1'
+            and archive['operation_id'] == OWNER_PROMPT_OPERATION
+            and archive['selection_sha256'] == OWNER_PROMPT_SELECTION_SHA
+            and archive['enrollment_sha256'] == OWNER_PROMPT_ENROLLMENT_SHA
+            and archive['prompt_binding_sha256'] == OWNER_PROMPT_BINDING_SHA
+            and archive['terminal_sha256'] == OWNER_PROMPT_TERMINAL_SHA
+            and archive['retirement_sha256'] == OWNER_PROMPT_RETIREMENT_SHA
+            and archive['prior_archive'] == PAIR_OPERATION
+            and archive['prior_archive_sha256'] == OWNER_PROMPT_PREDECESSOR_SHA
+            and archive['caller_closed'] is archive['parent_generation_ended'] is True
+            and archive['disposition'] == 'ABANDONED_PREMASTER_PROMPT_UNRESOLVED'
+            and archive['possible_collection_exists'] == 'unknown' and archive['os_orphan_deleted'] is False)
+    fields = ('original_selection', 'enrollment_receipt', 'prompt_binding_receipt',
+              'terminal_receipt', 'retirement_receipt')
+    require(all(type(archive[field]) is str for field in fields))
+    _owner_prompt_receipts(*(archive[field].encode('utf-8') for field in fields))
+    require(archive['predecessor_chain'] == strict_json(archive['retirement_receipt'].encode())['retirement_archive_chain'])
+    return archive
+
+
+def _owner_prompt_predecessor(directory):
+    raw, identity = _read_private_at(directory, _pair_archive_name())
+    require(stat.S_IMODE(identity[4]) == 0o400
+            and hashlib.sha256(raw).hexdigest() == OWNER_PROMPT_PREDECESSOR_SHA
+            and _validate_pending_archive(raw)['operation_id'] == PAIR_OPERATION)
+    _pair_predecessor(directory)
+    return raw
+
+
+def _owner_prompt_parent_ended():
+    # /proc/stat contains public process identity; never inspect args or env.
+    folder = Path('/proc/1616904')
+    try:
+        require(folder.stat().st_uid == UID)
+        start = int((folder / 'stat').read_text().rsplit(')', 1)[1].split()[19])
+    except FileNotFoundError:
+        return True
+    return start != 135612024
+
+
+def retire_owner_prompt_dummy(enrollment_receipt, prompt_binding_receipt, terminal_receipt,
+                             retirement_receipt, *, timeout=10.0):
+    """Archive only the ended2806 pointer; never act on the possible OS orphan.
+
+    This trusted-terminal API is separate from the five-operation secret RPC.
+    Durable exact receipts precede the byte/inode CAS; a failed CAS preserves
+    both pointer and archive. It never replays the old prompt or starts Create.
+    """
+    require(os.getuid() == UID and os.isatty(0)
+            and type(timeout) in (int, float) and 0 < timeout <= 10)
+    # Refuse changed evidence before connecting or touching the private pointer.
+    for raw, expected in ((enrollment_receipt, OWNER_PROMPT_ENROLLMENT_SHA),
+            (prompt_binding_receipt, OWNER_PROMPT_BINDING_SHA),
+            (terminal_receipt, OWNER_PROMPT_TERMINAL_SHA),
+            (retirement_receipt, OWNER_PROMPT_RETIREMENT_SHA)):
+        require(type(raw) is bytes and hashlib.sha256(raw).hexdigest() == expected)
+    deadline = time.monotonic() + timeout
+    with mutation_lock(deadline):
+        directory = _open_checked_directory(str(Path(SELECTION).parent))
+        try:
+            original, identity = _read_private_at(directory, 'selection.json', 4096)
+            require(stat.S_IMODE(identity[4]) == 0o600)
+            _owner_prompt_receipts(original, enrollment_receipt, prompt_binding_receipt,
+                                  terminal_receipt, retirement_receipt)
+            _owner_prompt_predecessor(directory)
+            archive = {'schema': 'cabinet-abandoned-owner-prompt/v1', 'operation_id': OWNER_PROMPT_OPERATION,
+                'original_selection': original.decode(), 'selection_sha256': OWNER_PROMPT_SELECTION_SHA,
+                'enrollment_receipt': enrollment_receipt.decode(), 'enrollment_sha256': OWNER_PROMPT_ENROLLMENT_SHA,
+                'prompt_binding_receipt': prompt_binding_receipt.decode(), 'prompt_binding_sha256': OWNER_PROMPT_BINDING_SHA,
+                'terminal_receipt': terminal_receipt.decode(), 'terminal_sha256': OWNER_PROMPT_TERMINAL_SHA,
+                'retirement_receipt': retirement_receipt.decode(), 'retirement_sha256': OWNER_PROMPT_RETIREMENT_SHA,
+                'prior_archive': PAIR_OPERATION, 'prior_archive_sha256': OWNER_PROMPT_PREDECESSOR_SHA,
+                'predecessor_chain': strict_json(retirement_receipt)['retirement_archive_chain'],
+                'caller_closed': True, 'parent_generation_ended': True,
+                'disposition': 'ABANDONED_PREMASTER_PROMPT_UNRESOLVED',
+                'possible_collection_exists': 'unknown', 'os_orphan_deleted': False}
+            raw = canonical(archive)
+            require(len(raw) <= 32768)
+            _validate_owner_prompt_archive(raw)
+            require(_owner_prompt_parent_ended())
+            backend = object.__new__(_SecretBackend)
+            backend._connect(deadline)
+            require(backend._owner_prompt_caller_closed())
+            _write_prompt_archive(directory, _owner_prompt_archive_name(), raw)
+            current, current_identity = _read_private_at(directory, 'selection.json', 4096)
+            require(current == original and current_identity == identity)
+            require(time.monotonic() < deadline)
+            os.unlink('selection.json', dir_fd=directory)
+            os.fsync(directory)
+            return OWNER_PROMPT_OPERATION
+        finally:
+            os.close(directory)
+
+
 def _check_continuation(reference):
-    require(reference is None or reference in (OLD_DUMMY_OPERATION, PENDING_OPERATION, DIALOG_OPERATION, PAIR_OPERATION))
+    require(reference is None or reference in (OLD_DUMMY_OPERATION, PENDING_OPERATION, DIALOG_OPERATION, PAIR_OPERATION, OWNER_PROMPT_OPERATION))
     try:
         directory = _open_checked_directory(str(Path(SELECTION).parent))
     except FileNotFoundError:
         require(reference is None)
         return
     try:
+        try:
+            owner_raw, identity = _read_private_at(directory, _owner_prompt_archive_name())
+        except FileNotFoundError:
+            owner_raw = None
+        if owner_raw is not None:
+            require(stat.S_IMODE(identity[4]) == 0o400)
+            _validate_owner_prompt_archive(owner_raw)
+            _owner_prompt_predecessor(directory)
+            require(reference == OWNER_PROMPT_OPERATION)
+            return
         try:
             pair_raw, identity = _read_private_at(directory, _pair_archive_name())
         except FileNotFoundError:
@@ -1973,7 +2161,7 @@ def provision(*, timeout=120.0, continuation_archive=None):
     A pending setup intent is not implicitly retried or adopted.
     """
     require(os.isatty(0) and type(timeout) in (int, float) and 0 < timeout <= 120)
-    require(continuation_archive is None or continuation_archive in (OLD_DUMMY_OPERATION, PENDING_OPERATION, DIALOG_OPERATION, PAIR_OPERATION))
+    require(continuation_archive is None or continuation_archive in (OLD_DUMMY_OPERATION, PENDING_OPERATION, DIALOG_OPERATION, PAIR_OPERATION, OWNER_PROMPT_OPERATION))
     operation_id = str(uuid.uuid4())
     result = {'status': 'UNAVAILABLE', 'collection_ref': None}
     read_fd, write_fd = os.pipe()
@@ -2063,7 +2251,7 @@ def _main(argv):
         operation_id, response_fd = _uuid(argv[3]), int(argv[5])
         continuation = None
         if len(argv) == 8:
-            require(argv[6] == '--continuation-archive' and argv[7] in (OLD_DUMMY_OPERATION, PENDING_OPERATION, DIALOG_OPERATION, PAIR_OPERATION))
+            require(argv[6] == '--continuation-archive' and argv[7] in (OLD_DUMMY_OPERATION, PENDING_OPERATION, DIALOG_OPERATION, PAIR_OPERATION, OWNER_PROMPT_OPERATION))
             continuation = argv[7]
         _check_pipe(response_fd, os.O_WRONLY)
         deadline = time.monotonic() + 120
