@@ -29,6 +29,16 @@ class ListingTransportTests(TestCase):
         self.assertIn('--no-netrc', command)
         self.assertNotIn('--location', command)
 
+    def test_moons24_uses_fixed_target_and_shares_robots_listing_reservation(self):
+        with patch.object(transport,'_send',return_value=(200,b'User-agent: *\nAllow: /\n')) as send:
+            self.assertTrue(transport.observe_robots('moons24')['allowed'])
+            self.assertEqual(send.call_args.args[0][-1],'https://24moons.com.au/robots.txt')
+            with self.assertRaises(transport.ListingIntervalPending):transport.moons24()
+            send.assert_called_once()
+        with patch.object(transport,'_reserve'),patch.object(transport,'_send',return_value=(200,b'HTML')) as send:
+            transport.moons24()
+            self.assertEqual(send.call_args.args[0][-1],'https://24moons.com.au/events')
+
     def test_refused_send_still_reserves_and_unsafe_state_never_fetches(self):
         with patch.object(transport, '_send', return_value=(403, b'CANARY')) as send:
             transport.venue303()
