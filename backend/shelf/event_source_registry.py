@@ -66,6 +66,11 @@ def _moons24(now):
     return moons24()
 
 
+def _impro_melbourne(now):
+    from shelf.event_listing_transport import impro_melbourne
+    return impro_melbourne()
+
+
 def _parse_rrr(raw, *, now, retrieved_at):
     from shelf.rrr_events import parse_listing
     return parse_listing(raw, retrieved_at=retrieved_at)
@@ -93,6 +98,11 @@ def _parse_moshtix(raw, *, now, retrieved_at):
 
 def _parse_moons24(raw, *, now, retrieved_at):
     from shelf.moons24_events import parse_listing
+    return parse_listing(raw, retrieved_at=retrieved_at)
+
+
+def _parse_impro_melbourne(raw, *, now, retrieved_at):
+    from shelf.impro_melbourne_events import parse_listing
     return parse_listing(raw, retrieved_at=retrieved_at)
 
 
@@ -161,14 +171,24 @@ def _descriptor(row):
                 'Partial 24 Moons coverage: current-week plus later programme, up to nine leads '
                 'within eight weeks. Unknown dates remain unverified; source links open the '
                 'programme, not an exact session or a checked seller.'),
+        'impro_melbourne': (_impro_melbourne, _parse_impro_melbourne, 524288,
+                'Partial Impro Melbourne coverage: Now Playing show runs in the explicit2026season, '
+                'up to nine overlapping or next-eight-week runs. Ranges are not individual '
+                'performance sessions, venue verification or ticket availability.'),
     }
     if source_id in active:
         acquire, parse, limit, coverage = active[source_id]
         return EventSourceDescriptor(**common, acquire=acquire, parse=parse, coverage=coverage,
             access_state='access-unverified' if source_id == 'forum' else 'implemented-unproved',
+            unavailable_message=('No eligible Now Playing run was established in this bounded2026season '
+                'read; this is not proof of no current shows.') if source_id=='impro_melbourne' else
+                'This source is not connected yet.',
             max_bytes=limit, retention_seconds=900,
             policy_scope='Existing bounded factual-link scope only; no model or redistribution grant.')
     blocked = {
+        'butterfly_club': ('permission-required',
+            'The official robots rules do not permit this reader to fetch the homepage. '
+            'Current shows and venue operating status are unverified; no homepage was fetched.'),
         'halftix': ('permission-required', 'Publisher permission for retrieval and storage is required; open the official link manually.'),
         'la_sirene': ('owner-action-required', 'A permitted, witnessed visual observation is needed; no public posts are available to this reader.'),
         'hamer_hall': ('access-unverified', 'The official programme reached a waiting room; no bypass or alternate route is attempted.'),
