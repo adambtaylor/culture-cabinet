@@ -1,0 +1,22 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{% if undo %}Undo{% else %}Card response{% endif %} not confirmed · Culture Cabinet</title>
+  <link rel="stylesheet" href="/enhance/style.css">
+</head>
+<body>
+  <a class="skip-link" href="#main">Skip to content</a>
+  <header class="masthead"><p class="wordmark">Culture Cabinet</p></header>
+  <main id="main">
+    <h1>{% if undo %}Undo{% else %}Card response{% endif %} not confirmed</h1>
+    <p>{% if undo %}Undo is not confirmed.{% else %}Your card response is not confirmed.{% endif %}</p>
+    <p>Open owner setup to sign in or confirm your session, then review the current cabinet or recorded action before choosing what to do next.</p>
+    <p>Nothing is retried automatically. After reviewing, explicitly choose the action you intend.</p>
+    <nav aria-label="Card action recovery">
+      <a href="/setup">Open owner setup</a><a href="/setup/cabinet">Choose your cabinet</a>
+    </nav>
+  </main>
+</body>
+</html>

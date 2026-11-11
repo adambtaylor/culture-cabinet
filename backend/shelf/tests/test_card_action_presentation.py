@@ -6,7 +6,7 @@ from django.test import SimpleTestCase, override_settings
 from django.template.loader import render_to_string
 from django.utils.safestring import mark_safe
 
-from shelf.card_action_presentation import card_action_context, local_event_display_context, ACTIONS
+from shelf.card_action_presentation import card_action_context, local_event_display_context, render_card_action_refusal, ACTIONS
 from .test_onboarding_experience_views import Document, Poison
 
 PROFILE = '00000000-0000-4000-8000-000000000001'
@@ -251,3 +251,57 @@ class CardActionPresentationTests(SimpleTestCase):
         self.assertTrue(any(t == 'form' and a.get('action') == '/cabinet/actions/undo/' for t, a in doc.tags))
         value['undo']['fields']['profile_ref'] = TARGET
         with self.assertRaises(ValueError): card_action_context(value)
+
+
+class CardActionRefusalPresentationTests(SimpleTestCase):
+    def render_refusal(self, **facts):
+        with override_settings(TEMPLATES=template_settings()):
+            return render_card_action_refusal(**facts)
+
+    def test_response_and_undo_keep_uncertain_outcomes_action_specific(self):
+        # The same status may cover pre-effect denial or an existing command;
+        # neither response is entitled to promise that nothing was saved.
+        for operation, phrase in [('response', 'Your card response is not confirmed.'),
+                                  ('undo', 'Undo is not confirmed.')]:
+            for code, status in [('UNAUTHENTICATED', 401), ('AUTHORITY_DENIED', 403),
+                                 ('IDEMPOTENCY_CONFLICT', 409),
+                                 ('UNKNOWN_RECONCILIATION_REQUIRED', 503)]:
+                with self.subTest(operation=operation, code=code):
+                    response = self.render_refusal(operation=operation, code=code, status=status)
+                    html = response.content.decode()
+                    self.assertEqual(response.status_code, status)
+                    self.assertEqual(response['Cache-Control'], 'no-store')
+                    self.assertEqual(response['X-Content-Type-Options'], 'nosniff')
+                    self.assertIn(phrase, html)
+                    self.assertIn('Nothing is retried automatically.', html)
+                    self.assertIn('explicitly choose the action you intend', html)
+                    for absent in ('not saved', 'Enhance progress', 'existing round',
+                                   'This round is blocked', code):
+                        self.assertNotIn(absent, html)
+
+    def test_recovery_has_fixed_get_links_no_forms_or_request_context(self):
+        # A context processor would expose request facts; no request is passed
+        # into rendering and this deliberately invalid processor must not run.
+        settings = template_settings()
+        settings[0]['OPTIONS']['context_processors'] = ['not_a_real_module.must_not_run']
+        with override_settings(TEMPLATES=settings):
+            response = render_card_action_refusal(operation='response', code='UNAUTHENTICATED', status=401)
+        html = response.content.decode(); doc = Document(html)
+        self.assertEqual([a['href'] for t, a in doc.tags if t == 'a'],
+                         ['#main', '/setup', '/setup/cabinet'])
+        self.assertFalse(any(t in ('form', 'input', 'button', 'script') for t, a in doc.tags))
+        self.assertIn('href="/enhance/style.css"', html)
+        self.assertNotIn('csrf', html.lower())
+        with self.assertRaises(TypeError):
+            render_card_action_refusal(operation='response', code='UNAUTHENTICATED', status=401, request=Poison())
+
+    def test_untrusted_or_nonprimitive_refusal_facts_fail_closed(self):
+        for key, bad in [('operation', 'like'), ('operation', Poison()),
+                         ('operation', mark_safe('response')),
+                         ('code', '<script>private</script>'), ('code', Poison()),
+                         ('code', mark_safe('UNAUTHENTICATED')), ('status', True),
+                         ('status', '401'), ('status', 200), ('status', 600)]:
+            facts = dict(operation='response', code='UNAUTHENTICATED', status=401)
+            facts[key] = bad
+            with self.subTest(key=key, value_type=type(bad).__name__), self.assertRaises(ValueError):
+                self.render_refusal(**facts)
