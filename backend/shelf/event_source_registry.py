@@ -172,7 +172,7 @@ def _descriptor(row):
                 'within eight weeks. Unknown dates remain unverified; source links open the '
                 'programme, not an exact session or a checked seller.'),
         'impro_melbourne': (_impro_melbourne, _parse_impro_melbourne, 524288,
-                'Partial Impro Melbourne coverage: Now Playing show runs in the explicit2026season, '
+                'Partial Impro Melbourne coverage: Now Playing show runs in the explicit 2026 season, '
                 'up to nine overlapping or next-eight-week runs. Ranges are not individual '
                 'performance sessions, venue verification or ticket availability.'),
     }
@@ -180,7 +180,7 @@ def _descriptor(row):
         acquire, parse, limit, coverage = active[source_id]
         return EventSourceDescriptor(**common, acquire=acquire, parse=parse, coverage=coverage,
             access_state='access-unverified' if source_id == 'forum' else 'implemented-unproved',
-            unavailable_message=('No eligible Now Playing run was established in this bounded2026season '
+            unavailable_message=('No eligible Now Playing run was established in this bounded 2026 season '
                 'read; this is not proof of no current shows.') if source_id=='impro_melbourne' else
                 'This source is not connected yet.',
             max_bytes=limit, retention_seconds=900,
