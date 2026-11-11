@@ -8,6 +8,28 @@ FIELDS = ('profile_ref', 'publication_ref', 'publication_revision', 'target_ref'
           'interest_revision', 'saved_revision', 'command_id', 'action')
 
 
+def render_card_action_refusal(*, operation, code, status):
+    """Render only the native adapter's closed, primitive refusal facts."""
+    from django.http import HttpResponse
+    from django.template.loader import render_to_string
+    from .enhance_contract import SAFE_CODES
+
+    if (type(operation) is not str or operation not in ('response', 'undo')
+            or type(code) is not str or code not in SAFE_CODES
+            or type(status) is not int or not 400 <= status <= 599):
+        raise ValueError('Invalid card refusal presentation')
+    # A shared error code/status cannot prove whether an earlier effect exists.
+    # Do not infer "not saved", an auth subtype, or a safe replay from this page.
+    # No request means no request context or context processors enter rendering.
+    html = render_to_string('cabinet/card_action_refusal.html', {
+        'undo': operation == 'undo',
+    })
+    response = HttpResponse(html, status=status)
+    response['Cache-Control'] = 'no-store'
+    response['X-Content-Type-Options'] = 'nosniff'
+    return response
+
+
 def _text(value, maximum=240):
     if type(value) is not str or len(value) > maximum:
         raise ValueError('Invalid card presentation text')
