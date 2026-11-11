@@ -281,3 +281,34 @@ class SavedReferencePresentationTests(SimpleTestCase):
             else: row['saved_reference'] = {**row['saved_reference'], 'schema': 'untrusted/v0'}
             html = self.render_rows([row], **extra)
             self.assertNotIn('https://303.net.au/gigs-events/fictional-interface-test', html)
+
+    def test_saved_only_history_uses_full_native_response_and_current_cards_keep_partial_markers(self):
+        # A saved-only expired key is not in the current recommendation deck.
+        # The partial JSON path intentionally refuses its first response;
+        # preserve that guard and select the existing full native form path.
+        for checked in (True, False):
+            for choice in ('', 'interested'):
+                row = self.rows()[0]; row['choice'] = choice
+                if not checked: row['saved_reference'] = None
+                with self.subTest(checked=checked, choice=choice):
+                    doc = Forms(self.render_rows([row]))
+                    response = next(f for f in doc.forms if
+                        any(i.get('name') == 'operation' and i.get('value') == 'respond' for i in f['inputs']) or
+                        any(b.get('name') == 'operation' and b.get('value') == 'respond' for b in f['buttons']))
+                    self.assertNotIn('data-feedback-form', response['attrs'])
+                    self.assertNotIn('data-feedback-correction', response['attrs'])
+                    self.assertEqual(response['attrs']['method'], 'post')
+                    self.assertEqual(response['attrs']['action'], '/profiles/1/discovery/action/')
+                    fields = {i['name']: i.get('value') for i in response['inputs']}
+                    self.assertEqual(fields['key'], row['card'].key)
+                    self.assertEqual(fields['csrfmiddlewaretoken'], 's'*64)
+                    self.assertEqual(fields['mode'], 'household')
+                    self.assertEqual(fields['revision'], '7')
+                    self.assertEqual(fields['nonce'], 'FICTIONAL-NONCE')
+                    self.assertFalse(set(fields) & {'saved_reference', 'official_url', 'occurrence_ref'})
+                    if not choice: self.assertEqual(fields['operation'], 'respond')
+        for choice in ('', 'interested'):
+            row = self.rows()[0]; row.update(reference_only=False, saved_reference=None, choice=choice)
+            response = next(f for f in Forms(self.render_rows([row])).forms
+                            if 'data-feedback-form' in f['attrs'])
+            self.assertEqual(response['attrs'].get('data-feedback-correction'), 'respond' if choice else None)
