@@ -7,6 +7,7 @@ bytes travel through inherited pipes, never argv, environment, stdout or stderr.
 Same-UID hostile processes and OS administrators are outside this boundary.
 """
 from contextlib import contextmanager
+from contextvars import ContextVar
 from datetime import datetime, timezone
 import fcntl
 import hashlib
@@ -90,6 +91,100 @@ PURPOSES = {
     'hydra': ('culture-cabinet-hydra-search',),
     'sab': ('culture-cabinet-sab-add-only',),
 }
+
+
+DIAGNOSTIC_SCHEMA = 'cabinet-corruption-site/v1'
+DIAGNOSTIC_MAX = 256
+DIAGNOSTIC_REASONS = frozenset(('NONE', 'LOOKUP_DUPLICATE', 'ATTRIBUTES_MISMATCH',
+    'SECRET_ENCODING', 'MASTER_FORMAT', 'SLOT_SIZE_TYPE', 'SLOT_DECRYPT', 'SLOT_DECODE',
+    'RECORD_INVARIANT', 'RECEIPT_INVARIANT', 'RECEIPT_RECORD_LINK', 'UNCLASSIFIED_CORRUPT'))
+DIAGNOSTIC_SLOTS = frozenset(('master', 'receipt', 'record', 'receipt_record_pair', 'none'))
+DIAGNOSTIC_PHASES = frozenset(('before_mutation', 'mutation_started', 'after_mutation', 'not_observed'))
+_CORRUPTION_DIAGNOSTIC = ContextVar('cabinet_corruption_diagnostic', default=None)
+
+
+class _CorruptionDiagnostic:
+    def __init__(self):
+        self.phase = 'before_mutation'
+        self.first = None
+
+    def capture(self, reason, slot):
+        if self.first is None:
+            self.first = dict(schema=DIAGNOSTIC_SCHEMA, reason=reason, slot=slot, phase=self.phase)
+
+    def projection(self):
+        return self.first or dict(schema=DIAGNOSTIC_SCHEMA, reason='NONE', slot='none', phase='not_observed')
+
+
+def _note_corrupt(reason, slot):
+    observation = _CORRUPTION_DIAGNOSTIC.get()
+    if observation is not None:
+        observation.capture(reason, slot)
+
+
+def _corrupt_require(value, reason, slot):
+    if not value:
+        _note_corrupt(reason, slot)
+        raise Refused('CORRUPT')
+
+
+def _diagnostic_phase(phase):
+    observation = _CORRUPTION_DIAGNOSTIC.get()
+    if observation is not None:
+        if phase == 'after_mutation' and observation.phase != 'mutation_started':
+            return  # Successful reads/availability are not mutations.
+        observation.phase = phase
+
+
+def _validate_diagnostic(raw, status):
+    require(type(raw) is bytes and 0 < len(raw) <= DIAGNOSTIC_MAX)
+    value = strict_json(raw)
+    _shape(value, ('schema', 'reason', 'slot', 'phase'))
+    require(value['schema'] == DIAGNOSTIC_SCHEMA and value['reason'] in DIAGNOSTIC_REASONS
+            and value['slot'] in DIAGNOSTIC_SLOTS and value['phase'] in DIAGNOSTIC_PHASES)
+    reason, slot, phase = (value[key] for key in ('reason', 'slot', 'phase'))
+    slots = {'NONE': ('none',), 'MASTER_FORMAT': ('master',),
+        'SLOT_SIZE_TYPE': ('receipt', 'record'), 'SLOT_DECRYPT': ('receipt', 'record'),
+        'SLOT_DECODE': ('receipt', 'record'), 'RECORD_INVARIANT': ('record',),
+        'RECEIPT_INVARIANT': ('receipt',), 'RECEIPT_RECORD_LINK': ('receipt_record_pair',),
+        'UNCLASSIFIED_CORRUPT': ('none',),
+        'LOOKUP_DUPLICATE': ('master', 'receipt', 'record'),
+        'ATTRIBUTES_MISMATCH': ('master', 'receipt', 'record'),
+        'SECRET_ENCODING': ('master', 'receipt', 'record')}
+    require(slot in slots[reason])
+    if reason == 'NONE':
+        require(phase == 'not_observed' and status != 'CORRUPT')
+    else:
+        require(phase != 'not_observed'
+                and (status == 'CORRUPT' and phase == 'before_mutation' or status == 'UNKNOWN'))
+    return value
+
+
+def _collect_diagnostic(fd, status):
+    # Child is already reaped. Read once within the existing deadline, with no
+    # waits/retry and no raw ancillary bytes retained by the caller's sink.
+    try:
+        raw = os.read(fd, DIAGNOSTIC_MAX + 1)
+        require(os.read(fd, 1) == b'')
+        return _validate_diagnostic(raw, status)
+    except (Refused, OSError, ValueError, TypeError):
+        return None
+
+
+def _emit_diagnostic(fd, observation):
+    try:
+        raw = canonical(observation.projection())
+        require(len(raw) <= DIAGNOSTIC_MAX)
+        # <=PIPE_BUF on a nonblocking inherited pipe: one atomic attempt. A
+        # full/broken observer cannot rewrite, delay or repeat the store result.
+        os.write(fd, raw)
+    except (Refused, OSError):
+        pass
+    finally:
+        try:
+            os.close(fd)
+        except OSError:
+            pass  # Observer loss must not change the ordinary child exit/result.
 
 
 class Refused(Exception):
@@ -394,32 +489,50 @@ def _exchange(write_fd, read_fd, outgoing, deadline, open_fds):
                         require(0 < length <= MAX_FRAME and len(incoming) <= length + 4, 'UNKNOWN')
 
 
-def invoke(request, *, timeout=TIMEOUT):
+def invoke(request, *, timeout=TIMEOUT, diagnostic_sink=None):
     """Native private client. A missing mutation acknowledgement is UNKNOWN.
 
     The helper path/interpreter and environment are fixed by this packaged module,
     not caller fields. No retries, implicit unlock or generic executable selector.
+    A trusted optional diagnostic_sink receives one validated enum projection,
+    or None for invalid/unobserved evidence, after owned child/FD cleanup. Its
+    failure never changes the five-field RPC result. Default callers add no IPC.
     """
     request = validate_request(strict_json(canonical(request)))
     require(type(timeout) in (int, float) and 0 < timeout <= TIMEOUT)
+    require(diagnostic_sink is None or callable(diagnostic_sink))
     process = None
     fds = []
+    diagnostic_read = diagnostic_write = None
+    diagnostic_value = None
     deadline = time.monotonic() + timeout
     failure = 'UNKNOWN' if request['operation'] in ('put', 'delete', 'reconcile') else 'UNAVAILABLE'
     try:
         require(os.getuid() == UID)
+        if diagnostic_sink is not None:
+            diagnostic_read, diagnostic_write = os.pipe()
+            fds.extend((diagnostic_read, diagnostic_write))
+            os.set_blocking(diagnostic_read, False)
+            os.set_blocking(diagnostic_write, False)
         request_read, request_write = os.pipe()
         fds.extend((request_read, request_write))
         response_read, response_write = os.pipe()
         fds.extend((response_read, response_write))
-        process = subprocess.Popen(['/usr/bin/python3', '-I', '-B', HELPER,
-            '--request-fd', str(request_read), '--response-fd', str(response_write)],
+        command = ['/usr/bin/python3', '-I', '-B', HELPER,
+            '--request-fd', str(request_read), '--response-fd', str(response_write)]
+        passed = (request_read, response_write)
+        if diagnostic_write is not None:
+            command.extend(('--diagnostic-fd', str(diagnostic_write)))
+            passed += (diagnostic_write,)
+        process = subprocess.Popen(command,
             stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-            close_fds=True, pass_fds=(request_read, response_write),
+            close_fds=True, pass_fds=passed,
             env={'PATH': '/usr/bin:/bin', 'LANG': 'C.UTF-8',
                  'DBUS_SESSION_BUS_ADDRESS': 'unix:path=/run/user/1000/bus'})
         os.close(request_read); fds.remove(request_read)
         os.close(response_write); fds.remove(response_write)
+        if diagnostic_write is not None:
+            os.close(diagnostic_write); fds.remove(diagnostic_write)
         raw = _exchange(request_write, response_read, encode_frame(request), deadline, fds)
         result = decode_frame(raw)
         _shape(result, RESPONSE_FIELDS)
@@ -445,6 +558,8 @@ def invoke(request, *, timeout=TIMEOUT):
             validate_record(request['record_kind'], request['binding'], record_op, result['record'])
         process.wait(timeout=max(.001, deadline - time.monotonic()))
         require(process.returncode == 0)
+        if diagnostic_read is not None:
+            diagnostic_value = _collect_diagnostic(diagnostic_read, result['status'])
         return result
     except (Refused, OSError, ValueError, TypeError, subprocess.SubprocessError):
         return response(request, failure)
@@ -456,6 +571,12 @@ def invoke(request, *, timeout=TIMEOUT):
                 pass
         if process is not None and process.poll() is None:
             process.kill(); process.wait()
+        if diagnostic_sink is not None:
+            try:
+                diagnostic_sink(diagnostic_value)
+            except BaseException:
+                # Observability is not authority over an acknowledged mutation.
+                pass
 
 
 @contextmanager
@@ -509,6 +630,7 @@ class Store:
         try:
             return Fernet(key)
         except (ValueError, TypeError):
+            _note_corrupt('MASTER_FORMAT', 'master')
             raise Refused('CORRUPT') from None
 
     def _read(self, kind, binding_digest, slot, cipher):
@@ -516,13 +638,20 @@ class Store:
         value = self.backend.get(kind, binding_digest, slot)
         if value is None:
             return None
+        _corrupt_require(type(value) is bytes and len(value) <= MAX_FRAME * 2, 'SLOT_SIZE_TYPE', slot)
         try:
-            require(type(value) is bytes and len(value) <= MAX_FRAME * 2, 'CORRUPT')
-            return strict_json(cipher.decrypt(value))
+            decrypted = cipher.decrypt(value)
         except (InvalidToken, Refused, ValueError, TypeError):
+            _note_corrupt('SLOT_DECRYPT', slot)
+            raise Refused('CORRUPT') from None
+        try:
+            return strict_json(decrypted)
+        except (Refused, ValueError, TypeError):
+            _note_corrupt('SLOT_DECODE', slot)
             raise Refused('CORRUPT') from None
 
     def _write(self, kind, binding_digest, slot, cipher, value):
+        _diagnostic_phase('mutation_started')
         token = cipher.encrypt(canonical(value))
         self.backend.set(kind, binding_digest, slot, token)
         require(self._read(kind, binding_digest, slot, cipher) == value, 'UNKNOWN')
@@ -530,8 +659,13 @@ class Store:
     def execute(self, request):
         validate_request(request)
         try:
-            return self._execute(request)
+            result = self._execute(request)
+            if result['status'] in ('AVAILABLE', 'REMOVED'):
+                _diagnostic_phase('after_mutation')
+            return result
         except Refused as error:
+            if error.status == 'CORRUPT':
+                _note_corrupt('UNCLASSIFIED_CORRUPT', 'none')
             # Mutations below fence *every* intent/target write attempt. Thus a
             # direct-delete LOCKED escaping here is definitive for this call's
             # pre-intent phase, not for any earlier invocation of the same UUID.
@@ -550,16 +684,16 @@ class Store:
         stored = self._read(kind, binding_digest, 'record', cipher)
         if stored is not None:
             _shape(stored, ('schema', 'kind', 'binding', 'revision', 'operation_id', 'record'))
-            require(stored['schema'] == 'cabinet-record/v1' and stored['kind'] == kind
-                    and stored['binding'] == binding, 'CORRUPT')
+            _corrupt_require(stored['schema'] == 'cabinet-record/v1' and stored['kind'] == kind
+                    and stored['binding'] == binding, 'RECORD_INVARIANT', 'record')
             _uuid(stored['revision']); _uuid(stored['operation_id'])
             validate_record(kind, binding, stored['operation_id'], stored['record'])
         if receipt is not None:
             _shape(receipt, ('schema', 'kind', 'binding', 'operation', 'operation_id', 'revision',
                             'previous_revision', 'request_digest', 'status'))
-            require(receipt['schema'] == 'cabinet-receipt/v1' and receipt['kind'] == kind
+            _corrupt_require(receipt['schema'] == 'cabinet-receipt/v1' and receipt['kind'] == kind
                     and receipt['binding'] == binding and receipt['operation'] in ('put', 'delete')
-                    and receipt['status'] in ('PENDING', 'ACTIVE', 'REMOVED'), 'CORRUPT')
+                    and receipt['status'] in ('PENDING', 'ACTIVE', 'REMOVED'), 'RECEIPT_INVARIANT', 'receipt')
             _uuid(receipt['operation_id']); _uuid(receipt['revision']); _digest(receipt['request_digest'])
             if receipt['previous_revision'] is not None:
                 _uuid(receipt['previous_revision'])
@@ -568,9 +702,9 @@ class Store:
         if receipt is not None and receipt['status'] == 'PENDING':
             return response(request, 'UNKNOWN')
         if stored is not None:
-            require(receipt is not None and receipt['status'] == 'ACTIVE'
+            _corrupt_require(receipt is not None and receipt['status'] == 'ACTIVE'
                     and receipt['revision'] == stored['revision']
-                    and receipt['operation_id'] == stored['operation_id'], 'CORRUPT')
+                    and receipt['operation_id'] == stored['operation_id'], 'RECEIPT_RECORD_LINK', 'receipt_record_pair')
         if operation == 'read':
             if stored is None:
                 return response(request, 'MISSING')
@@ -1219,11 +1353,11 @@ class _SecretBackend:
         items = self.async_.call(lambda cancel, done: self.collection.search(None, attrs,
             self.Secret.SearchFlags.ALL, cancel, done, None),
             lambda source, result: source.search_finish(result))
-        require(len(items) <= 1, 'CORRUPT')
+        _corrupt_require(len(items) <= 1, 'LOOKUP_DUPLICATE', slot)
         if not items:
             return None
         item = items[0]
-        require(item.get_attributes() == attrs, 'CORRUPT')
+        _corrupt_require(item.get_attributes() == attrs, 'ATTRIBUTES_MISMATCH', slot)
         require(not item.get_locked(), 'LOCKED')
         return item
 
@@ -1247,10 +1381,11 @@ class _SecretBackend:
         value = item.get_secret()
         require(value is not None, 'LOCKED')
         text = value.get_text()
-        require(type(text) is str, 'CORRUPT')
+        _corrupt_require(type(text) is str, 'SECRET_ENCODING', slot)
         try:
             return text.encode('ascii')
         except UnicodeError:
+            _note_corrupt('SECRET_ENCODING', slot)
             raise Refused('CORRUPT') from None
 
     def master_key(self):
@@ -2264,6 +2399,31 @@ def _main(argv):
             'status': status, 'revision': None, 'record': None}, deadline)
         os.close(response_fd)
         return
+    if len(argv) == 7:
+        require(argv[5] == '--diagnostic-fd')
+        diagnostic_fd = int(argv[6])
+        request_fd, response_fd = int(argv[2]), int(argv[4])
+        require(diagnostic_fd not in (request_fd, response_fd))
+        _check_pipe(diagnostic_fd, os.O_WRONLY)
+        diagnostic_identity = os.fstat(diagnostic_fd)
+        require(all((os.fstat(fd).st_dev, os.fstat(fd).st_ino)
+                    != (diagnostic_identity.st_dev, diagnostic_identity.st_ino)
+                    for fd in (request_fd, response_fd)))
+        os.set_blocking(diagnostic_fd, False)
+        observation = _CorruptionDiagnostic()
+        token = _CORRUPTION_DIAGNOSTIC.set(observation)
+        try:
+            _request_main(argv[:5])
+        finally:
+            try:
+                _emit_diagnostic(diagnostic_fd, observation)
+            finally:
+                _CORRUPTION_DIAGNOSTIC.reset(token)
+        return
+    _request_main(argv)
+
+
+def _request_main(argv):
     require(os.getuid() == UID and len(argv) == 5 and argv[1] == '--request-fd'
             and argv[3] == '--response-fd')
     request_fd, response_fd = int(argv[2]), int(argv[4])
@@ -2284,6 +2444,8 @@ def _main(argv):
                     result = response(request, 'UNKNOWN' if request['operation'] in
                         ('put', 'delete', 'reconcile') else 'UNAVAILABLE')
     except Refused as error:
+        if error.status == 'CORRUPT':
+            _note_corrupt('UNCLASSIFIED_CORRUPT', 'none')
         result = response(request, error.status)
     except Exception:
         # An unforeseen provider failure during mutation is not evidence of
