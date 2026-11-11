@@ -29,6 +29,15 @@ class ListingTransportTests(TestCase):
         self.assertIn('--no-netrc', command)
         self.assertNotIn('--location', command)
 
+    def test_bar_open_uses_only_fixed_miuc_path_and_shared_origin_slot(self):
+        with patch.object(transport,'_send',return_value=(200,b'User-agent: *\nAllow: /\n')) as send:
+            self.assertTrue(transport.observe_robots('bar_open')['allowed'])
+            with self.assertRaises(transport.ListingIntervalPending):transport.bar_open()
+            send.assert_called_once()
+        with patch.object(transport,'_reserve'),patch.object(transport,'_send',return_value=(200,b'HTML')) as send:
+            transport.bar_open()
+            self.assertEqual(send.call_args.args[0][-1],'https://baropen.com.au/make-it-up-club/')
+
     def test_refused_send_still_reserves_and_unsafe_state_never_fetches(self):
         with patch.object(transport, '_send', return_value=(403, b'CANARY')) as send:
             transport.venue303()

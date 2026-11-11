@@ -18,13 +18,14 @@ USER_AGENT = 'CultureCabinet/0.1 (private factual event listing reader)'
 TARGETS = MappingProxyType({
     'venue303': ('https://303.net.au/gigs-events', 'https://303.net.au/robots.txt'),
     'forum': ('https://forummelbourne.com.au/shows', 'https://forummelbourne.com.au/robots.txt'),
+    'bar_open': ('https://baropen.com.au/make-it-up-club/', 'https://baropen.com.au/robots.txt'),
 })
-_DELAYS = {'venue303': 10, 'forum': 10}
+_DELAYS = {'venue303': 10, 'forum': 10, 'bar_open': 10}
 _RATE_DIRECTORY = '/tmp'
 # Initial bounded observations: 303 robots allowed this path; Forum returned
 # unrecognized content. Keep Forum's live listing closed while its pure adapter
 # and synthetic caller remain testable. This is not model/republication consent.
-LISTING_ACCESS = MappingProxyType({'venue303': True, 'forum': False})
+LISTING_ACCESS = MappingProxyType({'venue303': True, 'forum': False, 'bar_open': True})
 
 
 class ListingIntervalPending(SourceError):
@@ -100,6 +101,10 @@ def venue303():
 
 def forum():
     return _read('forum')
+
+
+def bar_open():
+    return _read('bar_open')
 
 
 def observe_robots(source_id):
