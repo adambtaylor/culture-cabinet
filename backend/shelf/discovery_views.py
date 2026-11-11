@@ -17,6 +17,7 @@ from django.views.decorators.http import require_GET, require_POST
 from shelf import discovery_sources as sources, discovery_state as storage
 from shelf.discovery_reducer import CHOICE_LABELS, replay, select
 from shelf.models import DiscoveryState
+from shelf.recovery import RecoveryBlocked
 from shelf.provider_views import _profile
 from shelf.authority import SELECTION_KEY
 from shelf.feedback_scale import REACTION_LABELS, clean_note
@@ -67,11 +68,17 @@ def guard(view):
     @wraps(view)
     def call(request, *args, **kwargs):
         try:
-            return view(request, *args, **kwargs)
+            # The existing source restriction barrier spans rendering as well as
+            # link projection, so a restriction cannot race the emitted link.
+            profile_id = kwargs.get('profile_id', args[0] if args else None)
+            with storage.reference_window(request, profile_id):
+                return view(request, *args, **kwargs)
         except storage.Conflict:
             return _error(request, 'This response is stale. Reload before responding.', 409)
         except (OperationalError, IntegrityError):
             return _error(request, 'Local discovery storage unavailable or busy. Reload before retrying.', 503)
+        except RecoveryBlocked:
+            return _error(request, 'Saved event source policy is unavailable. Reload before retrying.', 503)
         except ValueError:
             return _error(request, 'Invalid discovery action. Reload the page.', 400)
     return call
@@ -123,15 +130,25 @@ def candidates(request, profile_id, mode, history):
     from shelf.social_discovery import reviewed_candidates
     for card in reviewed_candidates(request, profile_id, list(cards.values())):
         cards[card.key] = card
+    from shelf.event_saved_references import project_references, ReferenceCandidate
+    with storage.reference_window(request, profile_id) as denied:
+        references = project_references(history, mode=mode, descriptors=EVENT_SOURCES,
+                                        denied_namespaces=denied)
     # Retain only previously judged identity/provenance after public content expires.
     for event in history:
         key, source = event['key'], event.get('source', {})
         if key and key.split(':')[1] in ('event','artist','recording','venue') and key not in cards and source.get('provenance') in ('live-automated', 'browser-observed', 'manual-entry'):
-            cards[key] = sources.Candidate(key, 'Previously judged identity (source details expired)',
+            # Every expired EVENT identity is history-only, including the real
+            # null-policy opaque fallback. Link permission is a separate optional
+            # value; missing URLs on fresh source cards never imply expiry.
+            candidate_type = ReferenceCandidate if key.split(':')[1] == 'event' else sources.Candidate
+            extra = {'saved_reference': references[key]} if key in references else {}
+            cards[key] = candidate_type(key, 'Saved event reference — source details expired'
+                if key in references else 'Previously judged identity (source details expired)',
                 key.split(':')[1], source['name'], source['provenance'], source['rank'],
                 source['retrieved_at'], tuple(source.get('roots', [])),
                 artist_key=source.get('artist_key'), venue_key=source.get('venue_key'),
-                lineage=tuple(tuple(item) for item in source.get('lineage', [])))
+                lineage=tuple(tuple(item) for item in source.get('lineage', [])), **extra)
     return list(cards.values())
 
 
@@ -209,13 +226,21 @@ def _pool_digest(cards):
     return hashlib.sha256('\n'.join(sorted({card.key for card in cards})).encode()).hexdigest()
 
 
+def _recommendation_cards(cards):
+    from shelf.event_saved_references import ReferenceCandidate
+    # Cache loss keeps the identity/key in history, so ranking AND retained
+    # session slots must exclude the stale bookmark. Full pools still service
+    # responses, saves and Undo; a key-only deck digest cannot detect this change.
+    return [card for card in cards if not isinstance(card, ReferenceCandidate)]
+
+
 def _rank(cards, state, category):
-    return select(cards, state, category=category, unjudged_only=True)
+    return select(_recommendation_cards(cards), state, category=category, unjudged_only=True)
 
 
 def _replace_key(deck, cards, state, submitted):
     """Pin other server-owned slots; only rank the submitted slot's successor."""
-    registered = {card.key: card for card in cards}
+    registered = {card.key: card for card in _recommendation_cards(cards)}
     old = deck['keys'] + deck.get('source_keys', [])
     pinned = [key for key in old if key != submitted and key in registered and key not in state['choices']]
     origin = registered.get(submitted)
@@ -232,6 +257,7 @@ def _replace_key(deck, cards, state, submitted):
 
 
 def _display(request, profile_id, card, state, now, why=()):
+    from shelf.event_saved_references import ReferenceCandidate
     from shelf.gallery_curation import reasons
     why = tuple(why) + (reasons(card, actor_id=request.user.pk, profile_id=profile_id)
                         if card.provenance != 'fixture' else ())
@@ -239,7 +265,10 @@ def _display(request, profile_id, card, state, now, why=()):
     notice = getattr(card, 'source_notice', '')
     if notice:
         date_status += f' Source notice: {notice} (not a current seller check).'
+    reference_only = isinstance(card, ReferenceCandidate)
     return {'card': card, 'why': why, 'freshness': card.freshness(now),
+            'reference_only': reference_only,
+            'saved_reference': card.saved_reference if reference_only else None,
             'date_status': date_status, 'choice': state['choices'].get(card.key, ''),
             'note': state.get('notes', {}).get(card.key, ''), 'saved': card.key in state['saved']}
 
@@ -252,13 +281,13 @@ def _context(request, profile, mode, queue, category, stored, cards):
     pool = _pool(cards, queue)
     ranked = _rank(pool, state, category)
     deck = _deck(request, profile.pk, mode, queue)
-    registered = {card.key: card for card in pool}
+    registered = {card.key: card for card in _recommendation_cards(pool)}
     pool_digest = _pool_digest(pool)
     if not deck or deck['category'] != category or deck.get('pool_digest') != pool_digest:
         deck = {'keys': [row['card'].key for row in ranked['selection']], 'category': category, 'revision': revision}
         if mode == 'household' and queue == 'all' and category in ('all', 'gallery', 'art_fair'):
             from shelf.gallery_curation import select as gallery_selection
-            for card in gallery_selection((c for c in pool if c.key not in state['choices']
+            for card in gallery_selection((c for c in registered.values() if c.key not in state['choices']
                     and (category == 'all' or c.category == category)),
                     actor_id=request.user.pk, profile_id=profile.pk, limit=2):
                 if card.key not in deck['keys']:
