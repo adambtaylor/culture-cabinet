@@ -208,3 +208,12 @@ Fictional markup tests exercise normal guarded acquisition, replay/GET without
 additional reads, run rendering and explicit response/save/Undo/fresh-session
 identity persistence. They are component checks, not source-level real browser or
 independent working acceptance. Persistent source-link permission is not supplied.
+
+The actual guarded source action at `c1ab2a9` made one fixed HTTP200 read
+(15774 bytes) and returned two current overlapping programme runs, with explicit
+range occurrence identities and no invented opening/performance times. The May
+2027 card was outside the eight-week start window. POST/replay returned302 and
+render returned200; the single-request assertion covers replay and reload, and
+history remained empty. Only bounded fact/diagnostic evidence was retained, no
+page body or images. This is live normal-handler evidence, not a real rendered
+browser, source retention grant or independent working-source acceptance.
