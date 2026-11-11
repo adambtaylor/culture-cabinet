@@ -1,5 +1,6 @@
 """The generic event source action uses real authority/cache/history handlers."""
 from unittest.mock import patch
+from shelf.tests.test_event_saved_references import policies
 from django.test import Client, TestCase, override_settings
 from shelf import discovery_transport as transport, discovery_views as views, event_scraping
 from shelf.discovery_reducer import replay
@@ -104,3 +105,120 @@ class EventSourceUITests(TestCase):
             read.assert_not_called()
         # Exact source URL restoration is a separate Architecture persistence
         # decision; an opaque saved identity alone is not goal completion.
+
+
+@override_settings(ROOT_URLCONF='cabinet.provider_urls', ALLOWED_HOSTS=['testserver'])
+class SavedEventReferenceUITests(TestCase):
+    setUp = existing.PublicDiscoveryUITests.setUp
+    form = existing.PublicDiscoveryUITests.form
+
+    def test_save_only_link_survives_cache_loss_fresh_session_without_new_taste(self):
+        descriptors=policies()
+        with patch('shelf.event_source_registry.SOURCES',descriptors), \
+             patch.object(views,'EVENT_SOURCES',descriptors), \
+             patch.object(transport,'pbs',return_value=(200,listing())) as read:
+            self.client.post(self.action,self.form('event_source',source_id='pbs'))
+            key=self.client.get(self.url).context['public_results'][0]['outcome'].candidates[0].key
+            data=self.form('save',key=key)
+            self.assertEqual(self.client.post(self.action,data).status_code,302)
+            self.assertEqual(self.client.post(self.action,data).status_code,302)
+            stored=DiscoveryState.objects.get()
+            self.assertEqual(len(stored.history),1)
+            event=stored.history[0]
+            self.assertNotIn('card',event)
+            from shelf.profile_snapshot import _history
+            # The real taste-history consumer must keep save-only references
+            # out of preference evidence, even though they are durable JSON.
+            self.assertEqual(_history(None,stored),[])
+            reference=event['saved_reference']
+            self.assertIn('/news/',reference['official_url'])
+            views.PUBLIC_CACHE.clear()
+            fresh=Client();fresh.force_login(self.actor)
+            session=fresh.session;session['selected_profile_id']=1;session.save()
+            page=fresh.get(self.url)
+            row=next(row for row in page.context['responses'] if row['card'].key==key)
+            self.assertTrue(row['saved'])
+            self.assertTrue(row['reference_only'])
+            self.assertIsNone(row['card'].url)
+            self.assertEqual(row['saved_reference'],reference)
+            self.assertIn('Stale',row['freshness'])
+            self.assertNotIn(key,[r['card'].key for r in page.context['events']])
+            self.assertEqual(DiscoveryState.objects.get().history,[event])
+            read.assert_called_once_with()
+            # A stale card cannot refill a withdrawn/missing bookmark on Save.
+            extra=dict(mode='household',revision=page.context['revision'],nonce=page.context['nonce'],
+                       operation='save',key=key,choice='',radio_mode='')
+            self.assertEqual(fresh.post(self.action,extra).status_code,302)
+            self.assertNotIn('saved_reference',DiscoveryState.objects.get().history[-1])
+            page=fresh.get(self.url)
+            undo=dict(extra,operation='undo',key='',revision=page.context['revision'],nonce=page.context['nonce'])
+            self.assertEqual(fresh.post(self.action,undo).status_code,302)
+            self.assertIn(key,replay(DiscoveryState.objects.get().history)['saved'])
+            read.assert_called_once_with()
+
+    def test_post_cannot_forge_reference_metadata(self):
+        with patch.object(transport,'pbs') as read:
+            for field in ('saved_reference','official_url','occurrence_ref','occurrence_basis',
+                          'retention_policy_ref','provenance'):
+                data=self.form('save',key='official:event:fake',**{field:'FORGED'})
+                self.assertEqual(self.client.post(self.action,data).status_code,400)
+            self.assertFalse(DiscoveryState.objects.exists())
+            read.assert_not_called()
+
+    def test_two_sessions_unsave_undo_restart_remain_distinct_after_cache_loss(self):
+        from shelf.tests.test_venue303_events import listing as venue_listing, card
+        from shelf import event_listing_transport
+        descriptors=policies()
+        raw=venue_listing(card(start='2026-11-12',clock='7:30 PM'),
+                          card(start='2026-11-12',clock='9:30 PM'))
+        with patch('shelf.event_source_registry.SOURCES',descriptors), \
+             patch.object(views,'EVENT_SOURCES',descriptors), \
+             patch.object(event_listing_transport,'venue303',return_value=(200,raw)) as read:
+            self.client.post(self.action,self.form('event_source',source_id='venue303'))
+            cards=self.client.get(self.url).context['public_results'][0]['outcome'].candidates
+            first,second=cards
+            for event in cards:
+                self.assertEqual(self.client.post(self.action,self.form('save',key=event.key)).status_code,302)
+            self.client.post(self.action,self.form('respond',key=first.key,choice='interested'))
+            views.PUBLIC_CACHE.clear()
+            page=self.client.get(self.url)
+            rows={row['card'].key:row for row in page.context['responses']}
+            self.assertEqual(set(rows),{first.key,second.key})
+            self.assertEqual(rows[first.key]['saved_reference']['official_url'],
+                             rows[second.key]['saved_reference']['official_url'])
+            self.assertNotEqual(rows[first.key]['saved_reference']['occurrence_ref'],
+                                rows[second.key]['saved_reference']['occurrence_ref'])
+            self.client.post(self.action,self.form('unsave',key=first.key))
+            self.assertEqual(replay(DiscoveryState.objects.get().history)['saved'],[second.key])
+            self.client.post(self.action,self.form('undo'))
+            self.assertEqual(set(replay(DiscoveryState.objects.get().history)['saved']),{first.key,second.key})
+            self.client.post(self.action,self.form('restart'))
+            self.assertEqual(replay(DiscoveryState.objects.get().history)['saved'],[])
+            self.client.post(self.action,self.form('undo'))
+            self.assertEqual(set(replay(DiscoveryState.objects.get().history)['saved']),{first.key,second.key})
+            for event in DiscoveryState.objects.get().history[3:]:
+                self.assertNotIn('saved_reference',event)
+            read.assert_called_once_with()
+
+    def test_current_restriction_hides_reference_without_purging_on_get(self):
+        from contextlib import contextmanager
+        descriptors=policies()
+        with patch('shelf.event_source_registry.SOURCES',descriptors), \
+             patch.object(views,'EVENT_SOURCES',descriptors), \
+             patch.object(transport,'pbs',return_value=(200,listing())):
+            self.client.post(self.action,self.form('event_source',source_id='pbs'))
+            key=self.client.get(self.url).context['public_results'][0]['outcome'].candidates[0].key
+            self.client.post(self.action,self.form('save',key=key))
+            before=DiscoveryState.objects.get().history
+            views.PUBLIC_CACHE.clear()
+            @contextmanager
+            def denied(*args):
+                yield frozenset({'event-source:pbs'})
+            # Actual restriction transaction/replay is Taste's separate tail.
+            with patch.object(views.storage,'reference_window',denied):
+                page=self.client.get(self.url)
+            row=next(row for row in page.context['responses'] if row['card'].key==key)
+            self.assertTrue(row['saved'])
+            self.assertIsNone(row['saved_reference'])
+            self.assertIsNone(row['card'].url)
+            self.assertEqual(DiscoveryState.objects.get().history,before)

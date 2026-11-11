@@ -11,6 +11,7 @@ import re
 from shelf.disclosure import canonical_bytes
 from shelf.discovery_sources import Candidate
 from shelf.event_sources import EventCandidate, OCCURRENCE_BASES
+from shelf.event_source_registry import SOURCE_NAMESPACES, REFERENCE_POLICY
 
 SCHEMA = 'event-saved-reference/v1'
 FIELDS = frozenset(('schema', 'source_id', 'official_url', 'occurrence_ref',
@@ -30,7 +31,11 @@ class ReferenceCandidate(Candidate):
 def _policy(source_id, descriptors, denied_namespaces):
     descriptor = descriptors.get(source_id) if type(source_id) is str else None
     if (descriptor is None or not descriptor.implemented
-            or not descriptor.reference_policy_ref or not descriptor.restriction_namespace
+            or descriptor.source_id != source_id
+            or descriptor.reference_policy_ref not in (
+                REFERENCE_POLICY, 'fixture-event-private-bookmark-reference/v1')
+            or descriptor.restriction_namespace != SOURCE_NAMESPACES.get(source_id)
+            or not descriptor.restriction_namespace
             or descriptor.restriction_namespace in denied_namespaces
             or descriptor.reference_url_validator is None):
         return None
@@ -97,9 +102,12 @@ def make_reference(card, *, mode, descriptors, denied_namespaces=()):
            or e.occurrence_basis != card.occurrence_basis for e in card.evidence):
         return None
     if card.occurrence_ref is None:
-        if source_id == 'rrr' and card.key != 'official:event:' + sha256(
-                f'rrr\0id\0{card.source_event_id}'.encode()).hexdigest():
-            return None
+        if source_id == 'rrr':
+            if (type(card.source_event_id) is not str
+                    or not re.fullmatch(r'[1-9][0-9]{0,18}', card.source_event_id)
+                    or card.key != 'official:event:' + sha256(
+                        f'rrr\0id\0{card.source_event_id}'.encode()).hexdigest()):
+                return None
     return validate_reference(dict(schema=SCHEMA, source_id=source_id,
         official_url=card.official_url, occurrence_ref=card.occurrence_ref,
         occurrence_basis=card.occurrence_basis, retention_policy_ref=descriptor.reference_policy_ref),
@@ -119,6 +127,8 @@ def project_references(history, *, mode, descriptors, denied_namespaces=()):
         if reference is None:
             continue
         key = event.get('key')
+        if type(key) is not str:
+            continue
         checked = validate_reference(reference, key=key, mode=event.get('mode'),
             provenance=event.get('source', {}).get('provenance'),
             descriptors=descriptors, denied_namespaces=denied_namespaces)
@@ -135,25 +145,33 @@ def project_references(history, *, mode, descriptors, denied_namespaces=()):
     return {key: value for key, value in output.items() if key not in conflicts}
 
 
-def redact_history(history, *, source_namespaces, descriptors):
+def redact_history(history, *, source_namespaces, descriptors, namespace_map=SOURCE_NAMESPACES):
     """Remove ONLY new links from every affected action, including undone ones.
 
     Raw recovery callers can use this before replay/restore without importing
     Django. Recognition uses fixed descriptor namespaces, never labels or URLs.
+    ``descriptors`` preserves the published caller interface; active descriptors
+    cannot narrow ``namespace_map``, the independent immutable identity input.
     """
-    affected = {source.source_id for source in descriptors.values()
-                if source.restriction_namespace in source_namespaces}
+    # Retired/disabled descriptors cannot remove an already committed source
+    # restriction. The fixed identity map is independent of active policy.
+    affected = {source_id for source_id, namespace in namespace_map.items()
+                if namespace in source_namespaces}
     output = deepcopy(history)
     for event in output:
         reference = event.get('saved_reference')
-        if type(reference) is dict and reference.get('source_id') in affected:
+        if (type(reference) is dict and type(reference.get('source_id')) is str
+                and reference['source_id'] in affected):
             event.pop('saved_reference')
     return output
 
 
-def referenced_namespaces(history, *, descriptors):
-    """Recognize fixed namespaces present even when no FeedbackTarget exists."""
-    return frozenset(descriptors[ref['source_id']].restriction_namespace
+def referenced_namespaces(history, *, descriptors, namespace_map=SOURCE_NAMESPACES):
+    """Find present references, not the set of namespaces eligible for denial.
+
+    Recovery preflight must recognize all namespace_map values even for empty
+    history. Active descriptors/policy do not limit this historical identity.
+    """
+    return frozenset(namespace_map[ref['source_id']]
         for event in history if type(ref := event.get('saved_reference')) is dict
-        and type(ref.get('source_id')) is str and ref['source_id'] in descriptors
-        and descriptors[ref['source_id']].restriction_namespace)
+        and type(ref.get('source_id')) is str and ref['source_id'] in namespace_map)
