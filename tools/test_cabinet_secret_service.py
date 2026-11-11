@@ -384,6 +384,230 @@ raw=json.dumps(reply).encode();os.write(write_fd,struct.pack('!I',len(raw))+raw)
         self.assertEqual((result['status'], result['revision'], result['record']), ('UNKNOWN', None, None))
 
 
+class CorruptionDiagnosticTests(unittest.TestCase):
+    """Public fixtures only: diagnostic attribution never opens an OS store."""
+    CANARY = 'sk-PUBLIC-NONSECRET-CANARY-MUST-NOT-LEAVE-DIAGNOSTIC'
+
+    def anchor(self):
+        binding=dict(os_uid=1000,installation_id='10000000-0000-4000-8000-000000000001',
+            store_id='20000000-0000-4000-8000-000000000002',root_identity='1'*64)
+        record=dict(schema='cabinet-clean-restart/v1',**{k:binding[k] for k in
+            ('installation_id','store_id','root_identity')},database_identity='2'*64,
+            checkpoint_id='40000000-0000-4000-8000-000000000004',database_digest='3'*64,
+            journal_path='/'+self.CANARY,journal_length=0,journal_digest='4'*64,journal_head='5'*64,state='ACTIVE')
+        return dict(version=store.VERSION,operation='put',record_kind='clean_restart_anchor',
+            binding=binding,expected_revision=None,operation_id='30000000-0000-4000-8000-000000000003',record_if_put=record)
+
+    def observe(self, action):
+        observed=store._CorruptionDiagnostic();token=store._CORRUPTION_DIAGNOSTIC.set(observed)
+        try:result=action()
+        finally:store._CORRUPTION_DIAGNOSTIC.reset(token)
+        raw=store.canonical(observed.projection())
+        self.assertLessEqual(len(raw),256);self.assertNotIn(self.CANARY.encode(),raw)
+        return result,observed.projection()
+
+    def test_anchor_success_and_default_off_semantic_equivalence(self):
+        first,second=DummyCollection(),DummyCollection()
+        value=self.anchor()
+        with patch.object(store.uuid,'uuid4',return_value='50000000-0000-4000-8000-000000000005'):
+            ordinary=store.Store(first).execute(value)
+            diagnostic,projection=self.observe(lambda:store.Store(second).execute(value))
+        self.assertEqual(ordinary,diagnostic)
+        self.assertEqual((first.loads,first.sets,first.deletes),(second.loads,second.sets,second.deletes))
+        self.assertEqual(projection,dict(schema=store.DIAGNOSTIC_SCHEMA,reason='NONE',slot='none',phase='not_observed'))
+
+    def test_master_and_encrypted_slot_corruption_fixed_attribution(self):
+        backend=DummyCollection();backend.key=b'PUBLIC-BAD-MASTER'
+        reply,diag=self.observe(lambda:store.Store(backend).execute(self.anchor()))
+        self.assertEqual((reply['status'],diag['reason'],diag['slot']),('CORRUPT','MASTER_FORMAT','master'))
+        self.assertEqual(backend.sets,0)
+        for slot in ('receipt','record'):
+            for reason,value in (('SLOT_SIZE_TYPE',object()),('SLOT_DECRYPT',b'PUBLIC-BAD-TOKEN'),('SLOT_DECODE',None)):
+                with self.subTest(slot=slot,reason=reason):
+                    backend=DummyCollection();request=self.anchor()
+                    digest=hashlib.sha256(store.canonical(request['binding'])).hexdigest()
+                    backend.items[(request['record_kind'],digest,slot)]=(Fernet(backend.key).encrypt(b'PUBLIC-NOT-JSON') if value is None else value)
+                    reply,diag=self.observe(lambda:store.Store(backend).execute(request))
+                    self.assertEqual((reply['status'],diag['reason'],diag['slot'],diag['phase']),('CORRUPT',reason,slot,'before_mutation'))
+                    self.assertEqual(backend.sets,0)
+
+    def test_lookup_and_secret_encoding_each_affected_slot(self):
+        for slot in ('master','receipt','record'):
+            attrs=store._SecretBackend._attrs('clean_restart_anchor','1'*64,slot)
+            good=SimpleNamespace(get_attributes=lambda:attrs,get_locked=lambda:False)
+            bad=SimpleNamespace(get_attributes=lambda:{**attrs,'foreign':self.CANARY},get_locked=lambda:False)
+            for reason,items in (('LOOKUP_DUPLICATE',[good,good]),('ATTRIBUTES_MISMATCH',[bad])):
+                backend=object.__new__(store._SecretBackend);backend._unlocked=lambda:None
+                backend.Secret=SimpleNamespace(SearchFlags=SimpleNamespace(ALL=1));backend.collection=object()
+                backend.async_=SimpleNamespace(call=lambda *args:items)
+                def action():
+                    try:backend._item('clean_restart_anchor','1'*64,slot)
+                    except store.Refused as error:return dict(status=error.status)
+                reply,diag=self.observe(action)
+                self.assertEqual((reply['status'],diag['reason'],diag['slot']),('CORRUPT',reason,slot))
+            for text in (b'PUBLIC-NOT-STR','nonascii-\u2603'):
+                backend=object.__new__(store._SecretBackend);backend._unlocked=lambda:None
+                backend._item=lambda *args:SimpleNamespace(get_secret=lambda:SimpleNamespace(get_text=lambda:text))
+                backend.async_=SimpleNamespace(call=lambda *args:None)
+                def action():
+                    try:backend.get('clean_restart_anchor','1'*64,slot)
+                    except store.Refused as error:return dict(status=error.status)
+                reply,diag=self.observe(action)
+                self.assertEqual((reply['status'],diag['reason'],diag['slot']),('CORRUPT','SECRET_ENCODING',slot))
+
+    def test_existing_invariants_and_receipt_link_keep_corrupt_mapping(self):
+        for reason,slot,changes in (('RECORD_INVARIANT','record',dict(kind='credential')),
+                ('RECEIPT_INVARIANT','receipt',dict(kind='credential')),
+                ('RECEIPT_RECORD_LINK','receipt',dict(revision='60000000-0000-4000-8000-000000000006'))):
+            backend=DummyCollection();request=self.anchor();engine=store.Store(backend)
+            saved=engine.execute(request);digest=hashlib.sha256(store.canonical(request['binding'])).hexdigest()
+            key=(request['record_kind'],digest,slot);cipher=Fernet(backend.key)
+            decoded=store.strict_json(cipher.decrypt(backend.items[key]));decoded.update(changes)
+            backend.items[key]=cipher.encrypt(store.canonical(decoded));writes=backend.sets
+            reply,diag=self.observe(lambda:engine.execute(request))
+            self.assertEqual((reply['status'],diag['reason']),('CORRUPT',reason))
+            self.assertEqual(diag['slot'],'receipt_record_pair' if reason=='RECEIPT_RECORD_LINK' else slot)
+            self.assertEqual(backend.sets,writes)
+
+    def test_first_post_intent_corruption_remains_unknown(self):
+        backend=DummyCollection()
+        def fail(*args):
+            store._corrupt_require(False,'ATTRIBUTES_MISMATCH','receipt')
+        backend.set=fail
+        reply,diag=self.observe(lambda:store.Store(backend).execute(self.anchor()))
+        self.assertEqual((reply['status'],diag['reason'],diag['phase']),('UNKNOWN','ATTRIBUTES_MISMATCH','mutation_started'))
+        self.assertEqual(store._validate_diagnostic(store.canonical(diag),'UNKNOWN'),diag)
+        def first():
+            store._note_corrupt('MASTER_FORMAT','master');store._note_corrupt('SLOT_DECODE','record')
+        _,diag=self.observe(first)
+        self.assertEqual((diag['reason'],diag['slot']),('MASTER_FORMAT','master'))
+
+
+class DiagnosticPipeTests(unittest.TestCase):
+    """A fabricated child writes public frames; packaged OS worker is never run."""
+    def setUp(self):PrivateClientTests.setUp(self)
+    def fake_child(self,suffix):return PrivateClientTests.fake_child(self,suffix)
+    def child(self,raw,status='AVAILABLE'):
+        revision="'50000000-0000-4000-8000-000000000001'" if status=='AVAILABLE' else 'None'
+        return self.fake_child(f'''if len(sys.argv)==7:
+ diag_fd=int(sys.argv[6])
+ os.write(diag_fd,{raw!r});os.close(diag_fd)
+reply={{'version':value['version'],'operation_id':value['operation_id'],'status':{status!r},'revision':{revision},'record':None}}
+raw=json.dumps(reply).encode();os.write(write_fd,struct.pack('!I',len(raw))+raw)
+''')
+    def diagnostic(self,reason='NONE',slot='none',phase='not_observed'):
+        return store.canonical(dict(schema=store.DIAGNOSTIC_SCHEMA,reason=reason,slot=slot,phase=phase))
+
+    def test_optin_one_child_unchanged_result_and_private_third_pipe(self):
+        seen=[];raw=self.diagnostic()
+        with self.child(raw):ordinary=store.invoke(request())
+        with self.child(raw):observed=store.invoke(request(),diagnostic_sink=seen.append)
+        self.assertEqual(observed,ordinary);self.assertEqual(len(self.processes),2)
+        self.assertEqual(seen,[store.strict_json(raw)])
+        default,on=self.invocations
+        self.assertEqual(len(default[0]),8);self.assertEqual(len(default[1]['pass_fds']),2)
+        self.assertEqual(len(on[0]),10);self.assertEqual(on[0][8],'--diagnostic-fd')
+        self.assertEqual(int(on[0][9]),on[1]['pass_fds'][2]);self.assertEqual(len(set(on[1]['pass_fds'])),3)
+        self.assertNotIn(DUMMY,repr(on));self.assertTrue(all(p.returncode==0 for p in self.processes))
+
+    def test_missing_malformed_oversized_and_contradictory_are_invalid_only(self):
+        cases=[b'',b'PUBLIC-NOT-JSON',b'x'*257,self.diagnostic('MASTER_FORMAT','record','before_mutation'),
+            self.diagnostic('MASTER_FORMAT','master','before_mutation'),self.diagnostic()+b'{}']
+        for raw in cases:
+            seen=[]
+            with self.subTest(length=len(raw)),self.child(raw):reply=store.invoke(request(),diagnostic_sink=seen.append)
+            self.assertEqual(reply['status'],'AVAILABLE');self.assertEqual(seen,[None])
+        seen=[]
+        with self.child(self.diagnostic(),'CORRUPT'):reply=store.invoke(request(),diagnostic_sink=seen.append)
+        self.assertEqual(reply['status'],'CORRUPT');self.assertEqual(seen,[None])
+
+    def test_sink_failure_and_all_descriptors_closed_after_valid_result(self):
+        allocated=[];pipe=os.pipe
+        def own_pipe():
+            pair=pipe();allocated.extend(pair);return pair
+        observed={}
+        def sink(value):
+            closed=[]
+            for fd in allocated:
+                try:os.fstat(fd);closed.append(False)
+                except OSError:closed.append(True)
+            observed.update(valid=value is not None,closed=closed,reaped=all(p.returncode==0 for p in self.processes))
+            raise ValueError('PUBLIC-SINK-FAILURE')
+        with self.child(self.diagnostic()),patch.object(store.os,'pipe',side_effect=own_pipe):
+            reply=store.invoke(request(),diagnostic_sink=sink)
+        self.assertEqual(reply['status'],'AVAILABLE')
+        self.assertEqual(observed,dict(valid=True,closed=[True]*len(allocated),reaped=True))
+
+    def test_observer_setup_failure_aborts_before_dispatch_and_closes_fds(self):
+        seen=[];allocated=[];pipe=os.pipe
+        def own_pipe():
+            pair=pipe();allocated.extend(pair);return pair
+        with patch.object(store.os,'pipe',side_effect=own_pipe),patch.object(store.os,'set_blocking',side_effect=OSError()),patch.object(store.subprocess,'Popen') as start:
+            reply=store.invoke(request(),diagnostic_sink=seen.append)
+        self.assertEqual(reply['status'],'UNKNOWN');self.assertEqual(seen,[None]);start.assert_not_called()
+        for fd in allocated:
+            with self.assertRaises(OSError):os.fstat(fd)
+        with patch.object(store.subprocess,'Popen') as start,self.assertRaises(store.Refused):
+            store.invoke(request(),diagnostic_sink=object())
+        start.assert_not_called()
+
+    def test_timeout_one_child_cleanup_and_no_extra_wait_for_metadata(self):
+        seen=[]
+        with self.fake_child('time.sleep(5)\n'):
+            started=time.monotonic();reply=store.invoke(request(),timeout=.1,diagnostic_sink=seen.append)
+        self.assertLess(time.monotonic()-started,2);self.assertEqual(reply['status'],'UNKNOWN');self.assertEqual(seen,[None])
+        self.assertEqual(len(self.processes),1);self.assertIsNotNone(self.processes[0].returncode)
+
+    def test_nonblocking_full_or_broken_emit_does_not_rewrite_or_wait(self):
+        read,write=os.pipe();os.set_blocking(write,False)
+        try:
+            while True:os.write(write,b'PUBLIC-FILL'*1000)
+        except BlockingIOError:pass
+        started=time.monotonic();store._emit_diagnostic(write,store._CorruptionDiagnostic())
+        self.assertLess(time.monotonic()-started,.5)
+        with self.assertRaises(OSError):os.fstat(write)
+        os.close(read)
+        read,write=os.pipe();os.close(read);os.set_blocking(write,False)
+        store._emit_diagnostic(write,store._CorruptionDiagnostic())
+        with self.assertRaises(OSError):os.fstat(write)
+
+    def test_closed_emit_descriptor_is_observer_loss_only(self):
+        read,write=os.pipe();os.close(write)
+        try:store._emit_diagnostic(write,store._CorruptionDiagnostic())
+        finally:os.close(read)
+
+    def test_cancelled_parent_reaps_one_fake_child_and_closes_observer(self):
+        seen=[];allocated=[];pipe=os.pipe
+        def own_pipe():
+            pair=pipe();allocated.extend(pair);return pair
+        with self.fake_child('time.sleep(5)\n'),patch.object(store.os,'pipe',side_effect=own_pipe), \
+             patch.object(store,'_exchange',side_effect=KeyboardInterrupt()),self.assertRaises(KeyboardInterrupt):
+            store.invoke(request(),diagnostic_sink=seen.append)
+        self.assertEqual(seen,[None]);self.assertEqual(len(self.processes),1)
+        self.assertIsNotNone(self.processes[0].returncode)
+        for fd in allocated:
+            with self.assertRaises(OSError):os.fstat(fd)
+
+    def test_worker_distinct_fd_validation_and_context_cleanup(self):
+        request_read,request_write=os.pipe();response_read,response_write=os.pipe();diag_read,diag_write=os.pipe()
+        try:
+            args=[store.HELPER,'--request-fd',str(request_read),'--response-fd',str(response_write)]
+            duplicate=os.dup(response_write)
+            try:
+                with patch.object(store,'_protect_process'),patch.object(store,'_request_main') as worker,self.assertRaises(store.Refused):
+                    store._main(args+['--diagnostic-fd',str(duplicate)])
+                worker.assert_not_called()
+            finally:os.close(duplicate)
+            def worker(argv):store._note_corrupt('MASTER_FORMAT','master')
+            with patch.object(store,'_protect_process'),patch.object(store,'_request_main',side_effect=worker):
+                store._main(args+['--diagnostic-fd',str(diag_write)])
+            self.assertIsNone(store._CORRUPTION_DIAGNOSTIC.get())
+            self.assertEqual(store._validate_diagnostic(os.read(diag_read,257),'CORRUPT')['reason'],'MASTER_FORMAT')
+            with self.assertRaises(OSError):os.fstat(diag_write)
+        finally:
+            for fd in (request_read,request_write,response_read,response_write,diag_read):os.close(fd)
+
+
 class ProtectionTests(unittest.TestCase):
     def setUp(self):
         self.temporary = tempfile.TemporaryDirectory(prefix='cabinet-DUMMY-HEADER-')
