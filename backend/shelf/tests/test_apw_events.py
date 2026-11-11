@@ -95,7 +95,8 @@ class APWEventUITests(DjangoCase):
             self.assertEqual(read.call_args.args,(APW_URL,))
 
     def test_recognized_past_opening_is_unavailable_not_verified_empty(self):
-        with patch.object(gallery_transport,'read',return_value=(200,listing(
+        with patch.object(views.timezone,'now',return_value=NOW),\
+             patch.object(gallery_transport,'read',return_value=(200,listing(
                 opening='Opening 6pm. Friday 6 November 2026',run=''))):
             self.client.post(self.action,self.form('event_source',source_id='apw'))
         page=self.client.get(self.url)
