@@ -169,6 +169,12 @@ def _descriptor(row):
             max_bytes=limit, retention_seconds=900,
             policy_scope='Existing bounded factual-link scope only; no model or redistribution grant.')
     blocked = {
+        'triple_j': ('permission-required',
+            'ABC publishes AI-agent access restrictions. A permitted acquisition route for this '
+            'session is not established; no Triple J listing was fetched.'),
+        'double_j': ('permission-required',
+            'ABC publishes AI-agent access restrictions. A permitted acquisition route for this '
+            'session is not established; no Double J listing or news page was fetched.'),
         'halftix': ('permission-required', 'Publisher permission for retrieval and storage is required; open the official link manually.'),
         'la_sirene': ('owner-action-required', 'A permitted, witnessed visual observation is needed; no public posts are available to this reader.'),
         'hamer_hall': ('access-unverified', 'The official programme reached a waiting room; no bypass or alternate route is attempted.'),

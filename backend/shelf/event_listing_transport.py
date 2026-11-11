@@ -19,14 +19,18 @@ TARGETS = MappingProxyType({
     'venue303': ('https://303.net.au/gigs-events', 'https://303.net.au/robots.txt'),
     'forum': ('https://forummelbourne.com.au/shows', 'https://forummelbourne.com.au/robots.txt'),
     'moons24': ('https://24moons.com.au/events', 'https://24moons.com.au/robots.txt'),
+    'triple_j': ('https://www.abc.net.au/triplej/touring', 'https://www.abc.net.au/robots.txt'),
+    'double_j': ('https://www.abc.net.au/listen/doublej/touring', 'https://www.abc.net.au/robots.txt'),
 })
-_DELAYS = {'venue303': 10, 'forum': 10, 'moons24': 10}
+_DELAYS = {'venue303': 10, 'forum': 10, 'moons24': 10, 'triple_j': 10, 'double_j': 10}
+_ORIGIN_GROUPS = MappingProxyType({'triple_j': 'abc', 'double_j': 'abc'})
 _RATE_DIRECTORY = '/tmp'
 # Initial bounded observations: 303 robots allowed this path; Forum returned
 # unrecognized content. The first exact 24 Moons robots read allowed /events
 # with the existing ten-second minimum. Keep Forum's live listing closed while its pure adapter
 # and synthetic caller remain testable. This is not model/republication consent.
-LISTING_ACCESS = MappingProxyType({'venue303': True, 'forum': False, 'moons24': True})
+LISTING_ACCESS = MappingProxyType({'venue303': True, 'forum': False, 'moons24': True,
+                                 'triple_j': False, 'double_j': False})
 
 
 class ListingIntervalPending(SourceError):
@@ -43,7 +47,10 @@ def _reserve(source_id, *, policy_delay=None):
     boot = Path('/proc/sys/kernel/random/boot_id').read_text().strip()
     if str(UUID(boot)) != boot:
         raise SourceError('Host clock identity unavailable.')
-    path = Path(_RATE_DIRECTORY) / f'culture-cabinet-events-{os.geteuid()}-{source_id}.rate'
+    # ABC's two fixed indexes share one origin/receipt. Existing source receipt
+    # names and history stay unchanged; stricter delay lives in this same row.
+    group = _ORIGIN_GROUPS.get(source_id, source_id)
+    path = Path(_RATE_DIRECTORY) / f'culture-cabinet-events-{os.geteuid()}-{group}.rate'
     fd = os.open(path, os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW | os.O_CLOEXEC, 0o600)
     try:
         info = os.fstat(fd)
@@ -106,6 +113,14 @@ def forum():
 
 def moons24():
     return _read('moons24')
+
+
+def triple_j():
+    return _read('triple_j')
+
+
+def double_j():
+    return _read('double_j')
 
 
 def observe_robots(source_id):

@@ -184,3 +184,25 @@ that semantic failure and its correction are retained separately. These receipts
 are live acquisition/handler evidence, not a browser or working-source acceptance.
 No body or image archive, durable source-reference grant or native activation is
 introduced. The 24 Moons release remains independent of PR83's recovery/UI tails.
+
+### Triple J / Double J shared-origin access boundary (E7)
+
+Both fixed touring targets and their common robots URL reserve one `abc` origin
+receipt through the existing event transport. Existing source receipt names and
+history stay unchanged. A stricter publisher delay persists in the shared receipt
+and applies across both source IDs, including failed sends and policy reads. No
+second client, independent source allowance, fan-out or new posted URL is added.
+
+One robots200 read (2311 bytes) was evaluated for both touring paths. Its wildcard
+rules allow the configured CultureCabinet name, but it also explicitly restricts
+ChatGPT-User, GPTBot and other named AI agents. That wildcard result does not
+establish permission for this agent-controlled session. Both production listing
+gates remain closed, and normal actions report permission-required with no source
+I/O. No touring or Double J news page, alternate user agent, redirect or bypass
+was attempted. A permitted source route/basis remains outstanding; no permanent
+publisher-wide ban or general metadata licence is inferred.
+
+Tests cover one shared stricter delay, fixed destinations, unchanged independent
+source receipt names, zero-I/O gates and authenticated action/replay/render with
+no taste writes. They prove readiness and truthful access handling, not current
+Melbourne gig acquisition, article-as-gig semantics or working-source acceptance.
