@@ -182,4 +182,13 @@ class PortableSecurityMiddleware:
                 response['Content-Security-Policy'] += (
                     f"; script-src {scripts}; script-src-attr 'none'"
                     f"; connect-src {boundary.origin}/cabinet/obtain/jobs/; worker-src 'none'")
+        if valid and request.method in {'GET','HEAD'} and response.status_code==200:
+            from shelf import portable_journey_views
+            match=getattr(request,'resolver_match',None)
+            if (getattr(match,'url_name',None)=='portable_journey' and match.func is portable_journey_views.page
+                and response.get('Content-Type','').split(';')[0].strip().lower()=='text/html'):
+                # Only the packaged deferred guide asset; no source/model or
+                # Obtain connect permission follows from this document handler.
+                response['Content-Security-Policy']+=(
+                    f"; script-src {boundary.origin}/cabinet/actions/script.js; script-src-attr 'none'")
         return response
