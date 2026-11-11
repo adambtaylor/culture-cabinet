@@ -24,6 +24,11 @@ class EventSourceDescriptor:
     max_bytes: int = 524288
     retention_seconds: int = 0
     policy_scope: str = 'Source access and retention remain unverified.'
+    # Content-cache retention does not confer persistent bookmark permission.
+    # Positive reviewed policies are supplied separately; absent means opaque.
+    reference_policy_ref: str = ''
+    restriction_namespace: str = ''
+    reference_url_validator: Callable | None = None
 
     @property
     def implemented(self):
