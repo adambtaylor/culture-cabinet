@@ -88,3 +88,27 @@ attempt and shares at least ten-second pacing across processes, including robots
 Explicit initial robots evidence must be recorded before a live listing; stricter
 publisher pacing is saved in the shared receipt. Robots are not crawled by GET,
 replay or ordinary listing actions. No ICS/detail/image/ticket link is followed.
+
+## Forum adapter (E3b)
+
+`forum` is the second new-origin operation over the same occurrence/caller port,
+with fixed `https://forummelbourne.com.au/shows`. The parser accepts recognized
+show cards and explicit session containers only. A yearless label stays unknown;
+a range remains one range; a card-scoped notice affects only that card's explicit
+sessions, and an unrelated page banner has no cancellation authority. Sold-out
+wording is attributed source text, not a live ticket inventory assertion.
+
+The initial adapter markup contract is covered by fictional fragments. Actual
+current source shape/coverage requires its own successful bounded source receipt;
+a blocked robots/listing read does not validate selectors. Rendering the existing
+card template with a synthetic response does not prove the visible read button,
+real-browser accessibility or portable/native Enhance flow. Experience owns those
+separate controls and affected presentation checks through Orchestration.
+
+The initial Forum robots request returned HTTP 200 with unrecognized content;
+permission was not established and no listing request followed. Its real listing
+transport therefore returns a policy-unavailable exception before reservation or
+I/O; the driver renders `permission-required`. A later exact source-access
+resolution is needed to open that path. Parser/caller fixtures do not change this
+access fact. 303's robots request allowed its fixed listing, whose one integrated
+read then failed in transport; no live parser-shape success is claimed for either.

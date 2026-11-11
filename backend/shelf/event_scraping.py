@@ -7,9 +7,9 @@ from datetime import datetime
 
 from shelf.discovery_sources import Outcome, SourceError
 from shelf.discovery_transport import PBSIntervalPending
-from shelf.event_listing_transport import ListingIntervalPending
+from shelf.event_listing_transport import ListingIntervalPending, ListingPolicyUnavailable
 
-IMPLEMENTED_SOURCES = frozenset({'rrr', 'pbs', 'venue303'})
+IMPLEMENTED_SOURCES = frozenset({'rrr', 'pbs', 'venue303', 'forum'})
 
 
 def collect(source_id, *, now):
@@ -31,6 +31,14 @@ def collect(source_id, *, now):
             read = discovery_transport.rrr
             message = ('Partial coverage: up to nine cards from one Triple R listing page. '
                        'Source dates omit the year; upcoming status and ticket availability unverified.')
+        elif source_id == 'forum':
+            from shelf.forum_events import parse_listing as venue_parser
+            from shelf.event_listing_transport import forum
+            read = forum
+            parse_listing = lambda raw, *, retrieved_at: venue_parser(
+                raw, retrieved_at=retrieved_at, provenance='live-automated')
+            message = ('Partial Forum coverage: one listing, up to nine source observations; '
+                       'dates and source notices are not verified ticket availability.')
         elif source_id == 'venue303':
             from shelf.venue303_events import parse_listing as venue_parser
             from shelf.event_listing_transport import venue303
@@ -58,10 +66,12 @@ def collect(source_id, *, now):
         # Do not apply upcoming_events here. RRR omits years; PBS alone owns
         # its visible-year/window filtering. Both can retain unknown-date leads.
         cards = parse_listing(raw, retrieved_at=now.isoformat())
-        if source_id in ('pbs', 'venue303') and not cards:
+        if source_id in ('pbs', 'venue303', 'forum') and not cards:
             return Outcome('empty', cards,
                 'No eligible leads in this bounded page; this does not establish no events or tickets.')
         return Outcome('ready', cards, message)
+    except ListingPolicyUnavailable:
+        return Outcome('permission-required', message='Source access policy is unverified; no listing request sent.')
     except ListingIntervalPending:
         return Outcome('rate-limited', message='Source requires a shared origin interval; no request sent.')
     except PBSIntervalPending:

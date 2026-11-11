@@ -13,7 +13,7 @@ from shelf.tests.test_rrr_events import card, listing
 class EventScrapingTests(TestCase):
     def test_fixed_source_and_aware_clock_required_before_io(self):
         with patch.object(discovery_transport, 'rrr') as send:
-            for source in ('forum', 'halftix', 'https://www.rrr.org.au/events', '', [], None):
+            for source in ('ngv', 'halftix', 'https://www.rrr.org.au/events', '', [], None):
                 with self.subTest(source=source):
                     self.assertEqual(event_scraping.collect(source, now=NOW).status, 'invalid')
             for clock in (None, '2026-10-28', datetime(2026, 10, 28)):
