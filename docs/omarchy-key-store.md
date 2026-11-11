@@ -165,6 +165,36 @@ the frozen failure/selection/terminal/predecessor hashes and retirement guards
 are unchanged. Pure decoding and hermetic archive tests do not establish real
 GCR input or encrypted persistence. The actual refused attempt remains retained.
 
+The subsequent run archived that pointer and reached a new prompt, but its
+geometry check refused before input. Operation
+`b8cc865d-df30-46da-969a-cf7fa40c6eba` retained acknowledgement only, no Completed
+reference and no input/canary/master progress. Terminal-only
+`retire_owned_dialog_dummy` checks the exact terminal/positive/input/caller raw
+hashes, v2 identity and observation predicate, and original caller closure through
+bus metadata. It archives original strings before CAS-retiring only that pointer.
+The same envelope,32768-byte bound, exclusive creation/fsync/identical replay and
+all three immutable ancestors are required; neither older continuation can bypass
+the new tombstone. Possible OS collections remain unknown and untouched.
+
+The private `single-owned-surface/v1` input method binds one GCR process generation,
+one same-process compositor window, one accessibility application and one direct
+active nondefunct dialog. Inactive extra peers also cause refusal before labels
+are read. Nonce/labelled controls remain inside that dialog; identities, ancestry
+and cardinalities are rechecked before every focus/edit/Create. Coordinates are
+diagnostic only, without transforms, tolerances, coordinate input or fallback.
+Before-effect markers distinguish uncertain native actions from acknowledgement.
+The private dummy value is generated only after binding/interface gates, retained
+under proof custody for the later checks, and explicitly disposed. No password is
+evidence. Source/fixture success still does not establish actual field support,
+Completed identity, encrypted association, persistence or normal native readiness.
+The proof custodian keeps that one value in a nondumpable detached process, using
+a same-UID0600 socket in an owned0700 runtime directory. Receipt metadata contains
+its PID/generation and socket reference; private acquisition remains bound to the
+original nonce. Empty failed preflight disposes the custodian. A value that may
+have been used stays under explicit custody until the final proof/handoff or
+precise uncertain-outcome disposition, followed by explicit disposal. Provider
+credentials and collection/API operations are outside this custodian interface.
+
 The versioned dummy input helper must identify both labelled Password and
 Confirm controls within the exact owned GCR dialog, verify intended focus, and
 invoke its explicit Create action once. It cannot assume Tab navigation, read
