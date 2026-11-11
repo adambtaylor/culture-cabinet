@@ -57,6 +57,17 @@ def forbidden_processor(request):
     raise AssertionError('Request processor invoked')
 
 
+class NativeForms(Document):
+    def __init__(self, html):
+        self.all_forms = []
+        super().__init__(html)
+
+    def handle_starttag(self, tag, attributes):
+        super().handle_starttag(tag, attributes)
+        if tag == 'form':
+            self.all_forms.append(self.current)
+
+
 class GuidedJourneyPresentationTests(SimpleTestCase):
     def render(self, value, **options):
         response = render_guided_journey(value, csrf_token='s'*64, **options)
@@ -78,6 +89,60 @@ class GuidedJourneyPresentationTests(SimpleTestCase):
         self.assertNotIn('experienced_ack', values)
         self.assertNotIn('signal', values)
         self.assertFalse(any(t == 'select' for t, a in doc.tags))
+
+    def test_long_optional_step_has_intro_actions_with_identical_lower_native_commands(self):
+        p = projection(); prototype = deepcopy(p['favourite_categories'][0]['slots'][0])
+        p['favourite_categories'] = []
+        for index, category in enumerate(CATEGORIES):
+            slots = []
+            for number in range(1, 6):
+                slot = deepcopy(prototype); base = 1000 + index*100 + number*10
+                slot.update(slot=number, entry_ref=ref(base), mutation_id=ref(base+1))
+                for offset, action in enumerate(slot['actions'].values()):
+                    action['fields'].update(category=category, slot=number, entry_ref=slot['entry_ref'],
+                        mutation_id=ref(base+2+offset), command_id=ref(base+4+offset))
+                slots.append(slot)
+            p['favourite_categories'].append(dict(category=category, label=category, slots=slots))
+        _, html, doc = self.render(p)
+        intro_start = html.index('<nav class="journey-navigation journey-navigation-intro"')
+        intro_end = html.index('</nav>', intro_start)
+        lower_start = html.index('<nav class="journey-navigation" aria-label="Continue setup"')
+        lower_end = html.index('</nav>', lower_start)
+        self.assertLess(intro_end, html.index('class="favourite-category"'))
+        self.assertLess(intro_end, html.index('Any number from zero to five is fine'))
+        self.assertIn('Both choices keep entries you have already saved', html[:intro_end])
+        self.assertIn('Skip this step</button>', html[intro_start:intro_end])
+        self.assertIn('Continue</button>', html[intro_start:intro_end])
+        self.assertNotIn(' hidden', html[intro_start:intro_end])
+        def commands(segment):
+            rows = NativeForms(segment).all_forms
+            return {next(i['value'] for i in row['inputs'] if i.get('name') == 'action'): row for row in rows}
+        intro, lower = commands(html[intro_start:intro_end]), commands(html[lower_start:lower_end])
+        self.assertEqual(set(intro), {'skip', 'continue'})
+        self.assertEqual(set(lower), {'back', 'skip', 'continue'})
+        for action, row in intro.items():
+            self.assertEqual(row, lower[action])
+            self.assertEqual(row['attrs'], {'method': 'post', 'action': '/cabinet/journey/step'})
+            fields = {i['name']: i['value'] for i in row['inputs']}
+            self.assertEqual(fields['csrfmiddlewaretoken'], 's'*64)
+            self.assertEqual(fields['profile_ref'], p['profile_ref'])
+            self.assertEqual(fields['journey_ref'], p['journey_ref'])
+            self.assertEqual(fields['expected_revision'], '1')
+        self.assertEqual(sum(t == 'form' and a.get('action') == '/cabinet/journey/favourites/add' for t, a in doc.tags), 65)
+        ids = [a['id'] for t, a in doc.tags if 'id' in a]
+        self.assertEqual(len(ids), len(set(ids)))
+
+    def test_intro_actions_keep_disabled_state_and_do_not_appear_on_other_steps(self):
+        p = projection(); p['actions']['step']['skip']['enabled'] = False
+        _, html, _ = self.render(p)
+        native = NativeForms(html).all_forms
+        skip = [f for f in native if any(i.get('name') == 'action' and i.get('value') == 'skip' for i in f['inputs'])]
+        self.assertEqual(len(skip), 2)
+        self.assertTrue(all('disabled' in f['buttons'][0] for f in skip))
+        self.assertEqual(skip[0]['inputs'], skip[1]['inputs'])
+        for step in ('providers', 'prepare', 'finish'):
+            _, other, _ = self.render(projection(step))
+            self.assertNotIn('journey-navigation-intro', other)
 
     def test_failed_provider_test_keeps_key_and_never_replays_or_echoes_secret(self):
         p = projection('providers'); p['providers'] = [provider(p)]; p.update(request=Poison(), secret='NEVER-ECHO')

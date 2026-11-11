@@ -19,3 +19,6 @@ button { min-height: 2.8rem; max-width: 100%; padding: .6rem 1rem; font: 600 1re
 .category-outcomes li { padding: 1rem; border: 1px solid #b6bda9; overflow-wrap: anywhere; }.journey-navigation { display: flex; flex-wrap: wrap; gap: .6rem; margin-block: 1.5rem; }
 :focus-visible { outline: 3px solid #895317; outline-offset: 3px; }.skip-link { position: absolute; top: -5rem; left: 1rem; background: #fffefa; padding: .5rem; }.skip-link:focus { top: .2rem; }
 @media (forced-colors:active) { button,input,.provider-panel,.journey-status { border-color: ButtonText; } }
+
+.journey-navigation-intro { margin-block: .5rem 1rem; }
+.journey-navigation-intro form { margin: 0; }
