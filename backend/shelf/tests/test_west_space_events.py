@@ -80,4 +80,3 @@ class WestSpaceParserTests(TestCase):
         self.assertEqual(len(self.parse(listing(*(card(str(i)) for i in range(48))))),9)
         with self.assertRaises(SourceError):self.parse(listing(*(card(str(i)) for i in range(49))))
         with self.assertRaises(SourceError):self.parse(b'x'*(transport.MAX_BYTES+1))
-
