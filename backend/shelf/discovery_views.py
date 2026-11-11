@@ -31,7 +31,7 @@ class ActionForm(forms.Form):
     mode = forms.ChoiceField(choices=[(v, v) for v in ('household', 'sample')])
     revision = forms.IntegerField(min_value=0)
     nonce = forms.CharField(max_length=200)
-    operation = forms.ChoiceField(choices=[(v, v) for v in ('respond', 'save', 'unsave', 'undo', 'restart', 'radio', 'events', 'rrr', 'rrr_detail', 'beat', 'beat_detail', 'pbs', 'tribe', 'soundsystems', 'gallery')])
+    operation = forms.ChoiceField(choices=[(v, v) for v in ('respond', 'save', 'unsave', 'undo', 'restart', 'radio', 'events', 'venue303', 'rrr', 'rrr_detail', 'beat', 'beat_detail', 'pbs', 'tribe', 'soundsystems', 'gallery')])
     key = forms.CharField(required=False, max_length=160)
     choice = forms.ChoiceField(required=False, choices=CHOICE_LABELS)
     queue = forms.ChoiceField(required=False, choices=QUEUES)
@@ -375,17 +375,17 @@ def action(request, profile_id):
     queue = data.get('queue') or 'all'
     if _partial(request) and data['operation'] != 'respond':
         raise ValueError('Only explicit responses use partial requests.')
-    public = data['operation'] in ('radio', 'events', 'rrr', 'rrr_detail', 'beat', 'beat_detail', 'pbs', 'tribe', 'soundsystems', 'gallery')
+    public = data['operation'] in ('radio', 'events', 'venue303', 'rrr', 'rrr_detail', 'beat', 'beat_detail', 'pbs', 'tribe', 'soundsystems', 'gallery')
     if ('note' in data and data['operation'] != 'respond') or public and queue != 'all':
         raise ValueError('Invalid source response fields.')
     if data['operation'] in ('rrr_detail', 'beat_detail'):
         _read_event_detail(request, profile_id, data)
-    elif data['operation'] in ('radio', 'events', 'rrr', 'beat', 'pbs', 'tribe', 'soundsystems', 'gallery'):
+    elif data['operation'] in ('radio', 'events', 'venue303', 'rrr', 'beat', 'pbs', 'tribe', 'soundsystems', 'gallery'):
         seeds = {c.key: c for c in sources.household_candidates()
                  if c.kind == 'artist' and c.key.startswith('musicbrainz:artist:')}
         if (data['mode'] != 'household' or data['choice']
                 or (data['operation'] == 'radio' and (data['key'] not in seeds or not data['radio_mode']))
-                or (data['operation'] in ('events', 'rrr', 'beat', 'pbs', 'tribe', 'soundsystems', 'gallery') and (data['key'] or data['radio_mode']))):
+                or (data['operation'] in ('events', 'venue303', 'rrr', 'beat', 'pbs', 'tribe', 'soundsystems', 'gallery') and (data['key'] or data['radio_mode']))):
             return _error(request, 'Invalid public source form.', 400)
         reserved = storage.reserve_public(request, profile_id, data)
         if reserved is not None:
@@ -397,7 +397,7 @@ def action(request, profile_id):
                 entries[(data['operation'], seed, data['radio_mode'])] = {
                     'outcome': result, 'at': timezone.now(),
                     'source': {'radio': 'ListenBrainz artist radio', 'events': 'Moshtix',
-                               'rrr': 'Triple R events', 'beat': 'Beat Magazine', 'pbs': 'PBS Events', 'tribe': 'Tribe Soundsystem RSS', 'soundsystems': 'Sound Systems of Melbourne', 'gallery': 'Gertrude / Australian Print Workshop'}[data['operation']]}
+                               'venue303': '303 gigs and events', 'rrr': 'Triple R events', 'beat': 'Beat Magazine', 'pbs': 'PBS Events', 'tribe': 'Tribe Soundsystem RSS', 'soundsystems': 'Sound Systems of Melbourne', 'gallery': 'Gertrude / Australian Print Workshop'}[data['operation']]}
                 PUBLIC_CACHE.set(cache_key(request, profile_id), entries, timeout=900)
     else:
         if data['radio_mode']:
