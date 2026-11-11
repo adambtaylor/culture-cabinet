@@ -139,9 +139,11 @@ def _value(signal, value):
         _bool(value)
         text = 'Favourite' if value else 'Not a favourite'
     elif signal == 'interest':
-        if type(value) is not str or value not in ('yes', 'no'):
+        if type(value) is not str or value not in ('yes', 'maybe', 'no'):
             raise ValueError('Invalid original interest value')
-        text = 'Interested' if value == 'yes' else 'Not interested'
+        # Preserve the original anticipated-interest enum, including Maybe;
+        # uncertainty is neither a positive response nor a cleared preference.
+        text = {'yes': 'Interested', 'maybe': 'Maybe', 'no': 'Not interested'}[value]
     elif signal == 'enjoyment':
         if type(value) is not int or not -9007199254740991 <= value <= 9007199254740991:
             raise ValueError('Invalid original enjoyment value')
