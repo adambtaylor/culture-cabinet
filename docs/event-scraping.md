@@ -152,3 +152,29 @@ fresh-session identity persistence. Exact saved-reference URL restoration is a
 separate narrow persistence decision: an opaque saved ID is not advertised as a
 complete source reference. No new source store, native Enhance activation,
 scheduler, source expansion, model call or private browser access is added.
+
+### Bar Open / Make It Up Club (E5)
+
+The exact official homepage was reachable but exposed a Gigs shell without dated
+event text or event metadata. Its advertised Make It Up Club page was also
+reachable and identified the weekly Tuesday recurrence and social links, without
+a readable dated programme. Both exact paths were checked against the publisher's
+robots rules; the same source-origin reservation persists across them. Only the
+fixed Make It Up Club path is installed as the normal source acquisition.
+
+The thin parser positively recognizes that page's heading, programme section and
+recurrence statement. It produces `ProgrammeUnavailable`, which the shared driver
+maps to the existing `unavailable` outcome using the closed descriptor's static
+wording. Malformed/challenge HTML remains `invalid`; this is never a successful
+empty programme, a date generated from Tuesday or a current-inventory claim.
+The exception's text is not reflected to the person. No arbitrary/detail/social
+endpoint or image is followed to fill the gap.
+
+An actual guarded `event_source/bar_open` action at `8e2819c` made one fixed
+GET200 (48914 bytes), returned that unavailable result and rendered normally.
+Replay/reload made no extra acquisitions and wrote no taste history. The 21 pure
+and 6 normal-handler checks are component evidence; Bar Open is still blocked
+for the full working-source goal by the missing permitted dated programme.
+It needs a usable current programme or a separately scoped legitimate visual
+observation path; existing social links do not grant private access. This source
+failure does not hold My Aeon or other assigned adapters.
