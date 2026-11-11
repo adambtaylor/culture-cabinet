@@ -165,7 +165,9 @@ def location(request):
     value=_values(request,names)
     if 'radius_km' in value:
         from .portable_source_views import _revision
-        value['radius_km']=_revision(value['radius_km'])
+        # A blank optional HTML number field has the same meaning as omission.
+        # Closed-field and duplicate checks above still apply before defaulting.
+        value['radius_km']=None if value['radius_km']=='' else _revision(value['radius_km'])
     result=PortableJourney(request.portable_authority).location(request.session.get('portable_session'),**value)
     return _redirect(result['profile_ref'])
 

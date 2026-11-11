@@ -59,6 +59,45 @@ def journey_projection(*, profile_ref, profile_label, journey_ref, revision, ste
     return read_json(canonical_bytes(value))
 
 
+def _current_favourite_slots(cabinet,journey):
+    """Project guided identities onto current authentic saved-event heads."""
+    from .models import PortableJourneyCommand
+    from .portable_taste_history import _supported
+    if journey is None:return {}
+    # History restore and Undo append events without rewriting journey metadata.
+    # Commands locate original guided identities; only event heads decide Saved/CAS.
+    candidates={value['entry_ref']:key for key,value in journey.slots.items()}
+    commands=PortableJourneyCommand.objects.filter(cabinet=cabinet,kind='journey.favourite',
+        state='committed').order_by('created_at','pk')
+    for command in commands:
+        value=command.descriptor
+        if value['journey_ref']==str(journey.pk):
+            candidates.setdefault(value['entry_ref'],value['category']+':'+str(value['slot']))
+    streams,_=_supported(cabinet);active={}
+    for (_,signal),stream in streams.items():
+        target=stream['target']
+        namespace=('owner-stated-visual-artist' if target.category=='visual_artist' else 'owner-stated-favourite')
+        if signal!='saved' or target.source_namespace!=namespace or not stream['available'] or stream['body']!={'value':True}:
+            continue
+        prefix=str(cabinet.profile_ref)+':'
+        entry=target.source_key.removeprefix(prefix)
+        preferred=candidates.get(entry)
+        if preferred and target.source_key==prefix+entry and preferred.split(':')[0]==target.category:
+            active[entry]=(preferred,stream['history'][-1].revision)
+    slots={}
+    # Keep occupied current slots first. Reinstated original identities take their
+    # old slot when free, then the first free slot; never hide an overflow.
+    for entry in candidates:
+        if entry not in active:continue
+        preferred,saved_revision=active[entry]
+        category=preferred.split(':')[0]
+        choices=[preferred,*[category+':'+str(number) for number in range(1,6)]]
+        key=next((key for key in choices if key not in slots),None)
+        ga._require(key is not None,'REVISION_CONFLICT',409)
+        slots[key]=dict(entry_ref=entry,saved_revision=saved_revision)
+    return slots
+
+
 class PortableJourney:
     def __init__(self, authority):
         ga._require(type(authority) is ga.PortableAuthority)
@@ -282,7 +321,11 @@ class PortableJourney:
             ga._require(remove or type(title) is str and 1<=len(title)<=200 and bool(title.strip())
                 and not any(ord(c)<32 or ord(c)==127 for c in title),'CONTRACT_INVALID',422)
             self._pending(cabinet,exclude=prior.pk if prior else None)
-            key=category+':'+str(slot);old=journey.slots.get(key)
+            slots=_current_favourite_slots(cabinet,journey)
+            key=category+':'+str(slot)
+            # An interrupted exact parent resumes its reserved child receipt;
+            # new commands must bind the current event-derived slot revision.
+            old=(journey.slots if prior else slots).get(key)
             ga._require(journey.revision==expected_revision and
                 (not old or old['entry_ref']==entry_ref and old['saved_revision']==base_revision),
                 'REVISION_CONFLICT',409)
@@ -315,7 +358,6 @@ class PortableJourney:
             accepted=PortableTasteInputs(self.authority).mutate_favourite(session_ref,profile_ref,
                 entry_ref=entry_ref,mutation_id=mutation_id,base_revision=base_revision,
                 category=category,title=title,remove=remove)
-            slots=dict(journey.slots)
             if remove:slots.pop(key,None)
             else:slots[key]=dict(entry_ref=entry_ref,saved_revision=accepted['revision'])
             with transaction.atomic(),ga._write_window():
@@ -434,7 +476,7 @@ class PortableJourney:
             journey=PortableJourneyState.objects.filter(cabinet=cabinet).first()
             journey_ref=str(journey.pk if journey else uuid.uuid5(cabinet.profile_ref,'guided-owner-journey:v2'))
             rev=journey.revision if journey else 0;step=journey.step if journey else 'providers'
-            connections=journey.connections if journey else {};slots=journey.slots if journey else {}
+            connections=journey.connections if journey else {};slots=_current_favourite_slots(cabinet,journey)
             recent=True
             try:self.authority.authorize(session_ref,sensitive=True,touch=False)
             except AuthorityFault:recent=False
