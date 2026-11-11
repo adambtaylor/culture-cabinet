@@ -110,6 +110,54 @@ normal `provision(timeout=120)` call and ordinary private RPC keep their existin
 behavior for installations without this failed-attempt archive. This source
 change does not itself execute retirement or another GNOME operation.
 
+### The exact ended v2 prompt attempt
+
+The corrected dummy operation `ce102960-02f0-4697-8008-371439a02d04` reached
+`PROMPT_PENDING` at `/org/freedesktop/secrets/prompt/p2`, then returned unavailable
+without a captured collection reference. Its canary and master phases remained
+`NOT_STARTED`. The first saved UI observation did not confirm both password
+fields were filled; the terminal result does not establish the failure subtype.
+The original caller `:1.20377` has ended. A prompt belongs to its original calling
+connection and has no historical-result getter: a replacement must not replay
+Prompt/Dismiss, try to recover an old result or infer that no OS collection exists.
+
+After focused source acceptance, terminal-only
+`retire_prompt_pending_dummy(failure_receipt_bytes, terminal_receipt_bytes)` may
+dispose of only this second pinned local pointer. It requires the exact secure
+v2 bytes and both retained receipt hashes, the complete null-result/zero-progress
+predicate, and the exact immutable predecessor archive. It checks only bus-daemon
+`NameHasOwner` metadata for the original caller, and refuses while that caller
+is live. It never queries the old prompt or any keyring object/file.
+
+The new read-only archive `abandoned-ce102960-02f0-4697-8008-371439a02d04.json`
+retains original selection/receipts and their hashes, the returned prompt, ended
+caller observation and predecessor link. Its disposition is
+`ABANDONED_PREMASTER_PROMPT_UNRESOLVED`, with `possible_collection_exists=unknown`
+and `os_orphan_deleted=false`. File fsync and directory fsync precede CAS pointer
+removal. An interrupted identical archive can be revalidated and fsynced again;
+foreign archives, changed pointers, captured Completed results or canary/master
+progress refuse retirement. This is not a generic reset or cleanup mechanism.
+
+Only a separately routed `provision(continuation_archive=second_archive_uuid)`
+can create the next dummy. Both fixed ancestors must validate. Once the second
+archive exists, the old link alone is insufficient. Any new pending selection
+still prevents another creation; there is no retry loop or automatic retirement.
+
+New v2 receipts also retain closed nonsecret prompt observations for actual
+acknowledgement, Completed/dismissal/malformed result, timer expiry, observed
+connection closure or call failure. Unobserved distinctions stay `UNOBSERVED`.
+A Completed reference is saved before a later acknowledgement failure; a process
+death with no observed terminal event does not become an invented timeout.
+Previously accepted v2 receipts remain readable without the observation field.
+The private ordinary RPC is unchanged.
+
+The versioned dummy input helper must identify both labelled Password and
+Confirm controls within the exact owned GCR dialog, verify intended focus, and
+invoke its explicit Create action once. It cannot assume Tab navigation, read
+password contents, log/echo the private generated dummy passphrase, use clipboard
+fallback or target an unrelated window. Input readiness and all real GNOME
+association/persistence/negative/native proofs remain separate from these tests.
+
 ## Terminal closure, lock and restart
 
 Closing an enrollment terminal/helper does not erase a successfully persisted

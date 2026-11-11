@@ -1,7 +1,8 @@
 """Named fresh identity/progress and typed favourites, no provider operation."""
 import uuid
 from shelf.portable_journey import PortableJourney, favourite_slot, journey_actions
-from shelf.models import ProfileCabinetState, PortableJourneyState, FeedbackEvent
+from shelf.models import ProfileCabinetState, PortableJourneyState, FeedbackEvent, PortableJourneyCommand
+from shelf import grant_authority as ga
 from shelf.portable_taste_inputs import PortableTasteInputs
 from shelf.portable_authority import AuthorityFault
 from .test_grant_authority import RecoveryCase
@@ -159,4 +160,107 @@ class JourneyPrepareTests(ServiceCase):
         self.assertEqual(PortableJourneyCommand.objects.get().state,'committed')
         state.refresh_from_db();self.assertEqual(str(state.run_ref),result['run_ref'])
         with self.assertRaises(AuthorityFault):journey.prepare(self.ref,**{**fields,'refresh_nonce':str(uuid.uuid4())})
+        self.assertEqual((self.catalogue.calls,self.transport.calls),(0,0))
+
+
+class JourneyReservationRegressionTests(NativeFeedbackCase):
+    def test_normal_changed_title_refusal_does_not_strand_remove_or_replacement(self):
+        journey=PortableJourney(self.authority)
+        initial=journey.project(self.ref,profile_ref=self.profile_ref)
+        journey.step(self.ref,profile_ref=self.profile_ref,journey_ref=initial['journey_ref'],expected_revision=0,
+            step='providers',action='skip',command_id=str(uuid.uuid4()))
+        projected=journey.project(self.ref,profile_ref=self.profile_ref)
+        slot=next(row for row in projected['favourite_categories'] if row['category']=='book')['slots'][0]
+        first={**slot['actions']['add']['fields'],'title':'Original fictional favourite'}
+        self.assertEqual(self.post('/cabinet/journey/favourites/add',first).status_code,303)
+        page=self.http.get('/setup/journey',{'profile_ref':self.profile_ref},**self.headers)
+        self.assertContains(page,'Original fictional favourite')
+        projected=journey.project(self.ref,profile_ref=self.profile_ref)
+        slot=next(row for row in projected['favourite_categories'] if row['category']=='book')['slots'][0]
+        changed={**slot['actions']['add']['fields'],'title':'Replacement fictional favourite'}
+        refused=self.post('/cabinet/journey/favourites/add',changed)
+        self.assertEqual(refused.status_code,409)
+        self.assertContains(refused,'remove it and add a new favourite',status_code=409)
+        self.assertFalse(PortableJourneyCommand.objects.filter(command_id=changed['command_id']).exists())
+        self.assertEqual(FeedbackEvent.objects.count(),1)
+        self.assertEqual(self.post('/cabinet/journey/favourites/remove',slot['actions']['remove']['fields']).status_code,303)
+        projected=journey.project(self.ref,profile_ref=self.profile_ref)
+        empty=next(row for row in projected['favourite_categories'] if row['category']=='book')['slots'][0]
+        self.assertNotEqual(empty['entry_ref'],first['entry_ref'])
+        self.assertEqual(self.post('/cabinet/journey/favourites/add',
+            {**empty['actions']['add']['fields'],'title':'Replacement fictional favourite'}).status_code,303)
+        self.assertEqual(list(FeedbackEvent.objects.order_by('recorded_at','id').values_list('body',flat=True)).count(None),1)
+        self.assertEqual(FeedbackEvent.objects.count(),3)
+
+    def test_interrupted_committed_child_resumes_its_receipt_once_and_keeps_pending_guard(self):
+        from unittest.mock import patch
+        from shelf.portable_taste_inputs import PortableTasteInputs
+        journey=PortableJourney(self.authority)
+        initial=journey.project(self.ref,profile_ref=self.profile_ref)
+        slot=next(row for row in initial['favourite_categories'] if row['category']=='book')['slots'][0]
+        fields={**slot['actions']['add']['fields'],'title':'Interrupted fictional favourite'}
+        original=PortableTasteInputs.mutate_favourite
+        def interrupted(instance,*args,**kwargs):
+            original(instance,*args,**kwargs)
+            raise RuntimeError('Fixture interruption after child commit')
+        with patch.object(PortableTasteInputs,'mutate_favourite',interrupted),self.assertRaises(RuntimeError):
+            self.post('/cabinet/journey/favourites/add',fields)
+        parent=PortableJourneyCommand.objects.get(command_id=fields['command_id'])
+        self.assertEqual(parent.state,'reserved');self.assertEqual(FeedbackEvent.objects.count(),1)
+        blocked=self.post('/cabinet/journey/providers/apple/configure',dict(
+            profile_ref=self.profile_ref,journey_ref=initial['journey_ref'],expected_revision=0,
+            command_id=str(uuid.uuid4()),confirmed='yes'))
+        self.assertEqual(blocked.status_code,409)
+        self.assertEqual(self.post('/cabinet/journey/favourites/add',fields).status_code,303)
+        self.assertEqual(self.post('/cabinet/journey/favourites/add',fields).status_code,303)
+        parent.refresh_from_db();self.assertEqual(parent.state,'committed')
+        self.assertEqual(FeedbackEvent.objects.count(),1)
+
+    def test_prepare_known_no_run_refusal_is_replayable_and_does_not_block_next_command(self):
+        self.enterContext(self.settings(PORTABLE_CONNECTIONS=self.service))
+        from shelf.models import SynthesisRun
+        journey=PortableJourney(self.authority)
+        initial=journey.project(self.ref,profile_ref=self.profile_ref)
+        configured=journey.configure(self.ref,profile_ref=self.profile_ref,journey_ref=initial['journey_ref'],
+            expected_revision=0,command_id=str(uuid.uuid4()),provider='openai',confirmed=True)
+        fields=dict(profile_ref=self.profile_ref,journey_ref=initial['journey_ref'],
+            expected_revision=configured['revision'],command_id=str(uuid.uuid4()),
+            connection_ref=configured['connection_refs'][0],client_key=str(uuid.uuid4()),refresh_nonce=str(uuid.uuid4()))
+        refused=self.post('/cabinet/journey/prepare',fields)
+        self.assertGreaterEqual(refused.status_code,400)
+        parent=PortableJourneyCommand.objects.get(command_id=fields['command_id'])
+        self.assertEqual(parent.state,'committed')
+        self.assertEqual(parent.result['schema'],'journey-prepare-refusal/v1')
+        self.assertFalse(SynthesisRun.objects.exists())
+        self.assertEqual(self.post('/cabinet/journey/step',dict(profile_ref=self.profile_ref,
+            journey_ref=initial['journey_ref'],expected_revision=configured['revision'],
+            command_id=str(uuid.uuid4()),step='providers',action='skip')).status_code,303)
+        self.assertEqual(self.post('/cabinet/journey/prepare',fields).status_code,refused.status_code)
+        self.assertFalse(SynthesisRun.objects.exists())
+
+
+class JourneyPrepareInterruptionTests(ServiceCase):
+    def test_admitted_prepare_child_is_not_settled_as_no_effect_after_interruption(self):
+        from django.db import transaction
+        from unittest.mock import patch
+        from shelf.models import PortableJourneyCommand,SynthesisRun
+        journey=PortableJourney(self.authority)
+        with ga.current_writer(self.authority,self.ref,self.profile_ref) as cabinet,transaction.atomic(),ga._write_window():
+            state=PortableJourneyState.objects.create(id=uuid.uuid5(cabinet.profile_ref,'guided-owner-journey:v2'),
+                cabinet=cabinet,connections={'openai':[str(self.config.pk)]},created_at=self.authority.now(),
+                updated_at=self.authority.now())
+        fields=dict(profile_ref=self.profile_ref,journey_ref=str(state.pk),expected_revision=1,
+            command_id=str(uuid.uuid4()),connection_ref=str(self.config.pk),client_key=str(uuid.uuid4()),
+            refresh_nonce=str(uuid.uuid4()))
+        original=self.enhance.start
+        def interrupted(*args,**kwargs):
+            original(*args,**kwargs)
+            raise AuthorityFault('CAPABILITY_UNAVAILABLE',503)
+        with patch.object(self.enhance,'start',side_effect=interrupted),self.assertRaises(AuthorityFault):
+            journey.prepare(self.ref,**fields)
+        parent=PortableJourneyCommand.objects.get();self.assertEqual(parent.state,'reserved')
+        self.assertEqual(SynthesisRun.objects.count(),1)
+        resumed=journey.prepare(self.ref,**fields)
+        parent.refresh_from_db();self.assertEqual(parent.state,'committed')
+        self.assertEqual(str(SynthesisRun.objects.get().pk),resumed['run_ref'])
         self.assertEqual((self.catalogue.calls,self.transport.calls),(0,0))
