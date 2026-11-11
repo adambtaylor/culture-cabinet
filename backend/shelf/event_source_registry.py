@@ -61,6 +61,11 @@ def _moshtix(now):
     return events(now)  # Accepted one-row normal query, not the nine-row helper.
 
 
+def _moons24(now):
+    from shelf.event_listing_transport import moons24
+    return moons24()
+
+
 def _parse_rrr(raw, *, now, retrieved_at):
     from shelf.rrr_events import parse_listing
     return parse_listing(raw, retrieved_at=retrieved_at)
@@ -84,6 +89,11 @@ def _parse_forum(raw, *, now, retrieved_at):
 def _parse_moshtix(raw, *, now, retrieved_at):
     from shelf.discovery_sources import parse_public_event_response
     return parse_public_event_response(raw, now=now, retrieved_at=retrieved_at)
+
+
+def _parse_moons24(raw, *, now, retrieved_at):
+    from shelf.moons24_events import parse_listing
+    return parse_listing(raw, retrieved_at=retrieved_at)
 
 
 # Finite owner/Architecture catalogue, not an expandable client-controlled list.
@@ -147,6 +157,10 @@ def _descriptor(row):
         'moshtix': (_moshtix, _parse_moshtix, 131072,
                 'Partial Moshtix coverage: one public event in VIC within eight weeks; '
                 'status and ticket availability unverified.'),
+        'moons24': (_moons24, _parse_moons24, 524288,
+                'Partial 24 Moons coverage: current-week plus later programme, up to nine leads '
+                'within eight weeks. Unknown dates remain unverified; source links open the '
+                'programme, not an exact session or a checked seller.'),
     }
     if source_id in active:
         acquire, parse, limit, coverage = active[source_id]

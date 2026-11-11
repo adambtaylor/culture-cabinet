@@ -1,4 +1,4 @@
-"""Four fixed public targets, sharing per-origin reservations across processes."""
+"""Fixed public targets, sharing per-origin reservations across processes."""
 import fcntl
 import json
 import math
@@ -18,13 +18,15 @@ USER_AGENT = 'CultureCabinet/0.1 (private factual event listing reader)'
 TARGETS = MappingProxyType({
     'venue303': ('https://303.net.au/gigs-events', 'https://303.net.au/robots.txt'),
     'forum': ('https://forummelbourne.com.au/shows', 'https://forummelbourne.com.au/robots.txt'),
+    'moons24': ('https://24moons.com.au/events', 'https://24moons.com.au/robots.txt'),
 })
-_DELAYS = {'venue303': 10, 'forum': 10}
+_DELAYS = {'venue303': 10, 'forum': 10, 'moons24': 10}
 _RATE_DIRECTORY = '/tmp'
 # Initial bounded observations: 303 robots allowed this path; Forum returned
-# unrecognized content. Keep Forum's live listing closed while its pure adapter
+# unrecognized content. The first exact 24 Moons robots read allowed /events
+# with the existing ten-second minimum. Keep Forum's live listing closed while its pure adapter
 # and synthetic caller remain testable. This is not model/republication consent.
-LISTING_ACCESS = MappingProxyType({'venue303': True, 'forum': False})
+LISTING_ACCESS = MappingProxyType({'venue303': True, 'forum': False, 'moons24': True})
 
 
 class ListingIntervalPending(SourceError):
@@ -100,6 +102,10 @@ def venue303():
 
 def forum():
     return _read('forum')
+
+
+def moons24():
+    return _read('moons24')
 
 
 def observe_robots(source_id):
