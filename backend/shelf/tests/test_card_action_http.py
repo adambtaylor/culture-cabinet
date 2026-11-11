@@ -34,13 +34,16 @@ class CardActionHTTPTests(NativeFeedbackOutcomeTests):
 
     def test_csrf_duplicate_raw_identity_numeric_and_oversized_forms_have_no_effect(self):
         fields=self.prepare()
+        # Preparing the publication can record taste-history metadata. Rejected
+        # forms must leave that baseline intact, not assume an empty shared log.
+        before=PortableJourneyCommand.objects.count()
         self.assertEqual(self.post('/cabinet/actions/',fields,csrf=False).status_code,403)
         self.assertEqual(self.post('/cabinet/actions/',{**fields,'title':'INJECTED'}).status_code,422)
         self.assertEqual(self.post('/cabinet/actions/',[*fields.items(),('action','favourite')]).status_code,422)
         self.assertEqual(self.post('/cabinet/actions/',{**fields,'action':'1'}).status_code,422)
         self.assertEqual(self.post('/cabinet/actions/',{**fields,'command_id':'x'*9000}).status_code,422)
         self.assertEqual(FeedbackEvent.objects.count(),0)
-        self.assertEqual(PortableJourneyCommand.objects.count(),0)
+        self.assertEqual(PortableJourneyCommand.objects.count(),before)
         self.assertEqual(self.http.get('/cabinet/actions/'+str(uuid.uuid4())+'/',**self.headers).status_code,403)
 
     def test_actual_cabinet_four_choices_feedback_pending_receipt_and_fixed_assets_csp(self):
@@ -73,15 +76,16 @@ class CardActionHTTPTests(NativeFeedbackOutcomeTests):
         self.assertNotIn('script-src',historical['Content-Security-Policy'])
 
 
-    def assert_card_refusal(self,response,status):
+    def assert_card_refusal(self,response,status,*,undo=False):
         self.assertEqual(response.status_code,status)
-        self.assertContains(response,'Your card response is not confirmed',status_code=status)
+        self.assertContains(response,'Undo is not confirmed' if undo else 'Your card response is not confirmed',status_code=status)
         self.assertContains(response,'href="/setup"',status_code=status)
         self.assertContains(response,'href="/setup/cabinet"',status_code=status)
         self.assertNotIn(b'<form',response.content)
         self.assertNotIn(b'enhance/v1',response.content)
         self.assertNotIn(b'Enhance progress',response.content)
         self.assertNotIn(b'PRIVATE fixture card title',response.content)
+        self.assertNotIn(self.profile_ref.encode(),response.content)
         self.assertEqual(response['Cache-Control'],'no-store')
         self.assertEqual(response['X-Content-Type-Options'],'nosniff')
         self.assertNotIn('Location',response)
@@ -91,10 +95,10 @@ class CardActionHTTPTests(NativeFeedbackOutcomeTests):
         self.assert_card_refusal(self.post('/cabinet/actions/',fields),401)
         undo=dict(profile_ref=self.profile_ref,original_command_id=fields['command_id'],
             command_id=str(uuid.uuid4()),interest_revision=0,saved_revision=0)
-        self.assert_card_refusal(self.post('/cabinet/actions/undo/',undo),401)
+        self.assert_card_refusal(self.post('/cabinet/actions/undo/',undo),401,undo=True)
         session=self.http.session;session.pop('portable_session');session.save()
         self.assert_card_refusal(self.post('/cabinet/actions/',fields),401)
-        self.assert_card_refusal(self.post('/cabinet/actions/undo/',undo),401)
+        self.assert_card_refusal(self.post('/cabinet/actions/undo/',undo),401,undo=True)
         self.assertEqual(FeedbackEvent.objects.count(),0)
         self.assertFalse(PortableJourneyCommand.objects.filter(kind__in=['card.action','card.undo']).exists())
 
