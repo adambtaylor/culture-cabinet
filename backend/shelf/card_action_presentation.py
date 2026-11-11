@@ -108,3 +108,72 @@ def card_action_context(projection):
             'selected_label': {'none': 'No response yet', 'like': 'Like', 'dislike': 'Don’t like', 'favourite': 'Favourite'}[selected],
             'ranking_state': ranking, 'receipt_href': receipt,
             'pending_receipt_href': '/cabinet/actions/' + common['command_id'] + '/', 'undo': undo_data}
+
+
+def local_event_display_context(projection, *, candidate_key, category, profile_ref,
+                                publication_ref, publication_revision):
+    """Present the current service-owned local overlay without recomputing it.
+
+    The native caller must obtain it under current rights/location/dataset/CAS
+    checks. Compare the independent card/profile/publication bindings here; the
+    local digest is a display binding, never new authority or a source fact.
+    """
+    if type(projection) is not dict or projection.get('schema') != 'local-event-display/v1':
+        raise ValueError('Invalid local event display')
+    if type(category) is not str or category not in ('event', 'gallery', 'art_fair', 'community'):
+        raise ValueError('Local display is not available for this category')
+    expected = {'candidate_key': _text(candidate_key, 300), 'profile_ref': _uuid(profile_ref),
+                'publication_ref': _uuid(publication_ref),
+                'publication_revision': _revision(publication_revision, minimum=1)}
+    if not expected['candidate_key']:
+        raise ValueError('Missing local display candidate')
+    for key, value in expected.items():
+        supplied = (_revision(projection.get(key), minimum=1) if key == 'publication_revision' else
+                    _uuid(projection.get(key)) if key.endswith('_ref') else _text(projection.get(key), 300))
+        if supplied != value:
+            raise ValueError('Local event display binding differs')
+    digest = _text(projection.get('selection_context_digest'), 64)
+    if len(digest) != 64 or any(c not in '0123456789abcdef' for c in digest):
+        raise ValueError('Invalid local selection digest')
+    dataset = projection.get('dataset_revision')
+    if dataset is not None:
+        _text(dataset, 240)
+    location_revision = _revision(projection.get('location_revision'))
+    refs = projection.get('source_refs')
+    if type(refs) is not list or len(refs) > 40:
+        raise ValueError('Invalid permitted local source references')
+    refs = [_text(ref, 300) for ref in refs]
+    choices = {
+        'distance_basis': {'coordinate': 'Venue coordinates listed by the source',
+            'postcode': 'Venue postcode reference from the local dataset',
+            'locality': 'Venue locality reference from the local dataset',
+            'unknown': 'Location reference unavailable'},
+        'radius_band': {'in_radius': 'Within your preferred radius (approximate).',
+            'outside_radius': 'Beyond your preferred radius; still shown.',
+            'unknown': 'Radius comparison unavailable.'},
+        'opening_status': {'unknown': 'Opening or exhibition timing is not confirmed.',
+            'upcoming_opening': 'Source dates indicate an upcoming opening.',
+            'current_exhibition': 'Source dates indicate a current exhibition run.',
+            'past_exhibition': 'Source dates indicate a past exhibition run.',
+            'past_opening': 'The listed opening is in the past; check the exhibition run separately.'},
+        'artist_match_status': {'none': '', 'name_match_unconfirmed': 'Unconfirmed artist-name match'},
+    }
+    data = {**expected, 'schema': 'local-event-display/v1',
+        'presentation_schema': 'local-event-display-presentation/v1', 'dataset_revision': dataset,
+        'location_revision': location_revision, 'selection_context_digest': digest, 'source_refs': refs,
+        'distance_label': _text(projection.get('distance_label'), 240)}
+    for key, labels in choices.items():
+        value = projection.get(key)
+        if type(value) is not str or value not in labels:
+            raise ValueError('Invalid local display state')
+        data[key] = value
+        data[key + '_text'] = labels[value]
+    # Keep opening instants and the exhibition calendar run distinct. Missing
+    # dates stay absent; neither retrieval time nor run start fills an opening.
+    for key in ('opening_starts_at', 'opening_ends_at', 'exhibition_starts_on',
+                'exhibition_ends_on', 'date_precision', 'timezone'):
+        value = projection.get(key)
+        data[key] = None if value is None else _text(value, 120)
+    label = _text(projection.get('artist_match_label'), 240)
+    data['artist_match_label'] = label if data['artist_match_status'] == 'name_match_unconfirmed' else ''
+    return data

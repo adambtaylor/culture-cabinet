@@ -324,6 +324,22 @@
   {% for card in category.cards %}
     <article class="paper-panel cabinet-card"{% if card.card_actions %} data-card-action-card{% endif %}>
       <h3>{{ card.title }}</h3>{% if card.medium %}<p>{{ card.medium }}</p>{% endif %}
+      {% if card.local_event_display.presentation_schema == 'local-event-display-presentation/v1' %}
+      {% with local=card.local_event_display %}
+      {% comment %}Only the pure current-binding presenter enables this panel. Local distances and artist matches are service facts, not model explanations or a verified artist identity. Opening/run dates never substitute for each other.{% endcomment %}
+      <section class="local-event-display" aria-label="Local distance and source dates">
+        <p><strong>{{ local.distance_label }}</strong><br>{{ local.distance_basis_text }}. {{ local.radius_band_text }}</p>
+        <p class="fine-print">Distance is approximate from a postcode reference, not a home address or travel time. Unknown and farther choices remain visible; the radius is a preference.</p>
+        {% if local.artist_match_status == 'name_match_unconfirmed' %}<p>{{ local.artist_match_label }} A name match is a lead to check, not verified identity or an exhibition appearance.</p>{% endif %}
+        <details><summary>Source-listed opening and exhibition dates</summary>
+          <p>{{ local.opening_status_text }}</p>
+          <dl><dt>Opening starts</dt><dd>{{ local.opening_starts_at|default_if_none:'Not stated' }}</dd><dt>Opening ends</dt><dd>{{ local.opening_ends_at|default_if_none:'Not stated' }}</dd>
+          <dt>Exhibition run starts</dt><dd>{{ local.exhibition_starts_on|default_if_none:'Not stated' }}</dd><dt>Exhibition run ends</dt><dd>{{ local.exhibition_ends_on|default_if_none:'Not stated' }}</dd>
+          <dt>Source date precision</dt><dd>{{ local.date_precision|default_if_none:'Not stated' }}</dd><dt>Source time zone</dt><dd>{{ local.timezone|default_if_none:'Not stated' }}</dd></dl>
+          <p class="fine-print">These are source-listed dates, not a ticket or visit confirmation. A past opening can belong to a current exhibition run. Missing opening details stay unknown.</p>
+        </details>
+      </section>
+      {% endwith %}{% endif %}
       <details class="cabinet-source"><summary>Source and freshness</summary>
       <dl class="cabinet-provenance">
         {% if card.provider %}<div><dt>Source</dt><dd>{{ card.provider }}</dd></div>{% endif %}

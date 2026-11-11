@@ -16,3 +16,6 @@
 .card-actions :focus-visible { outline: 3px solid #895317; outline-offset: 3px; }
 @media (prefers-reduced-motion:reduce) { .card-action-floating { transition: none; } }
 @media (forced-colors:active) { .card-bin,.card-action-buttons button,.card-actions-open { border-color: ButtonText; } }
+.local-event-display { margin-block: .8rem; padding-block: .8rem; border-block: 1px solid #b6bda9; overflow-wrap: anywhere; }
+.local-event-display summary { min-height: 2.8rem; padding-block: .6rem; cursor: pointer; }
+.local-event-display dt { font-weight: 600; } .local-event-display dd { margin-inline: 0; }
