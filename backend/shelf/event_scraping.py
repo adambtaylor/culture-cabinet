@@ -9,12 +9,12 @@ from shelf.discovery_sources import Outcome, SourceError
 from shelf.discovery_transport import PBSIntervalPending
 from shelf.event_listing_transport import ListingIntervalPending, ListingPolicyUnavailable
 
-from shelf.event_source_registry import SOURCES, get_source
+from shelf.event_source_registry import SOURCES, get_source, source_route
 
 IMPLEMENTED_SOURCES = frozenset(key for key, source in SOURCES.items() if source.implemented)
 
 
-def collect(source_id, *, now):
+def collect(source_id, *, now, event_route=''):
     """One fixed acquisition or a truthful unavailable outcome; no retries.
 
     ``now`` is the caller's aware observation clock, never a source show date.
@@ -24,10 +24,12 @@ def collect(source_id, *, now):
         if not isinstance(now, datetime) or now.utcoffset() is None:
             raise SourceError('An aware observation clock is required.')
         source = get_source(source_id)
+        route = source_route(source_id, event_route)
         if not source.implemented:
             status = 'permission-required' if source.access_state == 'permission-required' else 'unavailable'
             return Outcome(status, message=source.unavailable_message)
-        status, raw = source.acquire(now)
+        route_options = {'event_route': route} if route else {}
+        status, raw = source.acquire(now, **route_options)
         if status == 429:
             return Outcome('rate-limited', message='Source rate limited; no retry attempted.')
         if status in (401, 403):
@@ -39,7 +41,7 @@ def collect(source_id, *, now):
         # its visible-year/window filtering. Both can retain unknown-date leads.
         if type(raw) is not bytes or len(raw) > source.max_bytes:
             raise SourceError('Bounded source response required.')
-        cards = source.parse(raw, now=now, retrieved_at=now.isoformat())
+        cards = source.parse(raw, now=now, retrieved_at=now.isoformat(), **route_options)
         if not cards:
             return Outcome('empty', cards,
                 'No eligible leads in this bounded page; this does not establish no events or tickets.')

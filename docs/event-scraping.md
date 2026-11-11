@@ -184,3 +184,46 @@ that semantic failure and its correction are retained separately. These receipts
 are live acquisition/handler evidence, not a browser or working-source acceptance.
 No body or image archive, durable source-reference grant or native activation is
 introduced. The 24 Moons release remains independent of PR83's recovery/UI tails.
+
+### NGV closed routes and access evidence (E6 / 02C)
+
+NGV has two fixed event-index routes: `programs` (the default) and `exhibitions`.
+Both and the single robots target use the existing `ngv` origin reservation,
+cross-process lock, clock identity and publisher-delay floor. Other source
+receipt names stay unchanged. One action selects one page; there is no fan-out,
+second network client or gallery/native acquisition dependency. Unknown route
+values, non-string internal inputs and nonempty routes for other sources are
+rejected before source acquisition.
+
+The existing guarded action accepts optional `event_route` only with
+`operation=event_source, source_id=ngv`. Its absence remains absent in cleaned
+receipt input; the whole original cleaned dictionary is still hashed. An explicit
+route cannot be substituted into a prior nonce receipt, even when it spells the
+default. NGV outcomes/cache entries use `(ngv, programs, '')` and
+`(ngv, exhibitions, '')` independently, and their labels identify the index.
+Failures in one do not erase the other. Existing candidate-key deduplication
+keeps a shared occurrence from becoming two reaction identities. Normal sources
+keep their accepted keys, call signatures and outcomes.
+
+`source_controls` exposes two plain `event_routes` dictionaries for NGV only;
+each has `event_route` and `label`. Experience owns any route-specific controls.
+Acquisition and parser ports receive the normalized route keyword only for NGV.
+The live NGV descriptor remains **unimplemented/unavailable**: fixture injection
+in route tests proves wiring, not a parser or current programme. No title/date
+schema has been invented from the unobserved source page.
+
+One exact robots read returned200/211 bytes and allowed both paths, with no
+publisher delay beyond the ten-second floor. That same body evaluated both paths.
+The first fixed programs-page format read timed out; no body or source date
+format was obtained and no retry was made. Exhibitions has not been acquired and
+stays separately closed. Robots access is not a model, redistribution or durable
+bookmark grant. The inspected main-site terms concern ticketing/membership; store
+terms concern a different purchase site. Neither supplies a persistent event-link
+policy. No policy, credential, native Enhance, ticket or calendar action is added.
+
+The isolated tests cover both routes sharing stricter pacing, exact destinations,
+default/explicit-route nonce binding, zero-I/O GET/replay, per-route partial
+failure, duplicate occurrence identity, current grant revalidation and truthful
+unavailable production descriptors. Real NGV parsing/acquisition and affected
+rendered acceptance remain outstanding; this package is a complete route caller
+and transport prerequisite, not a working-source claim.

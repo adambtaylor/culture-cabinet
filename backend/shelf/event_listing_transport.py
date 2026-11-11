@@ -19,14 +19,19 @@ TARGETS = MappingProxyType({
     'venue303': ('https://303.net.au/gigs-events', 'https://303.net.au/robots.txt'),
     'forum': ('https://forummelbourne.com.au/shows', 'https://forummelbourne.com.au/robots.txt'),
     'moons24': ('https://24moons.com.au/events', 'https://24moons.com.au/robots.txt'),
+    'ngv': ('https://www.ngv.vic.gov.au/whats-on/programs-events/', 'https://www.ngv.vic.gov.au/robots.txt'),
 })
-_DELAYS = {'venue303': 10, 'forum': 10, 'moons24': 10}
+_DELAYS = {'venue303': 10, 'forum': 10, 'moons24': 10, 'ngv': 10}
 _RATE_DIRECTORY = '/tmp'
 # Initial bounded observations: 303 robots allowed this path; Forum returned
 # unrecognized content. The first exact 24 Moons robots read allowed /events
 # with the existing ten-second minimum. Keep Forum's live listing closed while its pure adapter
 # and synthetic caller remain testable. This is not model/republication consent.
 LISTING_ACCESS = MappingProxyType({'venue303': True, 'forum': False, 'moons24': True})
+# Exact retained NGV robots200 allowed both paths, with the existing10s floor.
+# Enable the first assigned programs slice; exhibitions stays separately closed
+# until its format/outcome path is ready. This grants no retained-content rights.
+NGV_ACCESS = MappingProxyType({'programs': True, 'exhibitions': False})
 
 
 class ListingIntervalPending(SourceError):
@@ -84,16 +89,26 @@ def _reserve(source_id, *, policy_delay=None):
         os.close(fd)
 
 
-def _read(source_id, *, robots=False):
+def _read(source_id, *, robots=False, event_route=''):
     if type(source_id) is not str or source_id not in TARGETS:
         raise SourceError('Unapproved listing source.')
-    if not robots and not LISTING_ACCESS[source_id]:
+    if source_id == 'ngv':
+        from shelf.ngv_events import ROUTES, selected_route
+        route = selected_route(event_route)
+        target = TARGETS['ngv'][1] if robots else ROUTES[route]
+        allowed = NGV_ACCESS[route]
+    else:
+        if type(event_route) is not str or event_route:
+            raise SourceError('Unexpected event route for this source.')
+        target = TARGETS[source_id][bool(robots)]
+        allowed = LISTING_ACCESS[source_id]
+    if not robots and not allowed:
         raise ListingPolicyUnavailable
     _reserve(source_id)
     command = _base(MAX_BYTES)
     command[command.index('Accept: application/json')] = 'Accept: text/plain' if robots else 'Accept: text/html'
     return _send(command + ['--user-agent', USER_AGENT, '--request', 'GET',
-                            '--url', TARGETS[source_id][bool(robots)]], max_bytes=MAX_BYTES)
+                            '--url', target], max_bytes=MAX_BYTES)
 
 
 def venue303():
@@ -108,6 +123,11 @@ def moons24():
     return _read('moons24')
 
 
+def ngv(event_route=''):
+    # Both fixed pages and robots reserve the unchanged single 'ngv' receipt.
+    return _read('ngv', event_route=event_route)
+
+
 def observe_robots(source_id):
     """Explicit readiness observation only; listing actions never crawl robots.
 
@@ -115,10 +135,12 @@ def observe_robots(source_id):
     its first live listing. Robots permission is not a content/model licence.
     """
     code, raw = _read(source_id, robots=True)
-    if code == 404:
-        return {'status': code, 'allowed': True, 'delay': 10}
     if code != 200:
-        return {'status': code, 'allowed': False, 'delay': 10}
+        result = {'status': code, 'allowed': code == 404, 'delay': 10}
+        if source_id == 'ngv':
+            from shelf.ngv_events import ROUTES
+            result['routes_allowed'] = {key: code == 404 for key in ROUTES}
+        return result
     text = raw.decode('utf-8')
     if (not any(line.lower().startswith('user-agent:') for line in text.splitlines())
             or '<html' in text.lower() or '<!doctype' in text.lower()):
@@ -131,4 +153,10 @@ def observe_robots(source_id):
         delay = max(delay, rate.seconds / rate.requests)
     _DELAYS[source_id] = delay
     _reserve(source_id, policy_delay=delay)
-    return {'status': code, 'allowed': rules.can_fetch(USER_AGENT, TARGETS[source_id][0]), 'delay': delay}
+    result = {'status': code, 'allowed': rules.can_fetch(USER_AGENT, TARGETS[source_id][0]), 'delay': delay}
+    if source_id == 'ngv':
+        from shelf.ngv_events import ROUTES
+        # Evaluate both paths against this same response, never refetch robots
+        # for the second route or create another pacing allowance.
+        result['routes_allowed'] = {key: rules.can_fetch(USER_AGENT, url) for key, url in ROUTES.items()}
+    return result
