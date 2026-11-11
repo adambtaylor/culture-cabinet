@@ -1,4 +1,19 @@
 <article class="paper-panel" id="catalogue-card-{{ row.card.key }}" data-feedback-card data-card-key="{{ row.card.key }}" tabindex="-1">
+  {% if row.reference_only %}
+  {% comment %}The caller separately checks saved_reference against current policy, restrictions, mode and occurrence identity. Never backfill this link from Candidate.url or treat a retained identity as fresh source evidence or a recommendation.{% endcomment %}
+  <p class="eyebrow">Saved event identity</p>
+  <h3>Saved event {% if row.saved_reference %}reference{% else %}identity{% endif %} — source details expired</h3>
+  <p>Stale — current source details are unverified. Your response is retained separately; this is not a new recommendation or a ticket check.</p>
+  <details><summary>Saved source identity</summary>
+    <p><small>Identity: {{ row.card.key }}</small></p>
+    {% if mode == 'household' and row.saved_reference.schema == 'event-saved-reference/v1' and row.saved_reference.official_url %}
+    <p>Recorded source: {{ row.saved_reference.source_id }}</p>
+    {% if row.saved_reference.occurrence_ref %}<p>Occurrence reference: <code>{{ row.saved_reference.occurrence_ref }}</code><br>Identification basis: {{ row.saved_reference.occurrence_basis }}</p>{% endif %}
+    <p><a href="{{ row.saved_reference.official_url }}" target="_blank" rel="noopener noreferrer">Original source page; current details unverified</a></p>
+    <p>Different sessions may share this page. The link does not confirm an exact current session.</p>
+    {% else %}<p>No checked source link is available. Only your saved response identity is shown; no source details have been reconstructed.</p>{% endif %}
+  </details>
+  {% else %}
   <p class="eyebrow">{% if row.card.kind == 'artist' %}Band / artist{% else %}{{ row.card.kind }}{% endif %}</p>
   <h3>{{ row.card.title }}</h3>
   <p class="for-you"><strong>For you</strong> · <span data-for-you data-version="{{ row.for_you.version }}">{% if row.for_you.text %}{{ row.for_you.text }}{% else %}An exploratory pick from {{ row.card.source }}. Your response can help shape future picks.{% endif %}</span></p>
@@ -48,10 +63,11 @@
   {% if row.card.url %}<p><a href="{{ row.card.url }}" rel="noopener noreferrer" target="_blank">Deep dive: official source page</a></p>
   {% else %}<p>Deep-dive link unavailable for this {% if mode == 'sample' %}fixture{% else %}identity{% endif %}.</p>{% endif %}
   {% if row.card.kind == 'recording' %}<p>Listening link unavailable — source identity is not licensed audio or verified playback.</p>{% endif %}
+  {% endif %}
   {% if row.choice %}<p>Your current response: {{ row.choice }}. Respond again to correct it.</p>{% endif %}
   {% if row.saved %}<p>Saved locally for later; this is not enjoyment or a listen.</p>{% endif %}
   {% if available %}
-  {% if queue != 'artist' and mode == 'household' and row.card.kind == 'artist' and row.card.provenance == 'manual-attributed' and row.card.key|slice:':19' == 'musicbrainz:artist:' %}
+  {% if not row.reference_only and queue != 'artist' and mode == 'household' and row.card.kind == 'artist' and row.card.provenance == 'manual-attributed' and row.card.key|slice:':19' == 'musicbrainz:artist:' %}
   <form method="post" action="{{ action_url }}">{% include 'cabinet/discovery_fields.html' %}
     <input type="hidden" name="key" value="{{ row.card.key }}">
     <label>Radio mode <select name="radio_mode"><option value="easy">Easy</option><option value="medium" selected>Medium</option><option value="hard">Hard</option></select></label>
