@@ -110,6 +110,27 @@ class LocalEventPreferenceTests(NativeFeedbackCase):
         self.assertFalse(PortableSourceCheckAttempt.objects.exists())
 
 
+    def test_native_blank_radius_defaults_and_invalid_or_stale_forms_never_mutate(self):
+        journey,common=self.initial()
+        fields={**common,'action':'save','country':'AU','postcode':'3000','radius_km':''}
+        self.assertEqual(self.post('/cabinet/journey/location',fields).status_code,303)
+        row=PortableJourneyState.objects.get()
+        self.assertEqual((row.radius_km,row.location_revision),(25,1))
+        self.assertEqual(self.http.get('/setup/journey',{'profile_ref':self.profile_ref},**self.headers).status_code,200)
+        baseline=PortableJourneyCommand.objects.count()
+        for radius in (' ','025','0','501','25.0','+25'):
+            invalid={**fields,'expected_revision':row.revision,'command_id':str(uuid.uuid4()),'radius_km':radius}
+            self.assertEqual(self.post('/cabinet/journey/location',invalid).status_code,422)
+        duplicate=[*{**fields,'expected_revision':row.revision,'command_id':str(uuid.uuid4())}.items(),('radius_km','25')]
+        self.assertEqual(self.post('/cabinet/journey/location',duplicate).status_code,422)
+        self.assertEqual(self.post('/cabinet/journey/location',{**fields,'command_id':str(uuid.uuid4())}).status_code,409)
+        self.assertEqual(PortableJourneyCommand.objects.count(),baseline)
+        self.assertEqual(self.post('/cabinet/journey/location',{**fields,'expected_revision':row.revision,
+            'command_id':str(uuid.uuid4())}).status_code,303)
+        row.refresh_from_db();self.assertEqual((row.radius_km,row.location_revision),(25,1))
+        self.assertFalse(FeedbackEvent.objects.exists())
+
+
 from .test_portable_feedback_views import NativeFeedbackOutcomeTests
 
 
