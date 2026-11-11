@@ -66,6 +66,11 @@ def _west_space(now):
     return west_space()
 
 
+def _moons24(now):
+    from shelf.event_listing_transport import moons24
+    return moons24()
+
+
 def _parse_rrr(raw, *, now, retrieved_at):
     from shelf.rrr_events import parse_listing
     return parse_listing(raw, retrieved_at=retrieved_at)
@@ -93,6 +98,11 @@ def _parse_moshtix(raw, *, now, retrieved_at):
 
 def _parse_west_space(raw, *, now, retrieved_at):
     from shelf.west_space_events import parse_listing
+    return parse_listing(raw, retrieved_at=retrieved_at)
+
+
+def _parse_moons24(raw, *, now, retrieved_at):
+    from shelf.moons24_events import parse_listing
     return parse_listing(raw, retrieved_at=retrieved_at)
 
 
@@ -160,6 +170,10 @@ def _descriptor(row):
         'west_space': (_west_space, _parse_west_space, 524288,
                 'Partial West Space coverage: one programme index, up to nine overlapping/current '
                 'or next-eight-week runs. A date range is not an opening, daily hours or a confirmed session.'),
+        'moons24': (_moons24, _parse_moons24, 524288,
+                'Partial 24 Moons coverage: current-week plus later programme, up to nine leads '
+                'within eight weeks. Unknown dates remain unverified; source links open the '
+                'programme, not an exact session or a checked seller.'),
     }
     if source_id in active:
         acquire, parse, limit, coverage = active[source_id]
