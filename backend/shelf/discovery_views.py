@@ -223,16 +223,21 @@ def _pool_digest(cards):
     return hashlib.sha256('\n'.join(sorted({card.key for card in cards})).encode()).hexdigest()
 
 
-def _rank(cards, state, category):
+def _recommendation_cards(cards):
     from shelf.event_saved_references import ReferenceCandidate
-    # A saved bookmark cannot become a fresh recommendation after cache loss.
-    return select([card for card in cards if not isinstance(card, ReferenceCandidate)],
-                  state, category=category, unjudged_only=True)
+    # Cache loss keeps the identity/key in history, so ranking AND retained
+    # session slots must exclude the stale bookmark. Full pools still service
+    # responses, saves and Undo; a key-only deck digest cannot detect this change.
+    return [card for card in cards if not isinstance(card, ReferenceCandidate)]
+
+
+def _rank(cards, state, category):
+    return select(_recommendation_cards(cards), state, category=category, unjudged_only=True)
 
 
 def _replace_key(deck, cards, state, submitted):
     """Pin other server-owned slots; only rank the submitted slot's successor."""
-    registered = {card.key: card for card in cards}
+    registered = {card.key: card for card in _recommendation_cards(cards)}
     old = deck['keys'] + deck.get('source_keys', [])
     pinned = [key for key in old if key != submitted and key in registered and key not in state['choices']]
     origin = registered.get(submitted)
@@ -273,13 +278,13 @@ def _context(request, profile, mode, queue, category, stored, cards):
     pool = _pool(cards, queue)
     ranked = _rank(pool, state, category)
     deck = _deck(request, profile.pk, mode, queue)
-    registered = {card.key: card for card in pool}
+    registered = {card.key: card for card in _recommendation_cards(pool)}
     pool_digest = _pool_digest(pool)
     if not deck or deck['category'] != category or deck.get('pool_digest') != pool_digest:
         deck = {'keys': [row['card'].key for row in ranked['selection']], 'category': category, 'revision': revision}
         if mode == 'household' and queue == 'all' and category in ('all', 'gallery', 'art_fair'):
             from shelf.gallery_curation import select as gallery_selection
-            for card in gallery_selection((c for c in pool if c.key not in state['choices']
+            for card in gallery_selection((c for c in registered.values() if c.key not in state['choices']
                     and (category == 'all' or c.category == category)),
                     actor_id=request.user.pk, profile_id=profile.pk, limit=2):
                 if card.key not in deck['keys']:
