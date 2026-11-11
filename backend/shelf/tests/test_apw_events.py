@@ -99,6 +99,6 @@ class APWEventUITests(DjangoCase):
              patch.object(gallery_transport,'read',return_value=(200,listing(
                 opening='Opening 6pm. Friday 6 November 2026',run=''))):
             self.client.post(self.action,self.form('event_source',source_id='apw'))
-        page=self.client.get(self.url)
-        self.assertEqual(page.context['public_results'][0]['outcome'].status,'unavailable')
+            page=self.client.get(self.url)
+            self.assertEqual(page.context['public_results'][0]['outcome'].status,'unavailable')
         self.assertEqual(DiscoveryState.objects.get().history,[])
