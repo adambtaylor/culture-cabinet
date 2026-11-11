@@ -56,6 +56,15 @@ DIALOG_INPUT_SHA = 'd71a2cab22c6b42bc5af87d6e7da636a770658274d5fbc0a9d70f6d79a79
 DIALOG_CALLER_SHA = 'd9c7800d5765b61dcdc0b90945953fea970691d8dc0a6b99c470b17525060b3f'
 DIALOG_METADATA_SHA = '47389a0a1967820b0d03a07b9887fd8ff2e850400174dfaf8a88227d41afcc57'
 DIALOG_PREDECESSOR_SHA = 'fe7a79afb45e22a6ac1d7b4cc4080d4ac5c60d1abc5f494277aa19900c12cc77'
+PAIR_OPERATION = '1cc2bd37-8f62-420d-928d-ec9c28945013'
+PAIR_SELECTION_SHA = 'c7cd0519577efc5884e650e0b4a6ae842d72b2aafefe4df214b9b4025c10e3d5'
+PAIR_FAILURE_SHA = '75ce5eef8df293c2ac0763e96665dfec54bc9f780d58ea0059806f0c23e4144d'
+PAIR_TERMINAL_SHA = '447fe12c68f64889c058310750187ebd6b776391a1bf204cd0475d35f75cce74'
+PAIR_INPUT_SHA = 'da540384ac7118177d0c513d415a6959087ca78d9ab9bd33c715e6055e4b428c'
+PAIR_CALLER_SHA = 'ae07d0f7bf7cee1a4e47de5d3a460c0b9dc42643c1bfdb0b67520785fccb4ba5'
+PAIR_CONTROLS_SHA = '192410980df337ad9b9468368622b92b648edeb7660fdaed78e1e940f79b88aa'
+PAIR_PREDECESSOR_SHA = '9d6ada8785c4d05c8d4c77bb56754391ebe812da8d624273a4e0fef291d4819d'
+PAIR_RECORDED_CLOCK = 1340075.871266088
 STATUS = frozenset(('AVAILABLE', 'LOCKED', 'MISSING', 'UNAVAILABLE', 'CONFLICT',
                     'CORRUPT', 'UNKNOWN', 'REMOVED'))
 REQUEST_FIELDS = frozenset(('version', 'operation', 'record_kind', 'binding',
@@ -152,8 +161,20 @@ def _time(value):
     return parsed
 
 
-def _decode_json(raw, *, pinned_evidence_paths=False):
+def _decode_json(raw, *, pinned_evidence_paths=False, receipt_clock=None):
     require(type(raw) is bytes and 0 < len(raw) <= MAX_FRAME)
+    clock_path = None
+    if receipt_clock is not None:
+        # Proof09 recorded a float in each of these two exact receipts. This
+        # immutable attribution atom never supplies a new clock/budget/expiry.
+        # No ordinary caller can select a profile; all other floats still fail.
+        if receipt_clock == 'pair_failure':
+            require(hashlib.sha256(raw).hexdigest() == PAIR_FAILURE_SHA)
+            clock_path = ('original_bounds', 'monitor_original_deadline_monotonic')
+        else:
+            require(receipt_clock == 'pair_positive'
+                    and hashlib.sha256(raw).hexdigest() == PAIR_TERMINAL_SHA)
+            clock_path = ('monitor_original_deadline_monotonic',)
     def pairs(items):
         result = {}
         for key, value in items:
@@ -162,7 +183,7 @@ def _decode_json(raw, *, pinned_evidence_paths=False):
         return result
     def nonfinite(_):
         raise Refused()
-    def bounded(value, depth=0, evidence_mapping=False):
+    def bounded(value, depth=0, evidence_mapping=False, path=()):
         require(depth <= 16)
         if evidence_mapping:
             require(type(value) is dict)
@@ -177,13 +198,15 @@ def _decode_json(raw, *, pinned_evidence_paths=False):
                 else:
                     _text(key, 128)
                     bounded(item, depth + 1, evidence_mapping=(pinned_evidence_paths
-                            and depth == 0 and key == 'evidence'))
+                            and depth == 0 and key == 'evidence'), path=path + (key,))
         elif type(value) is list:
             require(len(value) <= 128)
-            for item in value:
-                bounded(item, depth + 1)
+            for index, item in enumerate(value):
+                bounded(item, depth + 1, path=path + (index,))
         else:
-            require(value is None or type(value) in (str, int, bool))
+            require(value is None or type(value) in (str, int, bool)
+                    or clock_path is not None and path == clock_path
+                    and type(value) is float and value == PAIR_RECORDED_CLOCK)
     try:
         value = json.loads(raw.decode('utf-8'), object_pairs_hook=pairs, parse_constant=nonfinite)
         if pinned_evidence_paths:
@@ -201,7 +224,7 @@ def strict_json(raw):
 
 
 def _pending_failure_json(raw):
-    """Only the two exact retained failure receipts may have attribution-path keys.
+    """Only the closed exact retained failure receipts may have attribution-path keys.
 
     Evidence paths differ from RPC field names: four original keys are 129-139
     bytes. Check the unchanged production digest BEFORE the private exception;
@@ -210,10 +233,17 @@ def _pending_failure_json(raw):
     keep 128 bytes. Archive wrappers stay strict; embedded receipts stay original
     strings so subsequent validation checks their exact raw-byte hashes again.
     """
-    # Two closed, immutable receipt kinds; callers cannot supply a hash/limit.
-    require(type(raw) is bytes and hashlib.sha256(raw).hexdigest() in
-            (PENDING_FAILURE_SHA, DIALOG_FAILURE_SHA))
-    return _decode_json(raw, pinned_evidence_paths=True)
+    # Closed immutable receipt kinds; callers cannot supply a hash/limit.
+    require(type(raw) is bytes)
+    digest = hashlib.sha256(raw).hexdigest()
+    require(digest in (PENDING_FAILURE_SHA, DIALOG_FAILURE_SHA, PAIR_FAILURE_SHA))
+    return _decode_json(raw, pinned_evidence_paths=True,
+                        receipt_clock='pair_failure' if digest == PAIR_FAILURE_SHA else None)
+
+
+def _pair_positive_json(raw):
+    require(type(raw) is bytes and hashlib.sha256(raw).hexdigest() == PAIR_TERMINAL_SHA)
+    return _decode_json(raw, receipt_clock='pair_positive')
 
 
 def validate_binding(kind, binding):
@@ -830,7 +860,7 @@ def _selection_shape(value, *, allow_pending=False):
         if value[field] is not None:
             _object_ref(value[field])
     if value['continuation_archive'] is not None:
-        require(value['continuation_archive'] in (OLD_DUMMY_OPERATION, PENDING_OPERATION, DIALOG_OPERATION))
+        require(value['continuation_archive'] in (OLD_DUMMY_OPERATION, PENDING_OPERATION, DIALOG_OPERATION, PAIR_OPERATION))
     require(value['terminal_fact'] in (None, 'UNCERTAIN_OR_REFUSED'))
     require(value['canary_state'] in ('NOT_STARTED', 'CREATE_PENDING', 'CREATED', 'DELETE_PENDING', 'DELETED'))
     require(value['master_phase'] in ('NOT_STARTED', 'WRITE_PENDING', 'PRESENT'))
@@ -1143,6 +1173,14 @@ class _SecretBackend:
         self._verify_service()
         reply = self._dbus('org.freedesktop.DBus', '/org/freedesktop/DBus',
             'org.freedesktop.DBus', 'NameHasOwner', self.GLib.Variant('(s)', (':1.21914',)))
+        require(reply.get_type_string() == '(b)')
+        self._verify_service()
+        return reply.unpack()[0] is False
+
+    def _pair_caller_closed(self):
+        self._verify_service()
+        reply = self._dbus('org.freedesktop.DBus', '/org/freedesktop/DBus',
+            'org.freedesktop.DBus', 'NameHasOwner', self.GLib.Variant('(s)', (':1.22631',)))
         require(reply.get_type_string() == '(b)')
         self._verify_service()
         return reply.unpack()[0] is False
@@ -1508,8 +1546,79 @@ def _dialog_input_proofs(input_receipt, caller_receipt):
             and caller['caller_has_owner'] is False and caller['prompt_calls'] == caller['secret_calls'] == 0)
 
 
+def _pair_archive_name():
+    return 'abandoned-' + PAIR_OPERATION + '.json'
+
+
+def _pair_selection(value):
+    _selection_shape(value, allow_pending=True)
+    require(value['state'] == 'PROMPT_PENDING' and value['creation_operation_id'] == PAIR_OPERATION
+            and value['requested_label'] == 'CultureCabinet40169a13b00b4459adf1022962a61eb4'
+            and value['service_provenance']['caller'] == ':1.22631'
+            and value['service_provenance']['service_owner'] == ':1.0'
+            and value['returned_prompt_ref'] == '/org/freedesktop/secrets/prompt/p4'
+            and value['continuation_archive'] == DIALOG_OPERATION
+            and value['canary_state'] == value['master_phase'] == 'NOT_STARTED'
+            and value['terminal_fact'] is None
+            and value['prompt_observation'] == {'acknowledgement': 'ACKNOWLEDGED',
+                'completion': 'UNOBSERVED', 'termination': 'UNOBSERVED'})
+    for field in ('returned_collection_ref', 'decoded_identifier', 'verified_filename',
+                  'file_binding', 'canary_ref', 'canary_prompt_ref'):
+        require(value[field] is None)
+
+
+def _pair_receipts(original, failure, terminal):
+    for raw, expected in ((original, PAIR_SELECTION_SHA), (failure, PAIR_FAILURE_SHA),
+                          (terminal, PAIR_TERMINAL_SHA)):
+        require(type(raw) is bytes and hashlib.sha256(raw).hexdigest() == expected)
+    value, failed, ended = strict_json(original), _pending_failure_json(failure), _pair_positive_json(terminal)
+    _pair_selection(value)
+    require(ended['selection'] == value and ended['stage'] == 'CORRECTED_PROVISION_REFUSED_NO_RETRY'
+            and ended['provision_status'] == 'UNAVAILABLE' and ended['no_real_key'] is True
+            and ended['provider_requests'] == 0 and ended['monitor_joined'] is True
+            and ended['custody_disposed_empty'] is True
+            and type(ended['monitor_original_deadline_monotonic']) is float
+            and ended['monitor_original_deadline_monotonic'] == PAIR_RECORDED_CLOCK
+            and failed['operation_id'] == PAIR_OPERATION and failed['returned_collection_ref'] is None
+            and failed['original_caller'] == ':1.22631'
+            and failed['returned_prompt_ref'] == '/org/freedesktop/secrets/prompt/p4'
+            and failed['prompt_observation'] == value['prompt_observation']
+            and type(failed['original_bounds']['monitor_original_deadline_monotonic']) is float
+            and failed['original_bounds']['monitor_original_deadline_monotonic'] == PAIR_RECORDED_CLOCK)
+    effects, cleanup = failed['effects'], failed['custody_and_cleanup']
+    require(effects['input_attempts'] == effects['focus_edit_Create_actions'] == 0
+            and effects['private_passphrase_generated_or_acquired'] is False
+            and effects['canary_state'] == effects['master_phase'] == 'NOT_STARTED'
+            and effects['file_binding'] is None and effects['verified_filename'] is None
+            and effects['real_key_read_or_entry'] is False and effects['provider_or_model_requests'] == 0
+            and cleanup['custody_retained_value_before_terminal'] is False
+            and cleanup['custody_disposed_empty'] is True and cleanup['monitor_joined'] is True
+            and cleanup['socket_exists'] is cleanup['custodian_process_exists'] is False
+            and cleanup['enrollment_parent_exists'] is cleanup['helper_caller_has_owner'] is False
+            and cleanup['exact_owned_prompt_window_remaining'] is False)
+    require({PAIR_INPUT_SHA, PAIR_CALLER_SHA, PAIR_CONTROLS_SHA} <= set(failed['evidence'].values()))
+    return value
+
+
+def _pair_input_proofs(input_receipt, caller_receipt):
+    for raw, expected in ((input_receipt, PAIR_INPUT_SHA), (caller_receipt, PAIR_CALLER_SHA)):
+        require(type(raw) is bytes and hashlib.sha256(raw).hexdigest() == expected)
+    entered, caller = strict_json(input_receipt), strict_json(caller_receipt)
+    require(entered['stage'] == 'INPUT_REFUSED_NO_RETRY' and entered['attempts'] == 0
+            and entered['actual_gcr_fields_verified'] is False and entered['passphrase_output'] is False
+            and entered['completion_confirmed'] is False and entered['input_events'] == []
+            and entered['refusal_phase'] == 'CONTROLS'
+            and caller['operation_id'] == PAIR_OPERATION and caller['caller'] == ':1.22631'
+            and caller['caller_has_owner'] is False and caller['prompt_or_collection_or_secret_calls'] == 0)
+
+
 def _archive_identity(operation_id):
-    """Only the two named prompt dispositions, never a caller-supplied recipe."""
+    """Only the named prompt dispositions, never a caller-supplied recipe."""
+    if operation_id == PAIR_OPERATION:
+        return {'selection_sha256': PAIR_SELECTION_SHA, 'failure_sha256': PAIR_FAILURE_SHA,
+            'terminal_sha256': PAIR_TERMINAL_SHA, 'original_caller': ':1.22631', 'service_owner': ':1.0',
+            'returned_prompt_ref': '/org/freedesktop/secrets/prompt/p4', 'prior_archive': DIALOG_OPERATION,
+            'prior_archive_sha256': PAIR_PREDECESSOR_SHA}
     if operation_id == DIALOG_OPERATION:
         return {'selection_sha256': DIALOG_SELECTION_SHA, 'failure_sha256': DIALOG_FAILURE_SHA,
             'terminal_sha256': DIALOG_TERMINAL_SHA, 'original_caller': ':1.21914', 'service_owner': ':1.0',
@@ -1536,7 +1645,8 @@ def _validate_pending_archive(raw):
             and archive['possible_collection_exists'] == 'unknown')
     for field in ('original_selection', 'failure_receipt', 'terminal_receipt'):
         require(type(archive[field]) is str)
-    validate = _dialog_receipts if archive['operation_id'] == DIALOG_OPERATION else _pending_receipts
+    validate = (_pair_receipts if archive['operation_id'] == PAIR_OPERATION else
+                _dialog_receipts if archive['operation_id'] == DIALOG_OPERATION else _pending_receipts)
     validate(*(archive[field].encode('utf-8') for field in
                ('original_selection', 'failure_receipt', 'terminal_receipt')))
     return archive
@@ -1559,14 +1669,33 @@ def _dialog_predecessor(directory):
     return raw
 
 
+def _pair_predecessor(directory):
+    raw, identity = _read_private_at(directory, _dialog_archive_name())
+    require(stat.S_IMODE(identity[4]) == 0o400
+            and hashlib.sha256(raw).hexdigest() == PAIR_PREDECESSOR_SHA
+            and _validate_pending_archive(raw)['operation_id'] == DIALOG_OPERATION)
+    _dialog_predecessor(directory)
+    return raw
+
+
 def _check_continuation(reference):
-    require(reference is None or reference in (OLD_DUMMY_OPERATION, PENDING_OPERATION, DIALOG_OPERATION))
+    require(reference is None or reference in (OLD_DUMMY_OPERATION, PENDING_OPERATION, DIALOG_OPERATION, PAIR_OPERATION))
     try:
         directory = _open_checked_directory(str(Path(SELECTION).parent))
     except FileNotFoundError:
         require(reference is None)
         return
     try:
+        try:
+            pair_raw, identity = _read_private_at(directory, _pair_archive_name())
+        except FileNotFoundError:
+            pair_raw = None
+        if pair_raw is not None:
+            require(stat.S_IMODE(identity[4]) == 0o400
+                    and _validate_pending_archive(pair_raw)['operation_id'] == PAIR_OPERATION)
+            _pair_predecessor(directory)
+            require(reference == PAIR_OPERATION)
+            return
         try:
             dialog_raw, identity = _read_private_at(directory, _dialog_archive_name())
         except FileNotFoundError:
@@ -1677,6 +1806,53 @@ def retire_owned_dialog_dummy(failure_receipt, terminal_receipt, input_receipt, 
             os.unlink('selection.json', dir_fd=directory)
             os.fsync(directory)
             return DIALOG_OPERATION
+        finally:
+            os.close(directory)
+
+
+def _pair_archive(original, failure, terminal):
+    archive = {'schema': 'cabinet-abandoned-prompt/v1', 'operation_id': PAIR_OPERATION,
+        'original_selection': original.decode('utf-8'), 'failure_receipt': failure.decode('utf-8'),
+        'terminal_receipt': terminal.decode('utf-8'), **_archive_identity(PAIR_OPERATION),
+        'caller_closed': True, 'disposition': 'ABANDONED_PREMASTER_PROMPT_UNRESOLVED',
+        'returned_collection_ref': None, 'os_orphan_deleted': False, 'possible_collection_exists': 'unknown'}
+    raw = canonical(archive)
+    require(len(raw) <= 32768)
+    _validate_pending_archive(raw)
+    return raw
+
+
+def retire_password_pair_dummy(failure_receipt, terminal_receipt, input_receipt, caller_receipt, *, timeout=10.0):
+    """Only ended1cc2, exact75ce/447f/da54/ae07 evidence and four-link chain.
+
+    The 75ce effects/custody schema is deliberately distinct from6ad9 input/storage.
+    No password existed; this never infers cancellation or an absent OS object.
+    Preserve originals (including clock attribution), then retire only the exact
+    secure pointer after archive durability and the final byte/inode comparison.
+    """
+    require(os.getuid() == UID and os.isatty(0)
+            and type(timeout) in (int, float) and 0 < timeout <= 10)
+    _pair_input_proofs(input_receipt, caller_receipt)
+    for raw, expected in ((failure_receipt, PAIR_FAILURE_SHA), (terminal_receipt, PAIR_TERMINAL_SHA)):
+        require(type(raw) is bytes and hashlib.sha256(raw).hexdigest() == expected)
+    deadline = time.monotonic() + timeout
+    with mutation_lock(deadline):
+        directory = _open_checked_directory(str(Path(SELECTION).parent))
+        try:
+            original, identity = _read_private_at(directory, 'selection.json', 4096)
+            require(stat.S_IMODE(identity[4]) == 0o600)
+            _pair_receipts(original, failure_receipt, terminal_receipt)
+            _pair_predecessor(directory)
+            raw = _pair_archive(original, failure_receipt, terminal_receipt)
+            backend = object.__new__(_SecretBackend)
+            backend._connect(deadline)
+            require(backend._pair_caller_closed())
+            _write_prompt_archive(directory, _pair_archive_name(), raw)
+            current, current_identity = _read_private_at(directory, 'selection.json', 4096)
+            require(current == original and current_identity == identity)
+            os.unlink('selection.json', dir_fd=directory)
+            os.fsync(directory)
+            return PAIR_OPERATION
         finally:
             os.close(directory)
 
@@ -1797,7 +1973,7 @@ def provision(*, timeout=120.0, continuation_archive=None):
     A pending setup intent is not implicitly retried or adopted.
     """
     require(os.isatty(0) and type(timeout) in (int, float) and 0 < timeout <= 120)
-    require(continuation_archive is None or continuation_archive in (OLD_DUMMY_OPERATION, PENDING_OPERATION, DIALOG_OPERATION))
+    require(continuation_archive is None or continuation_archive in (OLD_DUMMY_OPERATION, PENDING_OPERATION, DIALOG_OPERATION, PAIR_OPERATION))
     operation_id = str(uuid.uuid4())
     result = {'status': 'UNAVAILABLE', 'collection_ref': None}
     read_fd, write_fd = os.pipe()
@@ -1887,7 +2063,7 @@ def _main(argv):
         operation_id, response_fd = _uuid(argv[3]), int(argv[5])
         continuation = None
         if len(argv) == 8:
-            require(argv[6] == '--continuation-archive' and argv[7] in (OLD_DUMMY_OPERATION, PENDING_OPERATION, DIALOG_OPERATION))
+            require(argv[6] == '--continuation-archive' and argv[7] in (OLD_DUMMY_OPERATION, PENDING_OPERATION, DIALOG_OPERATION, PAIR_OPERATION))
             continuation = argv[7]
         _check_pipe(response_fd, os.O_WRONLY)
         deadline = time.monotonic() + 120
