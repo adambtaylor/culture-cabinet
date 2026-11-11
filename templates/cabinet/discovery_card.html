@@ -27,10 +27,12 @@
   {% endif %}
   {% if row.card.kind == 'event' %}
   {% if row.card.gallery_data %}{% include 'cabinet/gallery_detail.html' with event=row.card %}{% else %}
-  <p>{{ row.card.starts_at|default:'Date unknown' }} · {{ row.date_status }}<br>
+  {% comment %}Source-listed date/range is attributed wording, not a timezone-confirmed start. Shared outgoing URLs do not merge distinct source/session card keys; the backend owns occurrence identity and cancellation filtering.{% endcomment %}
+  <p>{% if row.card.listed_date %}Source-listed date or range: {{ row.card.listed_date }}{% else %}{{ row.card.starts_at|default:'Date unknown' }}{% endif %} · {{ row.date_status }}<br>
   {{ row.card.venue }} · Locality: {{ row.card.locality|default:'unknown' }}<br>
   Distance unknown — coordinates unavailable. Price and availability are not guaranteed.</p>
   <p>{{ row.card.artwork_label }}. Entry fee: {{ row.card.entry_fee|default:'unknown; check official source' }}.</p>
+  {% if row.card.source_notice %}<p class="source-meta"><strong>Source notice:</strong> {{ row.card.source_notice }} · reported by the listing, not a seller or current ticket-availability check.</p>{% endif %}
   {% endif %}
   {% if row.card.source_id == 'beat' %}{% include 'cabinet/beat_detail.html' with event=row.card %}{% endif %}
   {% if row.card.source_id == 'rrr' %}
