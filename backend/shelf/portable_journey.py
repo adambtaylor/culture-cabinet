@@ -285,6 +285,23 @@ class PortableJourney:
                 (not old or old['entry_ref']==entry_ref and old['saved_revision']==base_revision),
                 'REVISION_CONFLICT',409)
             if prior is None:
+                from .models import FeedbackTarget,FeedbackEvent,MutationReceipt
+                target=FeedbackTarget.objects.filter(source_namespace='owner-stated-favourite',
+                    source_key=profile_ref+':'+entry_ref,kind='item').first()
+                ga._require(not remove or target is not None,'REVISION_CONFLICT',409)
+                if target is not None:
+                    ga._require(not target.deleted and target.category==category,'REVISION_CONFLICT',409)
+                    ga._require(remove or target.title==title,'FAVOURITE_REPLACEMENT_REQUIRED',409)
+                events=FeedbackEvent.objects.filter(profile_id=cabinet.profile_id,target=target,
+                    signal='saved',scope='item').order_by('revision') if target else FeedbackEvent.objects.none()
+                latest=events.last()
+                ga._require(not events.filter(erased=True).exists() and
+                    base_revision==(latest.revision if latest else 0) and
+                    not MutationReceipt.objects.filter(actor_id=cabinet.actor_id,mutation_id=mutation_id).exists(),
+                    'REVISION_CONFLICT',409)
+                # Definite identity/title/CAS refusals precede reservation.
+                # An existing reserved parent still resumes its committed child
+                # through the original receipt, never through a blanket cleanup.
                 with transaction.atomic(),ga._write_window():
                     prior=self._record(cabinet,command_id,'journey.favourite',descriptor,{},state='reserved')
             # Existing mutation receipt resumes an interrupted progress write;
@@ -306,7 +323,9 @@ class PortableJourney:
     def prepare(self, session_ref, *, profile_ref, journey_ref, expected_revision,
                 command_id, connection_ref, client_key, refresh_nonce):
         from django.db import transaction
-        from .models import PortableJourneyCommand
+        from .models import PortableJourneyCommand,SynthesisRun
+        from .enhance_contract import EnhanceFault
+        from .disclosure import DisclosureError
         from .portable_enhance_service import get_service
         for value in (command_id,connection_ref,client_key,refresh_nonce):ga._uuid(value)
         descriptor=dict(profile_ref=profile_ref,journey_ref=journey_ref,expected_revision=expected_revision,
@@ -314,7 +333,10 @@ class PortableJourney:
         with ga.current_writer(self.authority,session_ref,profile_ref) as cabinet:
             _,journey=self._state(session_ref,profile_ref,journey_ref,sensitive=True,expected_revision=expected_revision)
             prior=self._prior(cabinet,command_id,'journey.prepare',descriptor)
-            if prior and prior.state=='committed':return prior.result
+            if prior and prior.state=='committed':
+                if prior.result.get('schema')=='journey-prepare-refusal/v1':
+                    raise ga.AuthorityFault(prior.result['code'],prior.result['status'])
+                return prior.result
             self._pending(cabinet,exclude=prior.pk if prior else None)
             ga._require(journey.revision==expected_revision and
                 connection_ref in journey.connections.get('openai',[]),'REVISION_CONFLICT',409)
@@ -323,8 +345,22 @@ class PortableJourney:
                     prior=self._record(cabinet,command_id,'journey.prepare',descriptor,{},state='reserved')
             # Start only constructs the existing reviewable Enhance plan. Neither
             # this form nor a replay confirms source access or personal inference.
-            outcome=get_service(self.authority).start(session_ref,profile_ref=profile_ref,
-                connection_ref=connection_ref,client_key=client_key,refresh_nonce=refresh_nonce)
+            try:
+                outcome=get_service(self.authority).start(session_ref,profile_ref=profile_ref,
+                    connection_ref=connection_ref,client_key=client_key,refresh_nonce=refresh_nonce)
+            except (ga.AuthorityFault,EnhanceFault,DisclosureError) as fault:
+                # Start only plans. A known refusal with no admitted owned run
+                # is a completed no-effect command. An admitted child or unknown
+                # exception retains the reservation for exact receipt resumption.
+                if not SynthesisRun.objects.filter(installation=cabinet.installation,actor_id=cabinet.actor_id,
+                        profile_id=cabinet.profile_id,contract_version='enhance/v1',client_key=client_key).exists():
+                    ga._bound(self.authority,session_ref,profile_ref,sensitive=True)
+                    with transaction.atomic(),ga._write_window():
+                        PortableJourneyCommand.objects.filter(pk=prior.pk,state='reserved').update(state='committed',
+                            result=dict(schema='journey-prepare-refusal/v1',profile_ref=profile_ref,
+                                journey_ref=journey_ref,revision=journey.revision,code=fault.code,
+                                status=getattr(fault,'status',422)))
+                raise ga.AuthorityFault(fault.code,getattr(fault,'status',422)) from None
             run_ref=str(ga._uuid(outcome['run_ref']))
             with transaction.atomic(),ga._write_window():
                 journey.run_ref=ga._uuid(run_ref);self._advance(journey)

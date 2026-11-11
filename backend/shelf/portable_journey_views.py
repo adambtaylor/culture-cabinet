@@ -16,9 +16,11 @@ from .portable_journey import PortableJourney, PROVIDER_ADAPTERS
 COMMON = {'profile_ref', 'journey_ref', 'expected_revision', 'command_id'}
 
 
-def _render(request, profile_ref=None, *, status=200):
+def _render(request, profile_ref=None, *, status=200, notice=None):
     projection = PortableJourney(request.portable_authority).project(
         request.session.get('portable_session'), profile_ref=profile_ref)
+    if notice is not None:
+        projection['completion_receipts']=[{'message':notice}]
     return render_guided_journey(projection, csrf_token=get_token(request), status=status)
 
 
@@ -36,7 +38,9 @@ def _errors(view):
             try:
                 if profile_ref is not None:
                     profile_ref = str(ga._uuid(profile_ref))
-                return _render(request, profile_ref, status=fault.status)
+                notice=('This favourite keeps its original title. To replace it, remove it and add a new favourite.'
+                    if fault.code=='FAVOURITE_REPLACEMENT_REQUIRED' else None)
+                return _render(request, profile_ref, status=fault.status,notice=notice)
             except ga.AuthorityFault:
                 return HttpResponse('Please sign in again to continue.', status=fault.status,
                                     headers={'Cache-Control': 'no-store'})
