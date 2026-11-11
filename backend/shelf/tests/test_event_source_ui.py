@@ -112,6 +112,68 @@ class SavedEventReferenceUITests(TestCase):
     setUp = existing.PublicDiscoveryUITests.setUp
     form = existing.PublicDiscoveryUITests.form
 
+    def test_same_session_saved_reference_leaves_retained_recommendation_slots(self):
+        descriptors=policies()
+        with patch('shelf.event_source_registry.SOURCES',descriptors), \
+             patch.object(views,'EVENT_SOURCES',descriptors), \
+             patch.object(views.sources,'household_candidates',return_value=[]), \
+             patch.object(transport,'pbs',return_value=(200,listing())) as read:
+            self.client.post(self.action,self.form('event_source',source_id='pbs'))
+            page=self.client.get(self.url)
+            key=page.context['events'][0]['card'].key
+            self.client.post(self.action,self.form('save',key=key))
+            # Follow the real redirect before cache loss: this same session now
+            # has a current unjudged recommendation deck containing the key.
+            self.assertIn(key,[row['card'].key for row in self.client.get(self.url).context['events']])
+            before=DiscoveryState.objects.get().history
+            views.PUBLIC_CACHE.clear()
+            page=self.client.get(self.url)
+            saved=next(row for row in page.context['responses'] if row['card'].key==key)
+            self.assertTrue(saved['saved'] and saved['reference_only'])
+            self.assertIsNone(saved['card'].url)
+            self.assertIn('/news/',saved['saved_reference']['official_url'])
+            for field in ('events','more_source_events'):
+                self.assertNotIn(key,[row['card'].key for row in page.context[field]])
+            self.assertEqual(DiscoveryState.objects.get().history,before)
+            read.assert_called_once_with()
+
+    def test_another_response_drops_stale_selected_and_overflow_pins(self):
+        from shelf.tests.test_pbs_events import card
+        from shelf.discovery_sources import Candidate
+        descriptors=policies()
+        seeds=[Candidate('official:artist:synthetic-'+str(i),'SYNTHETIC seed',
+            'artist','Synthetic seed','manual-attributed',i+1,None) for i in range(12)]
+        raw=listing([card('synthetic-event-'+str(i)) for i in range(9)])
+        with patch('shelf.event_source_registry.SOURCES',descriptors), \
+             patch.object(views,'EVENT_SOURCES',descriptors), \
+             patch.object(views.sources,'household_candidates',return_value=seeds), \
+             patch.object(transport,'pbs',return_value=(200,raw)) as read:
+            self.client.post(self.action,self.form('event_source',source_id='pbs'))
+            page=self.client.get(self.url)
+            first=page.context['events'][0]['card'].key
+            overflow=page.context['more_source_events'][0]['card'].key
+            for key in (first,overflow):
+                self.client.post(self.action,self.form('save',key=key))
+            page=self.client.get(self.url)
+            other=page.context['music'][0]['card'].key
+            data=self.form('respond',key=other,choice='interested')
+            views.PUBLIC_CACHE.clear()
+            # Respond without an intervening GET, exercising _replace_key's
+            # preserved slots independently of _context's retained-deck filter.
+            self.assertEqual(self.client.post(self.action,data).status_code,302)
+            decks=self.client.session[views.DECK_KEY]
+            deck=next(iter(decks.values()))
+            self.assertTrue({first,overflow}.isdisjoint(deck['keys']+deck.get('source_keys',[])))
+            page=self.client.get(self.url)
+            saved={row['card'].key:row for row in page.context['responses'] if row['saved']}
+            self.assertEqual(set(saved),{first,overflow})
+            for row in saved.values():
+                self.assertTrue(row['reference_only'])
+                self.assertIsNone(row['card'].url)
+            for field in ('events','more_source_events'):
+                self.assertTrue({first,overflow}.isdisjoint(row['card'].key for row in page.context[field]))
+            read.assert_called_once_with()
+
     def test_save_only_link_survives_cache_loss_fresh_session_without_new_taste(self):
         descriptors=policies()
         with patch('shelf.event_source_registry.SOURCES',descriptors), \
