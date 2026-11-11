@@ -19,13 +19,14 @@ TARGETS = MappingProxyType({
     'venue303': ('https://303.net.au/gigs-events', 'https://303.net.au/robots.txt'),
     'forum': ('https://forummelbourne.com.au/shows', 'https://forummelbourne.com.au/robots.txt'),
     'bar_open': ('https://baropen.com.au/make-it-up-club/', 'https://baropen.com.au/robots.txt'),
+    'my_aeon': ('https://www.myaeon.com.au/my-aeon-events', 'https://www.myaeon.com.au/robots.txt'),
 })
-_DELAYS = {'venue303': 10, 'forum': 10, 'bar_open': 10}
+_DELAYS = {'venue303': 10, 'forum': 10, 'bar_open': 10, 'my_aeon': 10}
 _RATE_DIRECTORY = '/tmp'
 # Initial bounded observations: 303 robots allowed this path; Forum returned
 # unrecognized content. Keep Forum's live listing closed while its pure adapter
 # and synthetic caller remain testable. This is not model/republication consent.
-LISTING_ACCESS = MappingProxyType({'venue303': True, 'forum': False, 'bar_open': True})
+LISTING_ACCESS = MappingProxyType({'venue303': True, 'forum': False, 'bar_open': True, 'my_aeon': True})
 
 
 class ListingIntervalPending(SourceError):
@@ -107,17 +108,21 @@ def bar_open():
     return _read('bar_open')
 
 
-def observe_robots(source_id):
-    """Explicit readiness observation only; listing actions never crawl robots.
+def my_aeon():
+    return _read('my_aeon')
 
-    The engineering caller records this receipt and honors allowed/delay before
-    its first live listing. Robots permission is not a content/model licence.
-    """
-    code, raw = _read(source_id, robots=True)
+
+def _robots_rules(source_id, code, raw):
+    """Pure interpretation also permits checking exact retained source bytes."""
     if code == 404:
         return {'status': code, 'allowed': True, 'delay': 10}
     if code != 200:
         return {'status': code, 'allowed': False, 'delay': 10}
+    # RFC9309 sections 2.2/2.2.1: zero groups is a valid empty robots file and
+    # has no applicable rules. Only exact empty success is added here; nonempty
+    # unknown text/HTML, denial and transport failure keep existing behaviour.
+    if raw == b'':
+        return {'status': code, 'allowed': True, 'delay': 10}
     text = raw.decode('utf-8')
     if (not any(line.lower().startswith('user-agent:') for line in text.splitlines())
             or '<html' in text.lower() or '<!doctype' in text.lower()):
@@ -128,6 +133,18 @@ def observe_robots(source_id):
     rate = rules.request_rate(USER_AGENT)
     if rate:
         delay = max(delay, rate.seconds / rate.requests)
-    _DELAYS[source_id] = delay
-    _reserve(source_id, policy_delay=delay)
     return {'status': code, 'allowed': rules.can_fetch(USER_AGENT, TARGETS[source_id][0]), 'delay': delay}
+
+
+def observe_robots(source_id):
+    """Explicit readiness observation only; listing actions never crawl robots.
+
+    The engineering caller records this receipt and honors allowed/delay before
+    its first live listing. Robots permission is not a content/model licence.
+    """
+    code, raw = _read(source_id, robots=True)
+    receipt = _robots_rules(source_id, code, raw)
+    if code == 200:
+        _DELAYS[source_id] = receipt['delay']
+        _reserve(source_id, policy_delay=receipt['delay'])
+    return receipt
