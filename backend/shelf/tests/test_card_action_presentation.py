@@ -6,7 +6,7 @@ from django.test import SimpleTestCase, override_settings
 from django.template.loader import render_to_string
 from django.utils.safestring import mark_safe
 
-from shelf.card_action_presentation import card_action_context, ACTIONS
+from shelf.card_action_presentation import card_action_context, local_event_display_context, ACTIONS
 from .test_onboarding_experience_views import Document, Poison
 
 PROFILE = '00000000-0000-4000-8000-000000000001'
@@ -33,6 +33,90 @@ def template_settings():
              'OPTIONS': {'loaders': [('django.template.loaders.locmem.Loader', {
                  'test_card_base.html': '<!doctype html><html><body>{% block content %}{% endblock %}</body></html>'}),
                  'django.template.loaders.filesystem.Loader']}}]
+
+
+LOCAL_KEY = 'fictional:gallery:source-entry'
+
+
+def local_projection():
+    """Actual immutable interfaces-a1-display-02 shape, with fictional facts."""
+    return dict(schema='local-event-display/v1', candidate_key=LOCAL_KEY, profile_ref=PROFILE,
+        publication_ref=PUBLICATION, publication_revision=3, dataset_revision='a'*64,
+        location_revision=2, selection_context_digest='b'*64,
+        distance_label='Approximately 12 km from postcode reference', distance_basis='postcode',
+        radius_band='outside_radius', source_refs=['fact:opening', 'fact:artist'],
+        opening_status='current_exhibition', opening_starts_at='2026-11-01T18:00:00+11:00',
+        opening_ends_at=None, exhibition_starts_on='2026-11-02', exhibition_ends_on='2026-11-30',
+        date_precision='date', timezone='Australia/Melbourne', artist_match_status='name_match_unconfirmed',
+        artist_match_label='Artist name matches your stated favourite; identity unconfirmed.')
+
+
+class LocalEventDisplayPresentationTests(SimpleTestCase):
+    def normalize(self, value, **extra):
+        arguments = dict(candidate_key=LOCAL_KEY, category='gallery', profile_ref=PROFILE,
+                         publication_ref=PUBLICATION, publication_revision=3)
+        arguments.update(extra)
+        return local_event_display_context(value, **arguments)
+
+    def render(self, value, *, normalize=True):
+        local = self.normalize(value) if normalize else value
+        card = dict(title='Fictional exhibition', candidate_key=LOCAL_KEY, medium='gallery', local_event_display=local)
+        with override_settings(TEMPLATES=template_settings()):
+            return render_to_string('cabinet/portable_cabinet.html', dict(enhancement_base='test_card_base.html',
+                published=True, profile_label='Fictional cabinet', profile_ref=PROFILE, csrf_token=TOKEN,
+                card_actions_available=True, categories=[dict(category='gallery', label='Exhibitions & openings',
+                    visible=True, cards=[card])]))
+
+    def test_supplied_approximate_distance_and_local_bindings_are_preserved_without_calculation(self):
+        p = local_projection(); p.update(latitude=99, longitude=99, request=Poison())
+        result = self.normalize(p)
+        for key in ('candidate_key', 'profile_ref', 'publication_ref', 'publication_revision',
+                    'dataset_revision', 'location_revision', 'selection_context_digest', 'source_refs', 'distance_label'):
+            self.assertEqual(result[key], p[key])
+        self.assertEqual(result['radius_band_text'], 'Beyond your preferred radius; still shown.')
+        self.assertNotIn('latitude', result)
+        self.assertNotIn('longitude', result)
+        self.assertNotIn('request', result)
+
+    def test_foreign_or_stale_card_bindings_nonlocal_categories_and_invalid_states_refuse(self):
+        for key, value in (('candidate_key', 'foreign'), ('profile_ref', TARGET), ('publication_ref', TARGET),
+                           ('publication_revision', 2), ('location_revision', True),
+                           ('selection_context_digest', 'not-a-digest'), ('artist_match_status', 'verified_artist_relation')):
+            p = local_projection(); p[key] = value
+            with self.subTest(key=key), self.assertRaises(ValueError): self.normalize(p)
+        with self.assertRaises(ValueError): self.normalize(local_projection(), category='movie')
+
+    def test_past_opening_and_current_run_stay_separate_with_unconfirmed_artist_wording(self):
+        html = self.render(local_projection())
+        self.assertIn('Source dates indicate a current exhibition run', html)
+        self.assertIn('Opening starts</dt><dd>2026-11-01T18:00:00+11:00', html)
+        self.assertIn('Exhibition run starts</dt><dd>2026-11-02', html)
+        self.assertIn('Opening ends</dt><dd>Not stated', html)
+        self.assertIn('identity unconfirmed', html)
+        self.assertIn('not verified identity or an exhibition appearance', html)
+        self.assertIn('Beyond your preferred radius; still shown', html)
+
+    def test_unknown_distance_and_missing_dates_never_become_zero_or_filled_opening(self):
+        p = local_projection()
+        p.update(distance_label='Distance unknown.', distance_basis='unknown', radius_band='unknown',
+                 opening_status='unknown', artist_match_status='none', artist_match_label='DO-NOT-SHOW-NAME')
+        for key in ('opening_starts_at', 'opening_ends_at', 'exhibition_starts_on', 'exhibition_ends_on', 'date_precision', 'timezone'):
+            p[key] = None
+        html = self.render(p)
+        self.assertIn('Distance unknown.', html)
+        self.assertNotIn('0 km', html)
+        self.assertNotIn('DO-NOT-SHOW-NAME', html)
+        self.assertIn('Opening starts</dt><dd>Not stated', html)
+        self.assertIn('Exhibition run starts</dt><dd>Not stated', html)
+        self.assertIn('Radius comparison unavailable', html)
+
+    def test_raw_overlay_is_not_rendered_and_unsafe_text_cannot_bypass_presenter(self):
+        p = local_projection()
+        self.assertNotIn('Approximately 12 km', self.render(p, normalize=False))
+        p['distance_label'] = mark_safe('<script>unsafe</script>')
+        with self.assertRaises(ValueError): self.normalize(p)
+        p = local_projection(); p['artist_match_label'] = '<Fictional & unconfirmed>'
+        self.assertIn('&lt;Fictional &amp; unconfirmed&gt;', self.render(p))
 
 
 class CardActionPresentationTests(SimpleTestCase):
