@@ -21,6 +21,7 @@ import struct
 import subprocess
 import sys
 import time
+import unicodedata
 import uuid
 
 VERSION = 'cabinet-secret-service/v1'
@@ -143,7 +144,7 @@ def _time(value):
     return parsed
 
 
-def strict_json(raw):
+def _decode_json(raw, *, pinned_evidence_paths=False):
     require(type(raw) is bytes and 0 < len(raw) <= MAX_FRAME)
     def pairs(items):
         result = {}
@@ -153,13 +154,22 @@ def strict_json(raw):
         return result
     def nonfinite(_):
         raise Refused()
-    def bounded(value, depth=0):
+    def bounded(value, depth=0, evidence_mapping=False):
         require(depth <= 16)
+        if evidence_mapping:
+            require(type(value) is dict)
         if type(value) is dict:
             require(len(value) <= 64)
             for key, item in value.items():
-                _text(key, 128)
-                bounded(item, depth + 1)
+                if evidence_mapping:
+                    _text(key, 256)
+                    require(key.startswith('/') and not any(unicodedata.category(char) in
+                            ('Cc', 'Cf') for char in key))
+                    _digest(item)
+                else:
+                    _text(key, 128)
+                    bounded(item, depth + 1, evidence_mapping=(pinned_evidence_paths
+                            and depth == 0 and key == 'evidence'))
         elif type(value) is list:
             require(len(value) <= 128)
             for item in value:
@@ -168,11 +178,32 @@ def strict_json(raw):
             require(value is None or type(value) in (str, int, bool))
     try:
         value = json.loads(raw.decode('utf-8'), object_pairs_hook=pairs, parse_constant=nonfinite)
+        if pinned_evidence_paths:
+            require(type(value) is dict and type(value.get('evidence')) is dict)
         bounded(value)
         canonical(value)
         return value
     except (ValueError, UnicodeError, RecursionError):
         raise Refused() from None
+
+
+def strict_json(raw):
+    """Ordinary wire/record/selection/archive decoder: unchanged 128-byte keys."""
+    return _decode_json(raw)
+
+
+def _pending_failure_json(raw):
+    """Only the exact retained receipt may have attribution-path keys.
+
+    Evidence paths differ from RPC field names: four original keys are 129-139
+    bytes. Check the unchanged production digest BEFORE the private exception;
+    only root.evidence keys get 256 bytes and SHA256 values. These are strings
+    of attribution, never filesystem targets. Other keys and ordinary callers
+    keep 128 bytes. Archive wrappers stay strict; embedded receipts stay original
+    strings so subsequent validation checks their exact raw-byte hashes again.
+    """
+    require(type(raw) is bytes and hashlib.sha256(raw).hexdigest() == PENDING_FAILURE_SHA)
+    return _decode_json(raw, pinned_evidence_paths=True)
 
 
 def validate_binding(kind, binding):
@@ -1390,7 +1421,7 @@ def _pending_receipts(original, failure, terminal):
     for raw, expected in ((original, PENDING_SELECTION_SHA), (failure, PENDING_FAILURE_SHA),
                           (terminal, PENDING_TERMINAL_SHA)):
         require(type(raw) is bytes and hashlib.sha256(raw).hexdigest() == expected)
-    value, failed, ended = strict_json(original), strict_json(failure), strict_json(terminal)
+    value, failed, ended = strict_json(original), _pending_failure_json(failure), strict_json(terminal)
     _pending_selection(value)
     require(ended['selection'] == value and ended['stage'] == 'CORRECTED_PROVISION_REFUSED_NO_RETRY'
             and ended['provision_status'] == 'UNAVAILABLE' and ended['no_real_key'] is True
