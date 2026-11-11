@@ -190,6 +190,13 @@ Reference-only identities are excluded from fresh recommendation ranking, remain
 available for the person's existing response/save actions and cannot refill a
 reference on a later Save. Fresh source candidates take precedence by exact key.
 
+`reference_only` means expired event history, including the real null-policy
+opaque fallback. It does not mean permission to retain a link. A non-null
+`saved_reference` independently identifies the checked permitted optional link;
+null means render a stale opaque identity without a link. A current source card
+without a URL still has `reference_only=False`. Consumers must use these explicit
+fields rather than infer expiry or permission from a title or missing URL.
+
 The pure helper exports `make_reference`, `validate_reference`,
 `project_references`, `redact_history` and `referenced_namespaces`. Callers hold
 the existing source-restriction barrier through reads/rendering or mutation;

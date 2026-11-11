@@ -138,7 +138,10 @@ def candidates(request, profile_id, mode, history):
     for event in history:
         key, source = event['key'], event.get('source', {})
         if key and key.split(':')[1] in ('event','artist','recording','venue') and key not in cards and source.get('provenance') in ('live-automated', 'browser-observed', 'manual-entry'):
-            candidate_type = ReferenceCandidate if key in references else sources.Candidate
+            # Every expired EVENT identity is history-only, including the real
+            # null-policy opaque fallback. Link permission is a separate optional
+            # value; missing URLs on fresh source cards never imply expiry.
+            candidate_type = ReferenceCandidate if key.split(':')[1] == 'event' else sources.Candidate
             extra = {'saved_reference': references[key]} if key in references else {}
             cards[key] = candidate_type(key, 'Saved event reference — source details expired'
                 if key in references else 'Previously judged identity (source details expired)',
