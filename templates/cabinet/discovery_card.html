@@ -74,7 +74,8 @@
     <button name="operation" value="radio">Read public ListenBrainz artist radio</button>
   </form>
   {% endif %}
-  <form data-feedback-form {% if row.choice %}data-feedback-correction="respond"{% endif %} method="post" action="{{ action_url }}">
+  {% comment %}Expired history is outside the recommendation deck. Use the full native POST rather than the JS partial-response path, whose deck-membership guard must remain intact. Current cards keep their existing interception/correction markers and all forms keep the same native fields.{% endcomment %}
+  <form {% if not row.reference_only %}data-feedback-form {% if row.choice %}data-feedback-correction="respond"{% endif %}{% endif %} method="post" action="{{ action_url }}">
     {% include 'cabinet/discovery_fields.html' %}
     <input type="hidden" name="key" value="{{ row.card.key }}">
     {% if not row.choice %}<input type="hidden" name="operation" value="respond">{% endif %}
