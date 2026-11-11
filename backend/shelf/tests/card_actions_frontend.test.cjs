@@ -117,3 +117,41 @@ test('hit testing uses the actual labelled target rectangle rather than inferred
   assert.equal(targetAt(bins, 240, 130).action, 'like'); assert.equal(targetAt(bins, 190, 130), null);
   assert.equal(targetAt(bins, 240, 180), null);
 });
+
+test('default browser timers retain their global receiver through hold activation and pending cancellation', () => {
+  const fs = require('node:fs'), vm = require('node:vm');
+  const context = vm.createContext({ module: { exports: {} } });
+  // Node timers accept the gesture as receiver. Model the browser's stricter
+  // host-call boundary so this test catches a failure before a timer is queued.
+  vm.runInContext(`const work = new Map(); let next = 0, lifts = 0;
+    function setTimeout(callback, delay) {
+      'use strict'; if (this !== globalThis) throw TypeError('Illegal invocation');
+      if (delay !== 380) throw Error('Unexpected hold delay');
+      work.set(++next, callback); return next;
+    }
+    function clearTimeout(id) {
+      'use strict'; if (this !== globalThis) throw TypeError('Illegal invocation');
+      work.delete(id);
+    }`, context);
+  vm.runInContext(fs.readFileSync(require.resolve('../../../static/cabinet/card_actions.js'), 'utf8'), context);
+  vm.runInContext(`const gesture = new module.exports.HoldGesture({ lift() { lifts++; } });
+    const press = { pointerId: 1, clientX: 10, clientY: 20, button: 0, isPrimary: true };
+    gesture.down(press);`, context);
+  assert.equal(vm.runInContext('work.size', context), 1);
+  vm.runInContext('const callbacks = [...work.values()]; work.clear(); callbacks.forEach(fn => fn());', context);
+  assert.equal(vm.runInContext('lifts', context), 1);
+  assert.equal(vm.runInContext('gesture.phase', context), 'active');
+  vm.runInContext(`gesture.cancel('escape'); gesture.down(press); gesture.cancel('scroll-intent');`, context);
+  assert.equal(vm.runInContext('work.size', context), 0);
+  assert.equal(vm.runInContext('gesture.phase', context), 'idle');
+  assert.equal(vm.runInContext('lifts', context), 1);
+});
+test('injected clocks retain their own receiver when scheduling and cancelling a pending hold', () => {
+  const clock = { callback: null, cleared: false,
+    setTimeout(callback, delay) { assert.equal(this, clock); assert.equal(delay, 380); this.callback = callback; return 42; },
+    clearTimeout(id) { assert.equal(this, clock); assert.equal(id, 42); this.callback = null; this.cleared = true; }
+  };
+  const gesture = new HoldGesture({}, clock);
+  gesture.down(pointer()); assert.equal(typeof clock.callback, 'function');
+  gesture.cancel('escape'); assert.equal(clock.callback, null); assert.equal(clock.cleared, true); assert.equal(gesture.phase, 'idle');
+});
