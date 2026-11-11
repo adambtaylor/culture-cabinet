@@ -1077,6 +1077,107 @@ class DummyRetirementTests(unittest.TestCase):
         self.assertTrue((self.directory / store._archive_name()).exists())
 
 
+def pending_evidence_fixture():
+    """Actual six-entry UTF8 key lengths, without any runtime evidence path read."""
+    lengths = (129, 132, 134, 139, 101, 64)
+    evidence = {}
+    for index, length in enumerate(lengths):
+        prefix = '/owned-dummy/evidence-' + str(index) + '/'
+        evidence[prefix + 'x' * (length - len(prefix))] = hashlib.sha256(str(index).encode()).hexdigest()
+    return evidence
+
+
+class PinnedReceiptDecoderTests(unittest.TestCase):
+    def sample(self, **changes):
+        return {'evidence': pending_evidence_fixture(), 'observed': 'dummy-only', **changes}
+
+    def decode_fixture(self, raw):
+        # Only owned adversarial fixtures substitute the production pin. There
+        # is no environment/configuration override in the production decoder.
+        with patch.object(store, 'PENDING_FAILURE_SHA', hashlib.sha256(raw).hexdigest()):
+            return store._pending_failure_json(raw)
+
+    def test_actual_six_entry_length_shape_decodes_only_through_pinned_private_entry(self):
+        raw = store.canonical(self.sample())
+        decoded = self.decode_fixture(raw)
+        self.assertEqual([len(key.encode()) for key in decoded['evidence']], [129, 132, 134, 139, 101, 64])
+        with self.assertRaises(store.Refused):
+            store.strict_json(raw)
+        # Ordinary JSON never acquired receipt-specific evidence semantics.
+        ordinary = {'evidence': {'relative': True}}
+        self.assertEqual(store.strict_json(store.canonical(ordinary)), ordinary)
+
+    def test_hash_mismatch_refuses_before_any_decoder_call(self):
+        raw = store.canonical(self.sample())
+        with patch.object(store, 'PENDING_FAILURE_SHA', hashlib.sha256(raw).hexdigest()), \
+             patch.object(store, '_decode_json') as decode, self.assertRaises(store.Refused):
+            store._pending_failure_json(raw + b' ')
+        decode.assert_not_called()
+        for value in (None, raw.decode(), bytearray(raw)):
+            with self.subTest(type=type(value).__name__), self.assertRaises(store.Refused):
+                store._pending_failure_json(value)
+
+    def test_private_path_bound_is_256_bytes_and_other_keys_stay_128(self):
+        digest = 'a' * 64
+        allowed = '/' + 'x' * 255
+        self.decode_fixture(store.canonical({'evidence': {allowed: digest}}))
+        cases = (
+            {'evidence': {'/' + 'x' * 256: digest}},
+            self.sample(**{'x' * 129: True}),
+            self.sample(other={'evidence': {'/' + 'x' * 128: digest}}),
+        )
+        for value in cases:
+            with self.subTest(value_keys=list(value)), self.assertRaises(store.Refused):
+                self.decode_fixture(store.canonical(value))
+        # The bound is UTF8 bytes, not Unicode character count.
+        with self.assertRaises(store.Refused):
+            self.decode_fixture(store.canonical({'evidence': {'/' + 'é' * 128: digest}}))
+
+    def test_evidence_requires_absolute_control_free_paths_and_digest_values(self):
+        for key in ('', 'relative', 'C:/windows', '/line\nbreak', '/nul\x00key', '/del\x7fkey', '/c1\x85key', '/bidi\u202ekey'):
+            with self.subTest(key=repr(key)), self.assertRaises(store.Refused):
+                self.decode_fixture(store.canonical({'evidence': {key: 'a' * 64}}))
+        for digest in ('short', 'g' * 64, None, 7, ['a' * 64], {'/nested': 'a' * 64}):
+            with self.subTest(digest_type=type(digest).__name__), self.assertRaises(store.Refused):
+                self.decode_fixture(store.canonical({'evidence': {'/owned': digest}}))
+        for evidence in (None, [], 'not a mapping'):
+            with self.assertRaises(store.Refused):
+                self.decode_fixture(store.canonical({'evidence': evidence}))
+        with self.assertRaises(store.Refused):
+            self.decode_fixture(b'{}')
+
+    def test_duplicate_keys_at_all_levels_and_invalid_utf8_are_refused(self):
+        raw_cases = (
+            b'{"evidence":{},"evidence":{}}',
+            b'{"evidence":{"/owned":"' + b'a' * 64 + b'","/owned":"' + b'a' * 64 + b'"}}',
+            b'{"evidence":{},"nested":{"x":1,"x":2}}',
+            b'{"evidence":{},"bad":"\xff"}',
+        )
+        for raw in raw_cases:
+            with self.subTest(raw_length=len(raw)), self.assertRaises(store.Refused):
+                self.decode_fixture(raw)
+
+    def test_frame_depth_collection_and_scalar_limits_remain_unchanged(self):
+        deep = 0
+        for _ in range(16):
+            deep = [deep]
+        cases = (
+            store.canonical(self.sample(other=deep)),
+            store.canonical({'evidence': {'/' + str(index): 'a' * 64 for index in range(65)}}),
+            store.canonical(self.sample(other=list(range(129)))),
+            store.canonical({**{str(index): True for index in range(64)}, 'evidence': {}}),
+            store.canonical(self.sample(padding='x' * store.MAX_FRAME)),
+            store.canonical(self.sample(number=1.5)),
+            b'{"evidence":{},"number":NaN}',
+            b'{"evidence":{},"number":Infinity}',
+            b'{"evidence":{},"number":-Infinity}',
+            b'',
+        )
+        for raw in cases:
+            with self.subTest(raw_length=len(raw)), self.assertRaises(store.Refused):
+                self.decode_fixture(raw)
+
+
 class PendingPromptRetirementTests(unittest.TestCase):
     # Owned files and bus metadata fixtures only; never a real keyring reset.
 
@@ -1089,7 +1190,7 @@ class PendingPromptRetirementTests(unittest.TestCase):
         value.pop('prompt_observation')
         value.update(state='PROMPT_PENDING', requested_label='CultureCabinetd8276bb67a8f41beb17e82bac48a3609', returned_prompt_ref='/org/freedesktop/secrets/prompt/p2')
         self.value = value
-        self.pending_failure = store.canonical({'corrected_operation_id': store.PENDING_OPERATION, 'returned_collection_ref': None, 'real_api_keys_used': False, 'canary_state': 'NOT_STARTED', 'master_phase': 'NOT_STARTED'})
+        self.pending_failure = store.canonical({'corrected_operation_id': store.PENDING_OPERATION, 'returned_collection_ref': None, 'real_api_keys_used': False, 'canary_state': 'NOT_STARTED', 'master_phase': 'NOT_STARTED', 'evidence': pending_evidence_fixture()})
         self.caller_closed = self.enterContext(patch.object(store._SecretBackend, '_original_caller_closed', return_value=True))
         self.set_pending(value)
 
@@ -1119,6 +1220,12 @@ class PendingPromptRetirementTests(unittest.TestCase):
         value = store._validate_pending_archive(archived.read_bytes())
         self.assertEqual(value['original_selection'].encode(), self.pending_original)
         self.assertEqual(value['terminal_receipt'].encode(), self.terminal)
+        self.assertEqual(value['failure_receipt'].encode(), self.pending_failure)
+        self.assertEqual(len(store._pending_failure_json(self.pending_failure)['evidence']), 6)
+        self.assertEqual(max(len(key.encode()) for key in json.loads(self.pending_failure)['evidence']), 139)
+        with self.assertRaises(store.Refused):
+            store.strict_json(self.pending_failure)
+        store.strict_json(archived.read_bytes())  # Embedded original bytes are strings, not wrapper keys.
         self.assertFalse(value['os_orphan_deleted'])
         self.assertEqual(value['possible_collection_exists'], 'unknown')
         self.assertEqual((self.directory / store._archive_name()).read_bytes(), predecessor)
@@ -1215,6 +1322,18 @@ class PendingPromptRetirementTests(unittest.TestCase):
         with self.assertRaises(store.Refused):
             store.retire_prompt_pending_dummy(self.pending_failure, self.terminal + b' ')
         self.assertTrue(self.pointer.exists())
+
+    def test_malformed_receipt_refuses_before_backend_or_pointer_mutation(self):
+        failure = json.loads(self.pending_failure)
+        for evidence in ({'/' + 'x' * 256: 'a' * 64}, {'/owned': 'bad-digest'}, ['wrong-type']):
+            raw = store.canonical({**failure, 'evidence': evidence})
+            with self.subTest(evidence_type=type(evidence).__name__), \
+                 patch.object(store, 'PENDING_FAILURE_SHA', hashlib.sha256(raw).hexdigest()), \
+                 patch.object(store._SecretBackend, '_connect') as connect, self.assertRaises(store.Refused):
+                store.retire_prompt_pending_dummy(raw, self.terminal)
+            connect.assert_not_called()
+            self.assertEqual(self.pointer.read_bytes(), self.pending_original)
+            self.assertFalse((self.directory / store._pending_archive_name()).exists())
 
     def test_original_caller_check_uses_only_exact_bus_metadata(self):
         from gi.repository import GLib

@@ -151,6 +151,20 @@ death with no observed terminal event does not become an invented timeout.
 Previously accepted v2 receipts remain readable without the observation field.
 The private ordinary RPC is unchanged.
 
+The first A4 continuation stopped before any pointer or OS mutation because its
+retained failure receipt has six evidence-path keys, four above the ordinary
+128-byte field-name limit (maximum139). Only the exact unchanged receipt matching
+`PENDING_FAILURE_SHA` now uses a private decoder: keys immediately within its root
+`evidence` mapping may be absolute POSIX attribution strings up to256 UTF8 bytes,
+without control characters and with SHA256 values. These strings are never file
+targets. All other keys, including nested evidence maps, retain128 bytes; ordinary
+RPC, record, selection and archive-wrapper decoding is unchanged. Frame, depth,
+member, duplicate, type and UTF8 limits also remain unchanged. The outer archive
+keeps the original receipt bytes as a string and verifies them again on reread;
+the frozen failure/selection/terminal/predecessor hashes and retirement guards
+are unchanged. Pure decoding and hermetic archive tests do not establish real
+GCR input or encrypted persistence. The actual refused attempt remains retained.
+
 The versioned dummy input helper must identify both labelled Password and
 Confirm controls within the exact owned GCR dialog, verify intended focus, and
 invoke its explicit Create action once. It cannot assume Tab navigation, read
