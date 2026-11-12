@@ -28,6 +28,10 @@ class RuntimeFailure(Exception):
     """A safe fixed diagnostic, without filesystem or transient input details."""
 
 
+class PortableAlreadyRunning(Exception):
+    """Local handoff for the fixed duplicate-installation status."""
+
+
 _FRESH_DATABASES = {}
 
 
@@ -275,8 +279,11 @@ def run(root, *, port=0, approved_policies=None, approved_policies_factory=None,
         logging.disable(logging.CRITICAL)
         for sig in [signal.SIGTERM, signal.SIGINT, signal.SIGHUP]:
             previous[sig] = signal.signal(sig, stop)
-        from cabinet.portable_boundary import open_boundary
-        boundary = open_boundary(root, port=port)
+        from cabinet.portable_boundary import BoundaryAlreadyRunning, open_boundary
+        try:
+            boundary = open_boundary(root, port=port)
+        except BoundaryAlreadyRunning:
+            raise PortableAlreadyRunning() from None
         fresh = prepare_database(boundary)
         configure(boundary)
         if fresh:
@@ -344,6 +351,9 @@ def run(root, *, port=0, approved_policies=None, approved_policies_factory=None,
         if checkpoint is not None:
             checkpoint.clean_stop = True
         return 0
+    except PortableAlreadyRunning:
+        print('PORTABLE_ALREADY_RUNNING', file=sys.stderr, flush=True)
+        return 1
     except Exception:
         print('PORTABLE_START_OR_RUNTIME_REFUSED', file=sys.stderr, flush=True)
         return 1
