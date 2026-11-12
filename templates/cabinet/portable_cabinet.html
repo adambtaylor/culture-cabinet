@@ -1,5 +1,6 @@
 {% extends enhancement_base %}
 {% block content %}
+{% if card_actions_available and not read_code %}<link rel="stylesheet" href="/cabinet/actions/style.css">{% endif %}
 {% if taste_input %}
 <section class="paper-panel cabinet-taste" aria-labelledby="taste-heading">
   <p class="eyebrow">Preferences · {{ profile_label }}</p>
@@ -320,7 +321,7 @@
   <h2 id="category-{{ forloop.counter }}">{{ category.label }}</h2><p class="cabinet-category-status">{{ category.status }}</p>
   <div class="cabinet-cards">
   {% for card in category.cards %}
-    <article class="paper-panel cabinet-card">
+    <article class="paper-panel cabinet-card"{% if card.card_actions %} data-card-action-card{% endif %}>
       <h3>{{ card.title }}</h3>{% if card.medium %}<p>{{ card.medium }}</p>{% endif %}
       <details class="cabinet-source"><summary>Source and freshness</summary>
       <dl class="cabinet-provenance">
@@ -331,8 +332,26 @@
       {% if card.source_url %}<p><a href="{{ card.source_url }}" rel="noreferrer noopener">View source record</a></p>{% else %}<p>No validated source link is available.</p>{% endif %}
       {% if card.facts %}<dl class="cabinet-facts">{% for fact in card.facts %}<div><dt>{{ fact.name }}</dt><dd>{{ fact.value }}</dd></div>{% endfor %}</dl>{% endif %}
       </details>
-      {% if card.reasons %}<h4>For you</h4>{% for reason in card.reasons %}<p><strong>{{ reason.label }}:</strong> {{ reason.text }} <span class="cabinet-evidence">{% if reason.evidence_count %}{{ reason.evidence_count }} evidence reference{{ reason.evidence_count|pluralize }}.{% else %}No evidence references supplied.{% endif %}</span></p>{% endfor %}{% else %}<p class="cabinet-no-reason">No current For You explanation is available.</p>{% endif %}
-      {% if card.feedback.signals %}
+      {% if card.reasons and card.card_actions.ranking_state != 'feedback_pending' %}<h4>For you</h4>{% for reason in card.reasons %}<p><strong>{{ reason.label }}:</strong> {{ reason.text }} <span class="cabinet-evidence">{% if reason.evidence_count %}{{ reason.evidence_count }} evidence reference{{ reason.evidence_count|pluralize }}.{% else %}No evidence references supplied.{% endif %}</span></p>{% endfor %}{% else %}<p class="cabinet-no-reason">No current For You explanation is available.</p>{% endif %}
+      {% if card.card_actions %}
+      <section class="card-actions" aria-labelledby="card-actions-{{ card.card_actions.target_ref }}" data-selected-state="{{ card.card_actions.selected_state }}">
+        <h4 id="card-actions-{{ card.card_actions.target_ref }}">Your response</h4>
+        <p class="card-selected-state" role="status">Selected: <strong>{{ card.card_actions.selected_label }}</strong></p>
+        {% if card.card_actions.ranking_state == 'feedback_pending' %}<p>Feedback saved; Enhance to update recommendations.</p>{% endif %}
+        <p class="card-actions-help">Hold this card to reveal four choices, or use the buttons. Like means interest in exploring; Favourite is a stronger positive preference.</p>
+        {% comment %}One native command and its server-issued revisions serve all four choices. The selected submitter supplies action; the gesture never rewrites identity, invents a score or sends a second Favourite for Obtain.{% endcomment %}
+        <form method="post" action="{{ card.card_actions.form_action }}" data-card-action-form>{% csrf_token %}
+          {% for field in card.card_actions.fields %}<input type="hidden" name="{{ field.name }}" value="{{ field.value }}">{% endfor %}
+          <div class="card-action-buttons">{% for action in card.card_actions.actions %}<button type="submit" name="action" value="{{ action.action }}" data-direction="{{ action.direction }}" aria-pressed="{{ action.selected|yesno:'true,false' }}"{% if not action.enabled %} disabled{% endif %}{% if action.disabled_reason %} title="{{ action.disabled_reason }}"{% endif %}><span aria-hidden="true">{{ action.icon }}</span> {{ action.label }}</button>{% endfor %}</div>
+        </form>
+        <p data-card-action-pending hidden role="status">Waiting for the native result. If the outcome is unclear, <a href="{{ card.card_actions.pending_receipt_href }}">check this action’s recorded receipt</a> before another action. Nothing is retried automatically.</p>
+        <button type="button" class="card-actions-open" data-card-actions-open aria-label="Open actions for {{ card.title }}" aria-expanded="false" hidden>Open four card actions</button>
+        {% for action in card.card_actions.actions %}{% if not action.enabled and action.disabled_reason %}<p class="card-action-limitation">{{ action.label }}: {{ action.disabled_reason }}</p>{% elif action.action == 'obtain' and action.obtain_state == 'unavailable' %}<p>Obtain records Favourite, but acquisition is not available for this type. No purchase or download starts here.</p>{% elif action.action == 'obtain' %}<p>Obtain records Favourite once, then opens its supported review flow. Search, release and download confirmations remain separate.</p>{% endif %}{% endfor %}
+        {% if card.card_actions.receipt_href %}<p><a href="{{ card.card_actions.receipt_href }}">Check the recorded outcome</a>. An unknown outcome is not a reason to resend automatically.</p>{% endif %}
+        {% if card.card_actions.undo %}<form method="post" action="/cabinet/actions/undo/" data-card-action-undo>{% csrf_token %}{% for field in card.card_actions.undo.fields %}<input type="hidden" name="{{ field.name }}" value="{{ field.value }}">{% endfor %}<button type="submit"{% if not card.card_actions.undo.enabled %} disabled{% endif %}>Undo this preference</button></form><p>Preference Undo does not cancel an Obtain action.</p>{% endif %}
+      </section>
+      {% if card.feedback.signals %}<details class="cabinet-card-history"><summary>Earlier ratings and notes</summary>{% for response in card.feedback.signals %}{% if response.signal == 'enjoyment' and response.value != None %}<p>Experienced enjoyment: {{ response.value }} / 5</p>{% elif response.signal == 'note' and response.value != None %}<p class="cabinet-exact-note">{{ response.value }}</p>{% endif %}{% endfor %}</details>{% endif %}
+      {% elif card.feedback.signals %}
       <details class="cabinet-card-feedback">
         <summary>Your response to this pick</summary>
         {% comment %}Only the current backend feedback projection supplies target and per-signal revisions. No model/card prose becomes a mutation identity or a before-image.{% endcomment %}
@@ -393,7 +412,7 @@
       <div class="obtain-status" data-obtain-status data-profile-ref="{{ profile_ref }}" data-obtain-state="{{ card.obtain_action.state }}" data-obtain-verified="false" data-obtain-verification-until="{{ card.obtain_action.verification_until|date:'c'|default:card.obtain_action.verification_until|default_if_none:'' }}"{% if card.obtain_status_context %} data-obtain-job-id="{{ card.obtain_status_context.job_id }}" data-obtain-status-profile="{{ card.obtain_status_context.profile_ref }}" data-obtain-status-url="{{ card.obtain_status_context.status_url }}" data-obtain-poll-until="{{ card.obtain_status_context.poll_until|date:'c'|default:card.obtain_status_context.poll_until|default_if_none:'' }}"{% endif %}>
         <p class="obtain-status-line" role="status" aria-live="polite" aria-atomic="true"><span class="obtain-status-icon" data-obtain-icon aria-hidden="true">{% if card.obtain_action.state == 'working' %}…{% elif card.obtain_action.state == 'error' %}!{% else %}○{% endif %}</span><strong data-obtain-label>{{ card.obtain_action.label }}</strong></p>
         {% if card.obtain_action.verification_until %}<p>Verification valid until <time data-obtain-verification-time datetime="{{ card.obtain_action.verification_until|date:'c'|default:card.obtain_action.verification_until|default_if_none:'' }}">{{ card.obtain_action.verification_until }}</time>.</p>{% endif %}
-        {% if card.obtain_action.state == 'idle' and card.obtain_choose_url %}
+        {% if card.obtain_action.state == 'idle' and card.obtain_choose_url and not card.card_actions %}
         <form method="post" action="/cabinet/obtain/choose/" data-obtain-choose>{% csrf_token %}
           <input type="hidden" name="profile_ref" value="{{ profile_ref }}"><input type="hidden" name="publication_revision" value="{{ publication_revision }}"><input type="hidden" name="candidate_key" value="{{ card.candidate_key }}">
           <button type="submit" class="quiet">Choose an episode and review Obtain options</button>
@@ -404,7 +423,7 @@
         <p data-obtain-notice class="obtain-status-notice" role="status" aria-live="polite"></p>
       </div>
       {% endif %}
-      {% if card.save_list_kind %}
+      {% if card.save_list_kind and not card.card_actions %}
         {% if save_unavailable_reason %}<p role="status">{{ save_unavailable_reason }}</p>
         {% elif selection_token %}
         <form method="post" action="/cabinet/saved/save/">{% csrf_token %}
@@ -415,14 +434,14 @@
         </form>
         <p>Save keeps this item separately from enjoyment. Current source rights and attribution must still permit saving; it never starts Obtain.</p>
         {% else %}<p>Select this cabinet above before saving this item.</p>{% endif %}
-      {% elif not card.obtain_action %}<p>Save and Obtain are unavailable for this category. Its current picks remain visible.</p>{% endif %}
+      {% elif not card.obtain_action and not card.card_actions %}<p>Save and Obtain are unavailable for this category. Its current picks remain visible.</p>{% endif %}
     </article>
   {% empty %}<p>No fresh cards in this category. {{ category.status }}</p>{% endfor %}
   </div>
 </section>
 {% endif %}{% endfor %}
 {% endif %}
-{% if feedback_available %}<p class="fine-print">Your responses and notes are saved separately from Enhance. A changed response needs a fresh request preview; no collection or inference is sent automatically.</p>{% else %}<p class="fine-print">Ratings and reactions are not connected on this native page yet. No response, Save, Obtain or provider action is inferred from viewing a card.</p>{% endif %}
-{% if not read_code %}<script src="/cabinet/obtain/status.js" defer></script>{% endif %}
+{% if feedback_available or card_actions_available %}<p class="fine-print">Your responses and notes are saved separately from Enhance. A changed response needs a fresh request preview; no collection or inference is sent automatically.</p>{% else %}<p class="fine-print">Ratings and reactions are not connected on this native page yet. No response, Save, Obtain or provider action is inferred from viewing a card.</p>{% endif %}
+{% if not read_code %}<script src="/cabinet/obtain/status.js" defer></script>{% if card_actions_available %}<script src="/cabinet/actions/script.js" defer></script>{% endif %}{% endif %}
 {% endif %}
 {% endblock %}
