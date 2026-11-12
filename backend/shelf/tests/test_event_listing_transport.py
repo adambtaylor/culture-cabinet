@@ -39,6 +39,51 @@ class ListingTransportTests(TestCase):
             transport.moons24()
             self.assertEqual(send.call_args.args[0][-1],'https://24moons.com.au/events')
 
+    def test_gertrude_uses_fixed_target_and_shared_robots_listing_reservation(self):
+        with patch.object(transport, '_send', return_value=(404, b'')) as send:
+            receipt = transport.observe_robots('gertrude')
+            self.assertEqual(receipt, {'status': 404, 'allowed': True, 'delay': 10})
+            with self.assertRaises(transport.ListingIntervalPending):
+                transport.gertrude()
+        send.assert_called_once()
+        self.assertEqual(send.call_args.args[0][-1], 'https://gertrude.org.au/robots.txt')
+        with patch.object(transport, '_reserve'), patch.object(
+                transport, '_send', return_value=(200, b'HTML')) as send:
+            transport.gertrude()
+        self.assertEqual(send.call_args.args[0][-1], 'https://gertrude.org.au/exhibitions/')
+
+    def test_arts_house_fixed_routes_and_initial_gate_refuse_before_reservation(self):
+        self.assertEqual(transport.TARGETS['arts_house'], (
+            'https://www.artshouse.com.au/whats-on/',
+            'https://www.artshouse.com.au/robots.txt'))
+        access = dict(transport.LISTING_ACCESS); access['arts_house'] = False
+        with patch.object(transport, 'LISTING_ACCESS', access), \
+             patch.object(transport, '_send') as send, patch.object(transport, '_reserve') as reserve:
+            with self.assertRaises(transport.ListingPolicyUnavailable): transport.arts_house()
+            with self.assertRaises(SourceError): transport._read('unknown_source')
+        send.assert_not_called()
+        reserve.assert_not_called()
+
+    def test_arts_house_wrapper_uses_exact_listing_route_after_gate(self):
+        access = dict(transport.LISTING_ACCESS); access['arts_house'] = True
+        with patch.object(transport, 'LISTING_ACCESS', access), \
+             patch.object(transport, '_reserve') as reserve, \
+             patch.object(transport, '_send', return_value=(200, b'HTML')) as send:
+            transport.arts_house()
+        reserve.assert_called_once_with('arts_house')
+        command = send.call_args.args[0]
+        self.assertEqual(command[-1], 'https://www.artshouse.com.au/whats-on/')
+        for flag, value in (('--max-filesize', '524288'), ('--max-time', '5'),
+                            ('--retry', '0'), ('--max-redirs', '0'), ('--proxy', '')):
+            self.assertEqual(command[command.index(flag)+1], value)
+
+    def test_arts_house_policy_check_uses_robots_route_and_existing_pacing(self):
+        with patch.object(transport, '_send', return_value=(200, b'User-agent: *\nAllow: /\n')) as send:
+            receipt = transport.observe_robots('arts_house')
+        self.assertEqual(receipt, {'status': 200, 'allowed': True, 'delay': 10})
+        self.assertEqual(send.call_count, 1)
+        self.assertEqual(send.call_args.args[0][-1], 'https://www.artshouse.com.au/robots.txt')
+
     def test_refused_send_still_reserves_and_unsafe_state_never_fetches(self):
         with patch.object(transport, '_send', return_value=(403, b'CANARY')) as send:
             transport.venue303()
