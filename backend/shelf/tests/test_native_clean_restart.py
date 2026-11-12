@@ -83,7 +83,8 @@ class NativeCleanRestartTests(SimpleTestCase):
                     output+=os.read(child.stdout.fileno(),4096)
                     if kill_on_ready and b'NATIVE_CHECKPOINT_HOLD_READY' in output:
                         if concurrent_probe:
-                            self.run_child('second',expect_refusal=True)
+                            refusal=self.run_child('second',expect_refusal=True)
+                            self.assertIn('PORTABLE_ALREADY_RUNNING',refusal)
                         child.kill();break
             child.wait(timeout=5)
             output+=child.stdout.read()
@@ -159,7 +160,8 @@ class NativeCleanRestartTests(SimpleTestCase):
         locator=self.root/'.portable-clean-restart.json'
         saved=locator.read_bytes()
         locator.unlink()
-        self.run_child('second',expect_refusal=True)
+        refusal=self.run_child('second',expect_refusal=True)
+        self.assertIn('PORTABLE_START_OR_RUNTIME_REFUSED',refusal)
         self.assertEqual((self.root/'portable.sqlite3').read_bytes(),database)
         locator.write_bytes(saved);locator.chmod(0o600)
         anchor=next(v['record'] for k,v in self.store.items.items() if k[0]=='clean_restart_anchor')
