@@ -155,3 +155,142 @@ test('injected clocks retain their own receiver when scheduling and cancelling a
   gesture.down(pointer()); assert.equal(typeof clock.callback, 'function');
   gesture.cancel('escape'); assert.equal(clock.callback, null); assert.equal(clock.cleared, true); assert.equal(gesture.phase, 'idle');
 });
+
+test('confirmed slot chooses only the next unanswered enabled card in the same published category', () => {
+  const { confirmedSlotResult } = require('../../../static/cabinet/card_actions.js');
+  const ref = n => '00000000-0000-4000-8000-' + String(n).padStart(12, '0');
+  const submitted = { profile_ref: ref(1), publication_ref: ref(2), publication_revision: 1, target_ref: ref(3), command_id: ref(4), category: 'movie', action: 'like' };
+  const receipt = { profile_ref: ref(1), target_ref: ref(3), command_id: ref(4), requested_action: 'like', preference_outcome: 'committed', selected_state: 'like', interest_revision: 1, saved_revision: 0 };
+  const card = changes => ({ ...submitted, command_id: ref(5), selected_state: 'none', enabled: true, interest_revision: 0, saved_revision: 0, ...changes });
+  const saved = card({ selected_state: 'like', interest_revision: 1 });
+  const wrongCategory = card({ target_ref: ref(6), category: 'gallery' });
+  const disabled = card({ target_ref: ref(7), enabled: false });
+  const answered = card({ target_ref: ref(8), selected_state: 'favourite' });
+  const next = card({ target_ref: ref(9) });
+  assert.equal(confirmedSlotResult(submitted, receipt, [saved, wrongCategory, disabled, answered, next]).next, next);
+  assert.equal(confirmedSlotResult(submitted, receipt, [saved, wrongCategory, disabled, answered, next], new Set([ref(9)])).next, null);
+  assert.equal(confirmedSlotResult(submitted, receipt, [saved]).saved, saved);
+});
+test('receipt mismatch, stale revision or a consumed command never authorizes slot advancement', () => {
+  const { confirmedSlotResult } = require('../../../static/cabinet/card_actions.js');
+  const ref = n => '00000000-0000-4000-8000-' + String(n).padStart(12, '0');
+  const submitted = { profile_ref: ref(1), publication_ref: ref(2), publication_revision: 1, target_ref: ref(3), command_id: ref(4), category: 'movie', action: 'favourite' };
+  const receipt = { profile_ref: ref(1), target_ref: ref(3), command_id: ref(4), requested_action: 'favourite', preference_outcome: 'committed', selected_state: 'favourite', interest_revision: 1, saved_revision: 1 };
+  const saved = { ...submitted, command_id: ref(5), selected_state: 'favourite', enabled: true, interest_revision: 1, saved_revision: 1 };
+  for (const change of [{ profile_ref: ref(8) }, { target_ref: ref(8) }, { command_id: ref(8) }, { preference_outcome: 'pending' }, { selected_state: 'like' }]) assert.throws(() => confirmedSlotResult(submitted, { ...receipt, ...change }, [saved]));
+  for (const change of [{ publication_ref: ref(8) }, { publication_revision: 2 }, { command_id: ref(4) }, { saved_revision: 0 }]) assert.throws(() => confirmedSlotResult(submitted, receipt, [{ ...saved, ...change }]));
+  assert.throws(() => confirmedSlotResult(submitted, receipt, []));
+});
+
+// These responses are bounded local HTML streams, not a provider or browser.
+// Keeping the real transport function under test catches accidental replay after
+// a committed POST whose following current read cannot be confirmed.
+const slots = require('../../../static/cabinet/card_actions.js');
+const slotRef = n => '00000000-0000-4000-8000-' + String(n).padStart(12, '0');
+function slotFixture() {
+  const submitted = { profile_ref: slotRef(1), publication_ref: slotRef(2), publication_revision: 1, target_ref: slotRef(3), command_id: slotRef(4), category: 'movie', action: 'like' };
+  const data = { schema: 'card-action-refresh/v1', profileRef: slotRef(1), publicationRef: slotRef(2), publicationRevision: '1', readState: 'current', receiptPresent: 'true',
+    commandId: slotRef(4), targetRef: slotRef(3), requestedAction: 'like', preferenceOutcome: 'committed', selectedState: 'like', interestRevision: '1', savedRevision: '0', rankingState: 'feedback_pending' };
+  const marker = slots.refreshMarker(data), pageURL = 'http://localhost:4321/cabinet?profile_ref=' + slotRef(1);
+  const redirect = pageURL + '&action_receipt=' + slotRef(4);
+  const response = (url = redirect, html = 'confirmed') => {
+    const stream = new Response(html, { headers: { 'Content-Type': 'text/html; charset=utf-8' } });
+    return { status: 200, redirected: true, url, headers: stream.headers, body: stream.body };
+  };
+  return { submitted, data, marker, pageURL, redirect, response };
+}
+test('typed primitive marker rejects invalid enum, nullable pair, unsafe revisions and unowned receipt', () => {
+  const f = slotFixture();
+  for (const change of [{ schema: 'v2' }, { publicationRef: '' }, { publicationRevision: '' }, { interestRevision: '01' }, { savedRevision: '9007199254740992' }, { requestedAction: 'send' }, { rankingState: 'pending' }, { readState: 'maybe' }, { receiptPresent: 'yes' }]) assert.throws(() => slots.refreshMarker({ ...f.data, ...change }));
+  const empty = slots.refreshMarker({ ...f.data, publicationRef: '', publicationRevision: '', readState: 'unavailable', receiptPresent: 'false' });
+  assert.equal(empty.receipt, null); assert.equal(empty.publication_ref, null);
+});
+test('next eligible means subsequent server order: no wrapping, duplicate targets or foreign publication', () => {
+  const f = slotFixture(), receipt = f.marker.receipt;
+  const saved = { ...f.submitted, command_id: slotRef(5), selected_state: 'like', interest_revision: 1, saved_revision: 0, enabled: true };
+  const earlier = { ...saved, target_ref: slotRef(6), command_id: slotRef(7), selected_state: 'none', interest_revision: 0 };
+  assert.equal(slots.confirmedSlotResult(f.submitted, receipt, [earlier, saved]).next, null);
+  assert.throws(() => slots.confirmedSlotResult(f.submitted, receipt, [saved, saved]));
+  assert.throws(() => slots.confirmedSlotResult(f.submitted, receipt, [saved, { ...earlier, publication_ref: slotRef(8) }]));
+});
+test('normal save sends original body once, follows native acknowledgement and needs no contextual read', async () => {
+  const f = slotFixture(), calls = [], body = { originalFormAndChosenSubmitter: true };
+  const result = await slots.requestCardSave({ ...f, body, fetchImpl: async (...args) => { calls.push(args); return f.response(); }, parse: text => { assert.equal(text, 'confirmed'); return { marker: f.marker }; } });
+  assert.equal(calls.length, 1); assert.equal(calls[0][0], 'http://localhost:4321/cabinet/actions/');
+  assert.equal(calls[0][1].method, 'POST'); assert.equal(calls[0][1].body, body);
+  assert.equal(calls[0][1].redirect, 'follow'); assert.equal(calls[0][1].mode, 'same-origin');
+  assert.equal(calls[0][1].credentials, 'same-origin'); assert.equal(calls[0][1].cache, 'no-store');
+  assert.equal(result.receipt.command_id, f.submitted.command_id);
+});
+test('contextual read retains category, connection and run barriers with redirects forbidden and no second write', async () => {
+  const f = slotFixture(), calls = [];
+  f.pageURL += '&connection_ref=' + slotRef(8) + '&run_ref=' + slotRef(9) + '&category=movie';
+  const expected = slots.cabinetReadURL(f.pageURL, f.submitted).url;
+  const result = await slots.requestCardSave({ ...f, body: {}, fetchImpl: async (url, options) => {
+    calls.push({ url, options }); return calls.length === 1 ? f.response() : { ...f.response(url, 'context'), redirected: false };
+  }, parse: text => ({ marker: f.marker, context: text }) });
+  assert.equal(calls.length, 2); assert.equal(calls[1].url, expected); assert.equal(calls[1].options.method, 'GET');
+  assert.equal(calls[1].options.redirect, 'error'); assert.equal(result.snapshot.context, 'context');
+  assert.equal(new URL(calls[1].url).searchParams.get('run_ref'), slotRef(9));
+});
+test('failed read after owned receipt remains recorded while a dropped POST response stays unknown; neither retries', async () => {
+  for (const confirmed of [false, true]) {
+    const f = slotFixture(); let count = 0;
+    if (confirmed) f.pageURL += '&category=movie';
+    await assert.rejects(slots.requestCardSave({ ...f, body: {}, fetchImpl: async () => {
+      count++; if (confirmed && count === 1) return f.response(); throw Error('lost transport');
+    }, parse: () => ({ marker: f.marker }) }), error => error.recorded === confirmed && error.refused === false);
+    assert.equal(count, confirmed ? 2 : 1);
+  }
+});
+test('wrong final redirect, mismatched receipt and explicit authority refusal never deliver a replacement', async () => {
+  const f = slotFixture();
+  for (const response of [f.response('https://other.invalid/cabinet'), f.response(f.redirect + '&category=movie'), { ...f.response(), status: 403 }]) {
+    let count = 0;
+    await assert.rejects(slots.requestCardSave({ ...f, body: {}, fetchImpl: async () => { count++; return response; }, parse: () => ({ marker: f.marker }) }), error => !error.recorded && error.refused);
+    assert.equal(count, 1);
+  }
+  await assert.rejects(slots.requestCardSave({ ...f, body: {}, fetchImpl: async () => f.response(), parse: () => ({ marker: { ...f.marker, receipt: { ...f.marker.receipt, target_ref: slotRef(8) } } }) }), error => !error.recorded);
+});
+test('current contextual refusal preserves recorded acknowledgement and conceals protected old content', async () => {
+  const f = slotFixture(); f.pageURL += '&category=movie'; let count = 0;
+  await assert.rejects(slots.requestCardSave({ ...f, body: {}, fetchImpl: async () => ++count === 1 ? f.response() : { ...f.response(), status: 409 }, parse: () => ({ marker: f.marker }) }), error => error.recorded && error.refused);
+  assert.equal(count, 2);
+});
+test('unexpected context is refused before any write, including duplicate or foreign profile parameters', async () => {
+  const f = slotFixture();
+  for (const suffix of ['&unknown=yes', '&profile_ref=' + slotRef(1), '&run_ref=not-a-uuid']) {
+    let count = 0;
+    await assert.rejects(slots.requestCardSave({ ...f, pageURL: f.pageURL + suffix, body: {}, fetchImpl: async () => { count++; return f.response(); }, parse: () => ({ marker: f.marker }) }));
+    assert.equal(count, 0);
+  }
+});
+test('bounded HTML reader rejects content type, declared and streamed oversize, invalid UTF8 and releases cancelled stream', async () => {
+  await assert.rejects(slots.boundedSlotHTML(new Response('{}', { headers: { 'Content-Type': 'application/json' } })));
+  await assert.rejects(slots.boundedSlotHTML(new Response('', { headers: { 'Content-Type': 'text/html', 'Content-Length': String(2 * 1024 * 1024 + 1) } })));
+  await assert.rejects(slots.boundedSlotHTML(new Response(new Uint8Array([0xff]), { headers: { 'Content-Type': 'text/html' } })));
+  let cancelled = false, released = false;
+  const oversized = { headers: new Headers({ 'Content-Type': 'text/html' }), body: { getReader: () => ({ read: async () => ({ value: new Uint8Array(2 * 1024 * 1024 + 1), done: false }), cancel: async () => { cancelled = true; }, releaseLock: () => { released = true; } }) } };
+  await assert.rejects(slots.boundedSlotHTML(oversized)); assert.equal(cancelled, true); assert.equal(released, true);
+  assert.equal(await slots.boundedSlotHTML(new Response('safe', { headers: { 'Content-Type': 'text/html' } })), 'safe');
+});
+
+test('designated current fragments reject executable nodes, event attributes, arbitrary forms and unavailable reads', () => {
+  const f = slotFixture();
+  function fragment(overrides = {}) {
+    return { attributes: [], querySelector: () => null, querySelectorAll: () => [], hasAttribute: () => false, ...overrides };
+  }
+  const status = fragment(), deck = fragment();
+  function snapshot(statusNode = status, deckNode = deck) {
+    return { marker: f.marker, doc: { querySelectorAll: selector => selector === '[data-card-current-status]' ? [statusNode] : selector === '[data-card-current-deck]' ? [deckNode] : [] } };
+  }
+  assert.equal(slots.currentSlotView(snapshot(), 'http://localhost:4321', new Set()).deck, deck);
+  assert.throws(() => slots.currentSlotView(snapshot(status, fragment({ querySelector: () => ({ tagName: 'SCRIPT' }) })), 'http://localhost:4321', new Set()));
+  assert.throws(() => slots.currentSlotView(snapshot(fragment({ attributes: [{ name: 'onclick' }] })), 'http://localhost:4321', new Set()));
+  const arbitrary = { hasAttribute: () => false, getAttribute: () => '/other-write/' };
+  assert.throws(() => slots.currentSlotView(snapshot(status, fragment({ querySelectorAll: selector => selector === 'form' ? [arbitrary] : [] })), 'http://localhost:4321', new Set()));
+  const unavailable = snapshot(); unavailable.marker = { ...f.marker, read_state: 'unavailable' };
+  assert.throws(() => slots.currentSlotView(unavailable, 'http://localhost:4321', new Set()), error => error.refused && error.recorded);
+  const duplicate = snapshot(); duplicate.doc.querySelectorAll = () => [status, deck];
+  assert.throws(() => slots.currentSlotView(duplicate, 'http://localhost:4321', new Set()));
+});
