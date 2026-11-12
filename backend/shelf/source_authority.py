@@ -26,6 +26,7 @@ MUSICBRAINZ = 'musicbrainz_recording'
 MUSICBRAINZ_ARTIST = 'musicbrainz_artist'
 MUSICBRAINZ_SOURCES = (MUSICBRAINZ, MUSICBRAINZ_ARTIST)
 APPLE_PODCAST = 'apple_podcast'
+GALLERIES = ('apw','gertrude')
 BUILD = 'moshtix-fixed-v1'
 ORIGIN = 'https://api.moshtix.com'
 PATH = '/v1/graphql'
@@ -45,10 +46,18 @@ NATIVE_SETUP = {
     'tmdb_movie': ('movie', 'TMDB movies', '/cabinet/source/tmdb/movie'),
     'tmdb_tv': ('tv', 'TMDB television', '/cabinet/source/tmdb/tv'),
     APPLE_PODCAST: ('podcast_episode', 'Apple Podcasts episodes', '/cabinet/source/apple/podcasts'),
+    'apw': ('gallery','Australian Print Workshop','/cabinet/source/gallery/apw'),
+    'gertrude': ('gallery','Gertrude Contemporary','/cabinet/source/gallery/gertrude'),
 }
 
 
 def source_identity(adapter):
+    if adapter in GALLERIES:
+        from .gallery_transport import GalleryOperation
+        spec=registered_source(adapter);operation=GalleryOperation(adapter)
+        require(spec.origin==operation.material['origin'] and spec.categories==('gallery',)
+            and spec.operations==(adapter,) and spec.credential_required is False,'CAPABILITY_UNAVAILABLE')
+        return operation.material['build'],spec.origin,operation.material['path']
     if adapter == APPLE_PODCAST:
         from .apple_podcast_native import CATEGORY, OPERATION, ORIGIN as APPLE_ORIGIN, PATH as APPLE_PATH
         spec = registered_source(adapter)
@@ -82,14 +91,14 @@ class SourceRights:
 
     def validate(self, now):
         require(type(self.policy) is FieldPolicy and self.policy.current(now), 'AUTHORITY_DENIED')
-        require(self.source in ('moshtix', APPLE_PODCAST, *MUSICBRAINZ_SOURCES)
+        require(self.source in ('moshtix', APPLE_PODCAST, *MUSICBRAINZ_SOURCES,*GALLERIES)
                 or self.source in MEDIA, 'AUTHORITY_DENIED')
         require(type(self.revision) is int and 0 <= self.revision < 2**53)
         for value in (self.terms_ref, self.privacy_ref, self.locale_ref):
             require(type(value) is str and 0 < len(value) <= 300, 'AUTHORITY_DENIED')
         require(self.processor_ref is None or type(self.processor_ref) is str
                 and 0 < len(self.processor_ref) <= 300, 'AUTHORITY_DENIED')
-        if self.source in (*MUSICBRAINZ_SOURCES, APPLE_PODCAST):
+        if self.source in (*MUSICBRAINZ_SOURCES, APPLE_PODCAST,*GALLERIES):
             # MusicBrainz additionally validates its required public contact.
             # Apple has no contact header; this inert evidence label cannot
             # select a destination or authorize either source's request.
@@ -146,7 +155,7 @@ def _connection_metadata(authority, session_ref, connection_ref):
     ga._require(row.model == row.reasoning == '' and row.credential_generation >= 0
                 and row.validation_generation == 0, 'CAPABILITY_UNAVAILABLE', 503)
     build, origin, path = source_identity(row.adapter)
-    if row.adapter in (*MUSICBRAINZ_SOURCES, APPLE_PODCAST):
+    if row.adapter in (*MUSICBRAINZ_SOURCES, APPLE_PODCAST,*GALLERIES):
         ga._require(row.credential_generation == 0, 'CAPABILITY_UNAVAILABLE', 503)
     description = {'usable_until': ga._end(authority, session), 'configured': True}
     if row.adapter in MEDIA:
@@ -158,7 +167,7 @@ def _connection_metadata(authority, session_ref, connection_ref):
                     'CREDENTIAL_REQUIRED', 503)
     config = {'schema': 'source-configuration/v1', 'adapter': row.adapter, 'build': build,
         'origin': origin, 'path': path, 'locale': 'VIC' if row.adapter == ADAPTER else '',
-        'credential_mode': 'none' if row.adapter in (ADAPTER, APPLE_PODCAST, *MUSICBRAINZ_SOURCES) else 'session-memory-bearer',
+        'credential_mode': 'none' if row.adapter in (ADAPTER, APPLE_PODCAST, *MUSICBRAINZ_SOURCES,*GALLERIES) else 'session-memory-bearer',
         'config_revision': row.config_revision, 'credential_generation': row.credential_generation}
     binding = {**config, 'installation_id': str(installation.pk), 'owner_id': session.owner_id,
         'owner_revision': session.owner_revision, 'process_generation': str(authority.boundary.process_generation),
@@ -225,6 +234,11 @@ class SourceAuthority(SourceAuthorityIssuer):
 
     def operation_template(self):
         source = self.source_key()
+        if source in GALLERIES:
+            from .gallery_transport import GalleryOperation
+            # Preview and plan freshness bind both fixed access phases, including
+            # the authentic robots-cache condition. No artist/query URL is made.
+            return GalleryOperation(source).material
         if source == APPLE_PODCAST:
             from .apple_podcast_native import apple_podcast_template
             return apple_podcast_template()
@@ -324,6 +338,10 @@ class SourceAuthority(SourceAuthorityIssuer):
                 elif source == APPLE_PODCAST:
                     from .apple_podcast_native import apple_podcast_operation
                     operation = apple_podcast_operation(request)
+                elif source in GALLERIES:
+                    from .gallery_transport import GalleryOperation
+                    require(request.operation==source and not request.terms and not request.ids,'AUTHORITY_DENIED')
+                    operation=GalleryOperation(source)
                 else:
                     from .provider_catalogue import media_operation
                     operation = media_operation(request)

@@ -344,3 +344,29 @@ class SavedCredentialTests(NativeFeedbackCase):
             HTTP_X_CSRFTOKEN=self.csrf(),**self.headers)
         self.assertEqual(response.status_code,422)
         self.assertEqual(len(self.store.calls),before)
+
+    def test_normal_persistent_source_save_replace_remove_retains_zero_validation_generation(self):
+        from shelf.source_authority import configure_source,_connection_metadata
+        from shelf.models import PortableConnection
+        connection=configure_source(self.authority,self.ref,confirmed=True,adapter='tmdb_movie')
+        row=PortableConnection.objects.get(pk=connection)
+        fields=dict(profile_ref=self.profile_ref,connection_ref=connection,revision='1',
+                    secret=self.dummy,storage='persistent')
+        self.assertEqual(self.post('/cabinet/source/tmdb/movie/credential',fields).status_code,303)
+        row.refresh_from_db();self.assertEqual((row.credential_generation,row.validation_generation),(1,0))
+        _connection_metadata(self.authority,self.ref,connection)
+        self.assertEqual(self.post('/cabinet/source/tmdb/movie/credential',{**fields,'secret':self.dummy+'2'}).status_code,303)
+        row.refresh_from_db();self.assertEqual((row.credential_generation,row.validation_generation),(2,0))
+        self.assertEqual(self.service.vault.resolve(self.ref,row.pk,1),(self.dummy+'2').encode())
+        self.service.vault.remove(self.ref,row.pk,1)
+        row.refresh_from_db();self.assertEqual((row.credential_generation,row.validation_generation),(3,0))
+        self.assertTrue(SavedCredentialBinding.objects.get(pk=row.pk).removed)
+        self.assertEqual(self.fake.calls,1)  # Only preexisting neutral fixture.
+
+    def test_model_saved_replacement_still_invalidates_model_validation_generation(self):
+        self.config.refresh_from_db()
+        before=self.config.validation_generation
+        self.save();self.config.refresh_from_db()
+        self.assertEqual(self.config.validation_generation,before+1)
+        self.service.vault.remove(self.ref,self.config.pk,1);self.config.refresh_from_db()
+        self.assertEqual(self.config.validation_generation,before+2)

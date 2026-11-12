@@ -186,3 +186,9 @@ class NativeCleanRestartTests(SimpleTestCase):
         anchor=next(v['record'] for k,v in self.store.items.items() if k[0]=='clean_restart_anchor')
         self.assertEqual(anchor['state'],'ACTIVE')
         self.run_child('second',expect_refusal=True)
+
+    def test_native_clean_restart_expires_policy_history_without_restoring_content_or_attempts(self):
+        self.run_child('first-selection')
+        output=self.run_child('second-selection')
+        self.assertIn('EXACT_POLICY_OR_LEGACY_EMPTY',output)
+        self.assertEqual(self.store.credential_puts,1)

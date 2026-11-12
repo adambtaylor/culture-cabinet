@@ -112,6 +112,41 @@ class EphemeralDatabaseTests(TestCase):
 
 @override_settings(ALLOWED_HOSTS=["testserver"])
 class AssetBoundaryTests(SimpleTestCase):
+    def test_card_connect_policy_requires_exact_successful_bound_cabinet_document(self):
+        from types import SimpleNamespace
+        from django.http import HttpResponse
+        from django.test import RequestFactory
+        from cabinet.portable_boundary import PortableSecurityMiddleware
+        from shelf import enhancement_views,portable_obtain_views,portable_journey_views
+        origin='http://127.0.0.1:45678'
+        boundary=SimpleNamespace(active=True,origin=origin,session_cookie='owned_session',csrf_cookie='owned_csrf')
+        with self.settings(PORTABLE_AUTHORITY=SimpleNamespace(boundary=boundary),
+                ROOT_URLCONF='cabinet.portable_urls',SESSION_COOKIE_NAME='owned_session',
+                CSRF_COOKIE_NAME='owned_csrf',SESSION_COOKIE_DOMAIN=None,CSRF_COOKIE_DOMAIN=None,
+                SESSION_COOKIE_HTTPONLY=True,CSRF_COOKIE_HTTPONLY=True,SESSION_COOKIE_SAMESITE='Strict',
+                CSRF_COOKIE_SAMESITE='Strict',SESSION_COOKIE_SECURE=False,CSRF_COOKIE_SECURE=False):
+            cases=[('portable_cabinet',enhancement_views.portable_cabinet,200,'text/html','GET',True),
+                   ('portable_obtain_job',portable_obtain_views.job_page,200,'text/html','GET',False),
+                   ('portable_journey',portable_journey_views.page,200,'text/html','GET',False),
+                   ('portable_cabinet',lambda request:None,200,'text/html','GET',False),
+                   ('portable_cabinet',enhancement_views.portable_cabinet,403,'text/html','GET',False),
+                   ('portable_cabinet',enhancement_views.portable_cabinet,200,'application/json','GET',False),
+                   ('portable_cabinet',enhancement_views.portable_cabinet,200,'text/html','POST',False)]
+            for name,handler,status,mime,method,allowed in cases:
+                with self.subTest(name=name,status=status,mime=mime,method=method):
+                    request=RequestFactory().generic(method,'/cabinet',HTTP_HOST=origin[7:],HTTP_ORIGIN=origin)
+                    request.resolver_match=SimpleNamespace(url_name=name,func=handler)
+                    response=PortableSecurityMiddleware(lambda req:HttpResponse('',status=status,content_type=mime))(request)
+                    policy=response['Content-Security-Policy']
+                    connects=next((v.strip().split()[1:] for v in policy.split(';') if v.strip().startswith('connect-src ')),[])
+                    self.assertEqual(origin+'/cabinet/actions/' in connects,allowed)
+                    self.assertEqual(origin+'/cabinet' in connects,allowed)
+                    self.assertNotIn("'unsafe-inline'",policy)
+                    self.assertNotIn("'unsafe-eval'",policy)
+                    if allowed:
+                        self.assertEqual(connects,[origin+'/cabinet/obtain/jobs/',origin+'/cabinet/actions/',origin+'/cabinet'])
+                        self.assertIn("worker-src 'none'",policy)
+
     def test_local_asset_bytes_work_but_adjacent_secret_traversal_and_symlink_do_not(self):
         secret = "FICTIONAL-ASSET-BOUNDARY-CANARY-428"
         # Disposable fixtures use the invocation's temporary directory (TMPDIR).

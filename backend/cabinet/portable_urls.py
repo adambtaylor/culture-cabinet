@@ -1,5 +1,6 @@
 """Separate portable URLconf; legacy entrypoints keep their original routes."""
 from django.urls import path
+from shelf import portable_taste_history_views as taste_history
 from shelf import portable_setup_views as views
 from shelf import portable_connection_views as connections
 from shelf import onboarding_experience_views as experience
@@ -7,8 +8,27 @@ from shelf import enhancement_views as enhance
 from shelf import portable_obtain_views as obtain
 from shelf import portable_source_views as sources
 from shelf import portable_feedback_views as feedback
+from shelf import card_action_views as card_actions
+from shelf import portable_journey_views as journey
 
 urlpatterns = [
+    path('setup/journey', journey.page, name='portable_journey'),
+    path('cabinet/journey/name', journey.name),
+    path('cabinet/journey/step', journey.step),
+    path('cabinet/journey/prepare', journey.prepare),
+    path('cabinet/journey/location', journey.location),
+    path('cabinet/journey/favourites/add', journey.favourite),
+    path('cabinet/journey/favourites/remove', journey.favourite, {'remove': True}),
+    *[path('cabinet/journey/providers/' + provider + '/' + operation, journey.provider,
+        {'provider_id': provider, 'operation': operation})
+        for provider in ('openai', 'tmdb', 'hardcover', 'musicbrainz', 'apple')
+        for operation in ('configure', 'save', 'test')],
+    path('cabinet/actions/style.css', card_actions.style, name='portable_card_style'),
+    path('cabinet/actions/script.js', card_actions.script, name='portable_card_script'),
+    path('setup/journey/style.css', card_actions.journey_style, name='portable_journey_style'),
+    path('cabinet/actions/', card_actions.action, name='portable_card_action'),
+    path('cabinet/actions/undo/', card_actions.undo, name='portable_card_undo'),
+    path('cabinet/actions/<uuid:command_id>/', card_actions.receipt, name='portable_card_receipt'),
     path('setup/cabinet', views.cabinet_entry),
     path('setup/cabinet/create', views.create_cabinet),
     path('setup/cabinet/bind', views.bind_cabinet),
@@ -31,6 +51,12 @@ urlpatterns = [
     path('cabinet/source/musicbrainz/artist/configure', sources.musicbrainz_artist_configure),
     path('cabinet/source/musicbrainz/artist/consent', sources.musicbrainz_artist_consent),
     path('cabinet/taste/artist', sources.artist),
+    path('cabinet/taste/history', taste_history.page),
+    path('cabinet/taste/history/style.css', taste_history.style),
+    path('cabinet/taste/history/preview', taste_history.preview),
+    path('cabinet/taste/history/restore', taste_history.restore),
+    path('cabinet/taste/history/undo', taste_history.undo),
+    path('cabinet/taste/history/<uuid:checkpoint_ref>', taste_history.compare),
     path('cabinet/taste', feedback.intake),
     path('cabinet/feedback', feedback.card_mutate),
     path('cabinet/consent', enhance.portable_inference_consent),
@@ -89,6 +115,11 @@ for suffix, handler in (('', sources.source_page), ('/configure', sources.source
                         ('/consent', sources.source_consent)):
     urlpatterns.append(path('cabinet/source/apple/podcasts' + suffix, handler,
                             {'adapter': 'apple_podcast'}))
+
+for adapter in ('apw','gertrude'):
+    for suffix,handler in (('',sources.source_page),('/configure',sources.source_configure),
+                           ('/consent',sources.source_consent)):
+        urlpatterns.append(path('cabinet/source/gallery/'+adapter+suffix,handler,{'adapter':adapter}))
 
 for adapter, page in (('hardcover', 'hardcover'), ('tmdb_movie', 'tmdb/movie'), ('tmdb_tv', 'tmdb/tv')):
     for suffix, handler in (('', sources.source_page), ('/configure', sources.source_configure),

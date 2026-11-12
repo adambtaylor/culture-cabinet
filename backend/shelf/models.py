@@ -714,10 +714,51 @@ def register_closed_sql_guards(raw):
     """
     raw.create_function('cabinet_disclosure_write', 0, lambda: 0)
     raw.create_function('cabinet_content_digest', -1, _content_digest)
+    raw.create_function('cabinet_redacted_selection', 1, _redacted_selection_sql)
+    raw.create_function('cabinet_redacted_selection_valid', 2, _redacted_selection_valid_sql)
+    raw.create_function('cabinet_selection_valid', 7, _selection_valid_sql)
+    raw.create_function('cabinet_selection_field_equal', 3, _selection_field_equal_sql)
     raw.create_function('cabinet_saved_lineage_valid', 1, _saved_lineage_valid)
     raw.create_function('cabinet_obtain_origin_valid', 1, _obtain_origin_valid)
     raw.create_function('cabinet_obtain_scope_valid', 1, _obtain_scope_valid)
     raw.create_function('cabinet_obtain_write', 2, lambda actor, profile: 0)
+
+
+
+def _selection_json(raw):
+    from .disclosure import read_json
+    if type(raw) is not str:raise ValueError('Closed JSON required')
+    return read_json(raw.encode('utf-8'))
+
+
+def _redacted_selection_sql(raw):
+    from .enhance_selection import redacted_selection_evidence
+    from .disclosure import canonical_bytes
+    return canonical_bytes(redacted_selection_evidence(_selection_json(raw))).decode('utf-8')
+
+
+def _redacted_selection_valid_sql(old,new):
+    from .enhance_selection import redacted_selection_evidence
+    try:return int(_selection_json(new)==redacted_selection_evidence(_selection_json(old)))
+    except (ValueError,TypeError,KeyError):return 0
+
+
+def _selection_valid_sql(evidence,record,refresh,input_digest,run_ref,collection,redacted):
+    from .enhance_selection import validate_selection_history
+    try:
+        if type(redacted) is not int or redacted not in (0,1):return 0
+        validate_selection_history(_selection_json(record),_selection_json(evidence),input_digest=input_digest,
+            refresh_nonce=refresh,run_ref=run_ref,collection_digest=collection,redacted=bool(redacted))
+        return 1
+    except (ValueError,TypeError,KeyError):return 0
+
+
+def _selection_field_equal_sql(old,new,key):
+    try:
+        if key not in ('selection_seed','selection_policy_digest','selection_report'):return 0
+        old,new=_selection_json(old),_selection_json(new)
+        return int((key in old)==(key in new) and old.get(key)==new.get(key))
+    except (ValueError,TypeError,KeyError):return 0
 
 
 def _obtain_origin_valid(raw):
@@ -806,3 +847,63 @@ def _content_digest(*parts):
 from django.db.backends.signals import connection_created
 connection_created.connect(_closed_enhance_write_guard, weak=False,
                            dispatch_uid='cabinet.closed_enhance_write_guard')
+
+
+class PortableJourneyState(models.Model):
+    """Resumable nonsecret progress; preferences remain in typed feedback."""
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, serialize=False)
+    cabinet = models.OneToOneField(ProfileCabinetState, on_delete=models.PROTECT)
+    revision = models.PositiveBigIntegerField(default=1)
+    step = models.CharField(max_length=16, default='providers')
+    completed = models.JSONField(default=list)
+    skipped = models.JSONField(default=list)
+    slots = models.JSONField(default=dict)
+    connections = models.JSONField(default=dict)
+    run_ref = models.UUIDField(null=True)
+    home_country = models.CharField(max_length=2, null=True)
+    home_postcode = models.CharField(max_length=4, null=True)
+    radius_km = models.PositiveSmallIntegerField(null=True)
+    location_revision = models.PositiveBigIntegerField(default=0)
+    next_noise = models.PositiveSmallIntegerField(default=25)
+    created_at = models.DateTimeField()
+    updated_at = models.DateTimeField()
+
+    class Meta:
+        constraints = [
+            models.CheckConstraint(condition=(models.Q(home_country__isnull=True,
+                home_postcode__isnull=True,radius_km__isnull=True) | models.Q(home_country='AU',
+                home_postcode__isnull=False,radius_km__isnull=False,radius_km__gte=1,radius_km__lte=500)),name='journey_local_setting'),
+            models.CheckConstraint(condition=models.Q(next_noise__lte=100),name='journey_noise_range'),
+        ]
+
+
+class PortableJourneyCommand(models.Model):
+    """Replay/transition metadata, never another preference or source store."""
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, serialize=False)
+    cabinet = models.ForeignKey(ProfileCabinetState, on_delete=models.PROTECT)
+    command_id = models.UUIDField()
+    kind = models.CharField(max_length=40)
+    descriptor = models.JSONField()
+    descriptor_digest = models.CharField(max_length=64)
+    state = models.CharField(max_length=16)
+    result = models.JSONField(default=dict)
+    proof = models.JSONField(default=dict)
+    created_at = models.DateTimeField()
+
+    class Meta:
+        constraints = [models.UniqueConstraint(fields=['cabinet', 'command_id'],
+                                               name='journey_owner_command')]
+
+
+class PortableSourceCheckAttempt(models.Model):
+    """One explicit fixed nonpersonal source check; history is not live proof."""
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, serialize=False)
+    cabinet = models.ForeignKey(ProfileCabinetState, on_delete=models.PROTECT)
+    connection = models.ForeignKey(PortableConnection, on_delete=models.PROTECT)
+    command = models.OneToOneField(PortableJourneyCommand, on_delete=models.PROTECT)
+    binding = models.JSONField()
+    operation_digest = models.CharField(max_length=64)
+    state = models.CharField(max_length=16)
+    outcome = models.JSONField(default=dict)
+    created_at = models.DateTimeField()
+    expires_at = models.DateTimeField()
