@@ -1,4 +1,4 @@
-<article class="paper-panel" id="catalogue-card-{{ row.card.key }}" data-feedback-card data-card-key="{{ row.card.key }}" tabindex="-1">
+<article class="paper-panel{% if row.reference_only %} event-reference-card{% endif %}" id="catalogue-card-{{ row.card.key }}" data-feedback-card data-card-key="{{ row.card.key }}" tabindex="-1">
   {% if row.reference_only %}
   {% comment %}The caller separately checks saved_reference against current policy, restrictions, mode and occurrence identity. Never backfill this link from Candidate.url or treat a retained identity as fresh source evidence or a recommendation.{% endcomment %}
   <p class="eyebrow">Saved event identity</p>
@@ -64,7 +64,8 @@
   {% else %}<p>Deep-dive link unavailable for this {% if mode == 'sample' %}fixture{% else %}identity{% endif %}.</p>{% endif %}
   {% if row.card.kind == 'recording' %}<p>Listening link unavailable — source identity is not licensed audio or verified playback.</p>{% endif %}
   {% endif %}
-  {% if row.choice %}<p>Your current response: {{ row.choice }}. Respond again to correct it.</p>{% endif %}
+  {% comment %}Humanize this saved response label only; native choices and stored history keep their original machine value.{% endcomment %}
+  {% if row.choice %}<p>Your current response: {% if row.reference_only and row.choice == 'mildly_interested' %}Mildly interested{% else %}{{ row.choice }}{% endif %}. Respond again to correct it.</p>{% endif %}
   {% if row.saved %}<p>Saved locally for later; this is not enjoyment or a listen.</p>{% endif %}
   {% if available %}
   {% if not row.reference_only and queue != 'artist' and mode == 'household' and row.card.kind == 'artist' and row.card.provenance == 'manual-attributed' and row.card.key|slice:':19' == 'musicbrainz:artist:' %}

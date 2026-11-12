@@ -61,7 +61,7 @@ class EventReferenceIntegrationTests(TestCase):
         self.assertEqual(len(parser.forms),2)
         return parser.forms
 
-    def _flow(self, *, permitted_fixture):
+    def _flow(self, *, permitted_fixture, choice='intrigued'):
         self.client=Client(enforce_csrf_checks=True);self.client.force_login(self.actor)
         session=self.client.session;session['selected_profile_id']=1;session.save()
         with ExitStack() as stack:
@@ -98,11 +98,11 @@ class EventReferenceIntegrationTests(TestCase):
             else:
                 self.assertContains(page,'No checked source link is available.')
             response=next(form for form in self._forms(page,key)
-                          if ('choice','intrigued') in form['buttons'])
+                          if ('choice',choice) in form['buttons'])
             self.assertEqual(response['attrs']['method'],'post')
             self.assertNotIn('data-feedback-form',response['attrs'])
             self.assertNotIn('data-feedback-correction',response['attrs'])
-            payload=response['fields']|{'choice':'intrigued'}
+            payload=response['fields']|{'choice':choice}
             self.assertEqual(payload['operation'],'respond')
             for field in ('saved_reference','official_url','occurrence_ref','retention_policy_ref'):
                 self.assertNotIn(field,payload)
@@ -117,14 +117,26 @@ class EventReferenceIntegrationTests(TestCase):
             state=DiscoveryState.objects.get()
             self.assertEqual(len(state.history),2)
             self.assertNotIn('saved_reference',state.history[-1])
-            self.assertEqual(replay(state.history)['choices'][key],'intrigued')
+            self.assertEqual(replay(state.history)['choices'][key],choice)
             self.assertIn(key,replay(state.history)['saved'])
+            if choice == 'mildly_interested':
+                # Render the first real saved response and then its ordinary
+                # reload; the label must not rewrite the stored choice token.
+                initial = self.client.get(self.url)
+                reloaded = self.client.get(self.url)
+                for rendered in (initial, reloaded):
+                    self.assertContains(rendered, 'Your current response: Mildly interested.')
+                    self.assertNotContains(rendered, 'Your current response: mildly_interested.')
+                    current = next(row for row in rendered.context['responses'] if row['card'].key == key)
+                    self.assertEqual(current['choice'], 'mildly_interested')
+                    self.assertTrue(current['reference_only'])
+                    self.assertContains(rendered, 'class="paper-panel event-reference-card"')
             fresh=Client(enforce_csrf_checks=True);fresh.force_login(self.actor)
             session=fresh.session;session['selected_profile_id']=1;session.save()
             page=fresh.get(self.url)
             row=next(row for row in page.context['responses'] if row['card'].key==key)
             self.assertTrue(row['reference_only'] and row['saved'])
-            self.assertEqual(row['choice'],'intrigued')
+            self.assertEqual(row['choice'],choice)
             self.assertEqual(row['saved_reference'] is not None,permitted_fixture)
             unsave=next(form for form in self._forms(page,key) if ('operation','unsave') in form['buttons'])
             self.assertEqual(fresh.post(unsave['attrs']['action'],
@@ -140,6 +152,9 @@ class EventReferenceIntegrationTests(TestCase):
 
     def test_checked_reference_native_form_response_after_expiry_and_fresh_session(self):
         self._flow(permitted_fixture=True)
+
+    def test_saved_pbs_mild_interest_label_is_readable_on_initial_get_and_reload(self):
+        self._flow(permitted_fixture=True, choice='mildly_interested')
 
     def test_production_opaque_native_form_response_after_expiry_and_fresh_session(self):
         self._flow(permitted_fixture=False)
