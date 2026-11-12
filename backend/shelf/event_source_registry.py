@@ -75,9 +75,24 @@ def _moshtix(now):
     return events(now)  # Accepted one-row normal query, not the nine-row helper.
 
 
+def _bar_open(now):
+    from shelf.event_listing_transport import bar_open
+    return bar_open()
+
+
+def _west_space(now):
+    from shelf.event_listing_transport import west_space
+    return west_space()
+
+
 def _moons24(now):
     from shelf.event_listing_transport import moons24
     return moons24()
+
+
+def _my_aeon(now):
+    from shelf.event_listing_transport import my_aeon
+    return my_aeon()
 
 
 def _parse_rrr(raw, *, now, retrieved_at):
@@ -105,8 +120,23 @@ def _parse_moshtix(raw, *, now, retrieved_at):
     return parse_public_event_response(raw, now=now, retrieved_at=retrieved_at)
 
 
+def _parse_bar_open(raw, *, now, retrieved_at):
+    from shelf.bar_open_events import parse_listing
+    return parse_listing(raw, retrieved_at=retrieved_at)
+
+
+def _parse_west_space(raw, *, now, retrieved_at):
+    from shelf.west_space_events import parse_listing
+    return parse_listing(raw, retrieved_at=retrieved_at)
+
+
 def _parse_moons24(raw, *, now, retrieved_at):
     from shelf.moons24_events import parse_listing
+    return parse_listing(raw, retrieved_at=retrieved_at)
+
+
+def _parse_my_aeon(raw, *, now, retrieved_at):
+    from shelf.my_aeon_events import parse_listing
     return parse_listing(raw, retrieved_at=retrieved_at)
 
 
@@ -172,18 +202,50 @@ def _descriptor(row):
         'moshtix': (_moshtix, _parse_moshtix, 131072,
                 'Partial Moshtix coverage: one public event in VIC within eight weeks; '
                 'status and ticket availability unverified.'),
+        'bar_open': (_bar_open, _parse_bar_open, 524288,
+                'Partial Bar Open coverage: the official Make It Up Club page only; '
+                'venue-wide dated inventory is unverified.'),
+        'west_space': (_west_space, _parse_west_space, 524288,
+                'Partial West Space coverage: one programme index, up to nine overlapping/current '
+                'or next-eight-week runs. A date range is not an opening, daily hours or a confirmed session.'),
         'moons24': (_moons24, _parse_moons24, 524288,
                 'Partial 24 Moons coverage: current-week plus later programme, up to nine leads '
                 'within eight weeks. Unknown dates remain unverified; source links open the '
                 'programme, not an exact session or a checked seller.'),
+        'my_aeon': (_my_aeon, _parse_my_aeon, 524288,
+                'Partial My Aeon coverage: one official listing, up to nine leads; known dates limited '
+                'to eight weeks. Date-only labels are not show times; unknown dates and ticket '
+                'availability remain unverified.'),
     }
     if source_id in active:
         acquire, parse, limit, coverage = active[source_id]
+        missing = {
+            'bar_open': ('The official page is reachable, but this reader cannot establish a dated programme. '
+                'A weekly recurrence is not a confirmed next event. Check the official source for details.'),
+            'my_aeon': ('The official listing supplies no supported current leads in this page. '
+                'Old years are not rolled forward; this is not proof that no upcoming events exist. '
+                'Check the official source for the current programme.'),
+            'west_space': ('No supported current or next-eight-week programme run was established '
+                'on this page; this is not proof of no events.'),
+        }
         return EventSourceDescriptor(**common, acquire=acquire, parse=parse, coverage=coverage,
             access_state='access-unverified' if source_id == 'forum' else 'implemented-unproved',
+            unavailable_message=missing.get(source_id,'This source is not connected yet.'),
             max_bytes=limit, retention_seconds=900,
             policy_scope='Existing bounded factual-link scope only; no model or redistribution grant.')
     blocked = {
+        'affordable_art_fair': ('permission-required',
+            'The official access-policy request was refused; no fair listing was fetched. '
+            'Current Melbourne fair dates and sessions remain unverified.'),
+        'improv_conspiracy': ('not-implemented',
+            'A current readable programme and the advertised Performance Calendar target '
+            'have not been established for this reader. No shows or sessions are confirmed.'),
+        'triple_j': ('permission-required',
+            'ABC publishes AI-agent access restrictions. A permitted acquisition route for this '
+            'session is not established; no Triple J listing was fetched.'),
+        'double_j': ('permission-required',
+            'ABC publishes AI-agent access restrictions. A permitted acquisition route for this '
+            'session is not established; no Double J listing or news page was fetched.'),
         'halftix': ('permission-required', 'Publisher permission for retrieval and storage is required; open the official link manually.'),
         'la_sirene': ('owner-action-required', 'A permitted, witnessed visual observation is needed; no public posts are available to this reader.'),
         'hamer_hall': ('access-unverified', 'The official programme reached a waiting room; no bypass or alternate route is attempted.'),
@@ -203,13 +265,26 @@ def get_source(source_id):
     return SOURCES[source_id]
 
 
-def source_cache_key(source_id):
+def source_route(source_id, event_route=''):
+    """Only NGV has two fixed event indexes; routes never contain URLs."""
+    get_source(source_id)
+    if source_id == 'ngv':
+        from shelf.ngv_events import selected_route
+        return selected_route(event_route)
+    if type(event_route) is not str or event_route:
+        raise SourceError('Unexpected event route for this source.')
+    return ''
+
+
+def source_cache_key(source_id, event_route=''):
     """Generic and legacy controls replace the same cached source result.
 
     Keeping legacy keys avoids both duplicate source cards and stale success
     surviving a failed refresh through the other control. No source I/O occurs.
     """
-    get_source(source_id)
+    route = source_route(source_id, event_route)
+    if route:
+        return source_id, route, ''
     legacy = next((alias for alias, source in LEGACY_ALIASES.items() if source == source_id), source_id)
     return legacy, '', ''
 
@@ -220,5 +295,9 @@ def source_controls():
                   'implemented': source.implemented, 'access_state': source.access_state,
                   'official_urls': source.targets, 'origin_groups': source.origin_groups,
                   'coverage': source.coverage, 'retention_seconds': source.retention_seconds,
+                  'event_routes': tuple({'event_route': route, 'label': label}
+                      for route, label in (('programs', 'Programs & events'),
+                                           ('exhibitions', 'Exhibition runs')))
+                      if source.source_id == 'ngv' else (),
                   'unavailable_message': source.unavailable_message}
                  for source in SOURCES.values())

@@ -14,6 +14,18 @@ class ListingTransportTests(TestCase):
         self.setting = patch.object(transport, '_RATE_DIRECTORY', self.directory.name)
         self.setting.start(); self.addCleanup(self.setting.stop)
 
+    def test_west_space_fixed_target_uses_same_robots_listing_origin_reservation(self):
+        with patch.object(transport, '_send', return_value=(404, b'Not found')) as send:
+            self.assertTrue(transport.observe_robots('west_space')['allowed'])
+            self.assertEqual(send.call_args.args[0][-1], 'https://westspace.org.au/robots.txt')
+            with self.assertRaises(transport.ListingIntervalPending):
+                transport.west_space()
+            send.assert_called_once()
+        with patch.object(transport, '_reserve'), patch.object(transport, '_send',
+                return_value=(200, b'HTML')) as send:
+            transport.west_space()
+            self.assertEqual(send.call_args.args[0][-1], 'https://westspace.org.au/whats-on/')
+
     def test_fixed_bounds_same_origin_refusal_and_other_origin_independence(self):
         with patch.object(transport, '_send', return_value=(200, b'HTML')) as send:
             transport.venue303()
@@ -28,6 +40,16 @@ class ListingTransportTests(TestCase):
             self.assertEqual(command[command.index(flag)+1], value)
         self.assertIn('--no-netrc', command)
         self.assertNotIn('--location', command)
+
+    def test_bar_open_uses_only_fixed_miuc_path_and_shared_origin_slot(self):
+        with patch.object(transport,'_send',return_value=(200,b'User-agent: *\nAllow: /\n')) as send:
+            self.assertTrue(transport.observe_robots('bar_open')['allowed'])
+            with self.assertRaises(transport.ListingIntervalPending):transport.bar_open()
+            send.assert_called_once()
+        with patch.object(transport,'_reserve'),patch.object(transport,'_send',return_value=(200,b'HTML')) as send:
+            transport.bar_open()
+            self.assertEqual(send.call_args.args[0][-1],'https://baropen.com.au/make-it-up-club/')
+
 
     def test_moons24_uses_fixed_target_and_shares_robots_listing_reservation(self):
         with patch.object(transport,'_send',return_value=(200,b'User-agent: *\nAllow: /\n')) as send:
@@ -67,6 +89,26 @@ class ListingTransportTests(TestCase):
         with patch.object(transport, '_reserve'), \
              patch.object(transport, '_send', return_value=(200, b'<html>challenge</html>')):
             with self.assertRaises(SourceError): transport.observe_robots('venue303')
+
+    def test_empty_successful_robots_has_no_exclusion_rules(self):
+        with patch.object(transport,'_send',return_value=(200,b'')) as send:
+            receipt=transport.observe_robots('my_aeon')
+            self.assertTrue(receipt['allowed'])
+            self.assertEqual(receipt['delay'],10)
+            with self.assertRaises(transport.ListingIntervalPending):transport.my_aeon()
+            send.assert_called_once()
+
+    def test_empty_robots_does_not_relax_retained_stricter_origin_delay(self):
+        with patch.dict(transport._DELAYS,{'my_aeon':10}), \
+             patch.object(transport.time,'monotonic',return_value=100) as clock, \
+             patch.object(transport,'_send',side_effect=[
+                 (200,b'User-agent: *\nCrawl-delay: 20\n'),(200,b'')]) as send:
+            self.assertEqual(transport.observe_robots('my_aeon')['delay'],20)
+            clock.return_value=121
+            self.assertTrue(transport.observe_robots('my_aeon')['allowed'])
+            clock.return_value=132
+            with self.assertRaises(transport.ListingIntervalPending):transport.my_aeon()
+            self.assertEqual(send.call_count,2)
 
     def test_stricter_policy_is_visible_to_a_fresh_process(self):
         import subprocess, sys

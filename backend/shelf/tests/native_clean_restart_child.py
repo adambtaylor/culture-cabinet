@@ -54,7 +54,7 @@ def main(root, phase, request_fd, response_fd):
         try:
             from django.conf import settings
             from django.test import Client
-            from shelf.models import ProfileCabinetState, PortableConnection, FeedbackEvent
+            from shelf.models import ProfileCabinetState, PortableConnection, FeedbackEvent, SavedCredentialBinding
             settings.PASSWORD_HASHERS = ['django.contrib.auth.hashers.MD5PasswordHasher']
             client = Client(enforce_csrf_checks=True)
             headers = {'HTTP_HOST': boundary.origin.removeprefix('http://'), 'HTTP_ORIGIN': boundary.origin}
@@ -81,8 +81,9 @@ def main(root, phase, request_fd, response_fd):
                 assert post('/setup/form/configure', {'adapter':'openai_responses',
                     'model':'gpt-6-astra', 'reasoning':'high'}).status_code == 303
                 row = PortableConnection.objects.get(adapter='openai_responses')
-                assert post('/setup/form/credential', {'connection_ref':str(row.pk), 'revision':'1',
-                    'storage':'persistent', 'secret':DUMMY}).status_code == 303
+                if phase != 'first-no-credential':
+                    assert post('/setup/form/credential', {'connection_ref':str(row.pk), 'revision':'1',
+                        'storage':'persistent', 'secret':DUMMY}).status_code == 303
                 fields = {'profile_ref':profile, 'entry_ref':str(uuid.uuid4()), 'mutation_id':str(uuid.uuid4()),
                     'base_revision':'0','operation':'set','signal':'interest','entry_kind':'item',
                     'category':'book','title':'Dummy preference retained across native restart','value':'yes'}
@@ -103,8 +104,11 @@ def main(root, phase, request_fd, response_fd):
                 assert post('/setup/form/login', {'passphrase':PASSWORD}).status_code == 303
                 ref = client.session['portable_session']
                 row = PortableConnection.objects.get(pk=refs['connection_ref'])
-                value = settings.PORTABLE_CONNECTIONS.vault.resolve(ref,row.pk,row.config_revision)
-                assert value == DUMMY.encode()
+                if phase == 'second-no-credential':
+                    assert not SavedCredentialBinding.objects.filter(connection_id=row.pk).exists()
+                else:
+                    value = settings.PORTABLE_CONNECTIONS.vault.resolve(ref,row.pk,row.config_revision)
+                    assert value == DUMMY.encode()
                 assert not settings.PORTABLE_CONNECTIONS.status(ref,row.pk,row.config_revision)['connection_ready']
                 assert str(ProfileCabinetState.objects.get().profile_ref) == refs['profile_ref']
                 events = [(str(r.pk),hashlib.sha256(json.dumps(r.body,sort_keys=True).encode()).hexdigest())
@@ -133,7 +137,7 @@ def main(root, phase, request_fd, response_fd):
     with patch.object(runtime,'make_server',make):
         result = runtime.run(root,saved_store=store)
     print(json.dumps({'state':'NATIVE_DUMMY_LIFECYCLE_CLOSED','phase':phase,'exit':result,
-        'pid':os.getpid(),'observed':observed,'providerCalls':0,'keyReentry':phase!='second'}),flush=True)
+        'pid':os.getpid(),'observed':observed,'providerCalls':0,'keyReentry':not phase.startswith('second')}),flush=True)
     return result
 
 

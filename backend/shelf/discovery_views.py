@@ -22,7 +22,7 @@ from shelf.provider_views import _profile
 from shelf.authority import SELECTION_KEY
 from shelf.feedback_scale import REACTION_LABELS, clean_note
 from shelf.event_source_registry import (SOURCES as EVENT_SOURCES, LEGACY_ALIASES,
-                                         source_cache_key, source_controls)
+                                         source_cache_key, source_controls, source_route)
 
 DECK_KEY = 'discovery_feedback_decks_v1'
 QUEUES = (('all', 'Music & events'), ('artist', 'Music (Bands)'))
@@ -36,6 +36,8 @@ class ActionForm(forms.Form):
     nonce = forms.CharField(max_length=200)
     operation = forms.ChoiceField(choices=[(v, v) for v in ('respond', 'save', 'unsave', 'undo', 'restart', 'event_source', 'radio', 'events', 'venue303', 'forum', 'rrr', 'rrr_detail', 'beat', 'beat_detail', 'pbs', 'tribe', 'soundsystems', 'gallery')])
     source_id = forms.ChoiceField(required=False, choices=[(key, value.label) for key, value in EVENT_SOURCES.items()])
+    event_route = forms.ChoiceField(required=False, choices=[('programs', 'Programs & events'),
+                                                          ('exhibitions', 'Exhibition runs')])
     key = forms.CharField(required=False, max_length=160)
     choice = forms.ChoiceField(required=False, choices=CHOICE_LABELS)
     queue = forms.ChoiceField(required=False, choices=QUEUES)
@@ -53,7 +55,7 @@ class ActionForm(forms.Form):
         if 'queue' in self.data and not data.get('queue'):
             self.add_error('queue', 'Choose an available queue.')
         # Preserve the byte-for-byte historical receipt input when absent.
-        for field in ('note', 'queue', 'source_id'):
+        for field in ('note', 'queue', 'source_id', 'event_route'):
             if field not in self.data:
                 data.pop(field, None)
         if data.get('operation') == 'event_source':
@@ -61,6 +63,8 @@ class ActionForm(forms.Form):
                 self.add_error('source_id', 'Choose an available source.')
         elif data.get('source_id'):
             self.add_error('source_id', 'Unexpected source for this action.')
+        if data.get('event_route') and (data.get('operation') != 'event_source' or data.get('source_id') != 'ngv'):
+            self.add_error('event_route', 'Unexpected event route for this action.')
         return data
 
 
@@ -430,7 +434,9 @@ def action(request, profile_id):
             seed = data['key'].split(':')[-1] if data['key'] else ''
             source_id = data.get('source_id') if data['operation'] == 'event_source' else LEGACY_ALIASES.get(data['operation'])
             if data['operation'] == 'event_source':
-                result = sources.fetch_public('event_source', seed, data['radio_mode'], timezone.now(), source_id=source_id)
+                route_input = {'event_route': data['event_route']} if 'event_route' in data else {}
+                result = sources.fetch_public('event_source', seed, data['radio_mode'], timezone.now(),
+                                              source_id=source_id, **route_input)
             else:
                 result = sources.fetch_public(data['operation'], seed, data['radio_mode'], timezone.now())
             with transaction.atomic():
@@ -438,14 +444,19 @@ def action(request, profile_id):
                 entries = public_entries(request, profile_id)
                 # Canonicalize aliases so a failed refresh through either form
                 # replaces the same source result, without erasing other sources.
-                entry_key = source_cache_key(source_id) if source_id else (data['operation'], seed, data['radio_mode'])
+                route = source_route(source_id, data.get('event_route', '')) if source_id else ''
+                entry_key = source_cache_key(source_id, route) if source_id else (data['operation'], seed, data['radio_mode'])
                 source_label = EVENT_SOURCES[source_id].label if source_id else {
                     'radio': 'ListenBrainz artist radio', 'beat': 'Beat Magazine',
                     'tribe': 'Tribe Soundsystem RSS', 'soundsystems': 'Sound Systems of Melbourne',
                     'gallery': 'Gertrude / Australian Print Workshop'}[data['operation']]
+                if route:
+                    source_label += ' · ' + {'programs': 'Programs & events', 'exhibitions': 'Exhibition runs'}[route]
                 entries[entry_key] = {
                     'outcome': result, 'at': timezone.now(),
                     'source': source_label}
+                if route:
+                    entries[entry_key]['event_route'] = route
                 PUBLIC_CACHE.set(cache_key(request, profile_id), entries, timeout=900)
     else:
         if data['radio_mode']:
