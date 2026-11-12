@@ -16,9 +16,11 @@ NOW=datetime(2026,11,11,8,tzinfo=timezone.utc)
 
 
 def card(slug='fictional-show',dates='12 - 18 Nov 2026',title='FICTIONAL Fringe show'):
-    return ('<article class="whats-on-event-tile component"><h3 class="event-card-heading">'+
-        escape(title)+'</h3><div class="event-card-subtitle">'+escape(dates)+'</div>'+
-        '<div class="event-card-subtitle d-flex flex-column gap-2"><span>ARTIST CANARY</span></div>'+
+    return ('<article class="whats-on-event-tile component"><div class="position-relative tile-content">'+
+        '<h3 class="event-card-heading">'+escape(title)+'</h3><div class="d-flex flex-column gap-2">'+
+        '<div class="event-card-subtitle">'+escape(dates)+'</div></div></div>'+
+        '<div class="hover-content"><div class="event-card-subtitle">14 - 20 Nov 2026</div>'+
+        '<div class="event-card-subtitle d-flex flex-column gap-2"><span>ARTIST CANARY</span></div></div>'+
         '<img width height src="ignored-image"><a href="/whats-on/events/'+escape(slug,quote=True)+
         '">Event Info</a><a href="/whats-on/events?eventfilters=genre">Genre</a></article>')
 
@@ -47,11 +49,14 @@ class FringeEventTests(TestCase):
         for text in ('12 - 18 Nov','31 Feb 2026','30 Dec - 6 Jan 2026'):
             with self.subTest(text=text),self.assertRaises(SourceError):self.parse(listing(card(dates=text)))
 
-    def test_repeated_date_fields_must_agree(self):
-        raw=listing().replace(b'<img',b'<div class="event-card-subtitle">12 - 18 Nov 2026</div><img')
-        self.assertEqual(len(self.parse(raw)),1)
-        with self.assertRaises(SourceError):
-            self.parse(raw.replace(b'12 - 18 Nov 2026</div><img',b'13 - 18 Nov 2026</div><img'))
+    def test_visible_tile_date_wins_over_conflicting_hover_copy(self):
+        event,=self.parse(listing())
+        self.assertEqual((event.source_start,event.source_end),('2026-11-12','2026-11-18'))
+        self.assertNotIn('14 - 20 Nov 2026',repr(event))
+
+    def test_unknown_visible_date_layout_fails_closed(self):
+        raw=listing().replace(b'class="position-relative tile-content"',b'class="changed tile-content"')
+        with self.assertRaises(SourceError):self.parse(raw)
 
     def test_past_only_listing_is_unavailable_not_current_empty(self):
         with self.assertRaises(event_scraping.ProgrammeUnavailable):

@@ -7,7 +7,7 @@ from shelf.discovery_sources import SourceError,label,timestamp
 from shelf.event_listing_transport import MAX_BYTES
 from shelf.event_sources import SOURCES,ListingEvent,MELBOURNE,_official_event,occurrence_event,reconcile_events
 from shelf.gallery_sources import MONTHS
-from shelf.rrr_events import _Listing,_one
+from shelf.rrr_events import _Listing,_Node,_one
 
 LISTING_URL='https://www.melbournefringe.com.au/whats-on/events'
 _MONTHS={name:index for index,name in enumerate(MONTHS,1)}
@@ -27,6 +27,18 @@ class _Cards(_Listing):
 
     def handle_starttag(self,tag,attrs):
         if tag!='img':super().handle_starttag(tag,attrs)
+
+
+def _visible_date(node):
+    # The observed Fringe tile puts its date in tile-content. A same-named
+    # subtitle in hover-content is descriptive copy, so select the visible
+    # tile path instead of treating both descendants as date candidates.
+    tile=_one([child for child in node.children if isinstance(child,_Node)
+        and child.tag=='div' and child.attrs.get('class','').split()==['position-relative','tile-content']])
+    content=_one([child for child in tile.children if isinstance(child,_Node)
+        and child.tag=='div' and child.attrs.get('class','').split()==['d-flex','flex-column','gap-2']])
+    return _one([child for child in content.children if isinstance(child,_Node)
+        and child.tag=='div' and child.attrs.get('class','').split()==['event-card-subtitle']])
 
 
 def _dates(wording):
@@ -58,14 +70,7 @@ def parse_listing(raw,*,retrieved_at,provenance='live-automated'):
     events=[];digest=sha256(raw).hexdigest()
     for position,node in enumerate(parser.columns,1):
         title=label(_one(node.find('h3','event-card-heading')).text())
-        # Hover panels reuse the subtitle class for artist/venue prose. Only
-        # the observed plain subtitle field is the explicit date label.
-        labels={label(part.text()) for part in node.find('div','event-card-subtitle')
-                    if part.attrs.get('class','').split()==['event-card-subtitle']}
-        # The actual first card repeats the plain date field. Permit repeated
-        # labels only when their text agrees; conflicting dates still fail.
-        if len(labels)!=1:raise SourceError('Missing or conflicting Fringe date labels.')
-        wording=labels.pop();first,last=_dates(wording)
+        wording=label(_visible_date(node).text());first,last=_dates(wording)
         urls={urljoin(LISTING_URL,anchor.attrs.get('href','')) for anchor in node.find('a')}
         urls={url for url in urls if re.fullmatch(r'https://www\.melbournefringe\.com\.au/whats-on/events/[a-z0-9][a-z0-9-]*/?',url)}
         if len(urls)!=1:raise SourceError('Exact unambiguous Fringe event URL required.')
