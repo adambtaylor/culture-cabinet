@@ -26,10 +26,11 @@ TARGETS = MappingProxyType({
     'triple_j': ('https://www.abc.net.au/triplej/touring', 'https://www.abc.net.au/robots.txt'),
     'double_j': ('https://www.abc.net.au/listen/doublej/touring', 'https://www.abc.net.au/robots.txt'),
     'my_aeon': ('https://www.myaeon.com.au/my-aeon-events', 'https://www.myaeon.com.au/robots.txt'),
+    'ngv': ('https://www.ngv.vic.gov.au/whats-on/programs-events/', 'https://www.ngv.vic.gov.au/robots.txt'),
 })
 _DELAYS = {'venue303': 10, 'forum': 10, 'bar_open': 10, 'west_space': 10, 'moons24': 10,
            'affordable_art_fair': 10, 'improv_conspiracy': 10,
-           'triple_j': 10, 'double_j': 10, 'my_aeon': 10}
+           'triple_j': 10, 'double_j': 10, 'my_aeon': 10, 'ngv': 10}
 _ORIGIN_GROUPS = MappingProxyType({'triple_j': 'abc', 'double_j': 'abc'})
 _RATE_DIRECTORY = '/tmp'
 # Initial bounded observations: 303 robots allowed this path; Forum returned
@@ -43,6 +44,10 @@ LISTING_ACCESS = MappingProxyType({'venue303': True, 'forum': False, 'bar_open':
                                  'moons24': True, 'affordable_art_fair': False,
                                  'improv_conspiracy': True, 'triple_j': False,
                                  'double_j': False, 'my_aeon': True})
+# Exact retained NGV robots200 allowed both paths, with the existing10s floor.
+# Enable the first assigned programs slice; exhibitions stays separately closed
+# until its format/outcome path is ready. This grants no retained-content rights.
+NGV_ACCESS = MappingProxyType({'programs': True, 'exhibitions': False})
 
 
 class ListingIntervalPending(SourceError):
@@ -103,16 +108,26 @@ def _reserve(source_id, *, policy_delay=None):
         os.close(fd)
 
 
-def _read(source_id, *, robots=False):
+def _read(source_id, *, robots=False, event_route=''):
     if type(source_id) is not str or source_id not in TARGETS:
         raise SourceError('Unapproved listing source.')
-    if not robots and not LISTING_ACCESS[source_id]:
+    if source_id == 'ngv':
+        from shelf.ngv_events import ROUTES, selected_route
+        route = selected_route(event_route)
+        target = TARGETS['ngv'][1] if robots else ROUTES[route]
+        allowed = NGV_ACCESS[route]
+    else:
+        if type(event_route) is not str or event_route:
+            raise SourceError('Unexpected event route for this source.')
+        target = TARGETS[source_id][bool(robots)]
+        allowed = LISTING_ACCESS[source_id]
+    if not robots and not allowed:
         raise ListingPolicyUnavailable
     _reserve(source_id)
     command = _base(MAX_BYTES)
     command[command.index('Accept: application/json')] = 'Accept: text/plain' if robots else 'Accept: text/html'
     return _send(command + ['--user-agent', USER_AGENT, '--request', 'GET',
-                            '--url', TARGETS[source_id][bool(robots)]], max_bytes=MAX_BYTES)
+                            '--url', target], max_bytes=MAX_BYTES)
 
 
 def venue303():
@@ -155,17 +170,34 @@ def my_aeon():
     return _read('my_aeon')
 
 
+def ngv(event_route=''):
+    # Both fixed pages and robots reserve the unchanged single 'ngv' receipt.
+    return _read('ngv', event_route=event_route)
+
+
 def _robots_rules(source_id, code, raw):
     """Pure interpretation also permits checking exact retained source bytes."""
     if code == 404:
-        return {'status': code, 'allowed': True, 'delay': 10}
+        receipt = {'status': code, 'allowed': True, 'delay': 10}
+        if source_id == 'ngv':
+            from shelf.ngv_events import ROUTES
+            receipt['routes_allowed'] = {key: True for key in ROUTES}
+        return receipt
     if code != 200:
-        return {'status': code, 'allowed': False, 'delay': 10}
+        receipt = {'status': code, 'allowed': False, 'delay': 10}
+        if source_id == 'ngv':
+            from shelf.ngv_events import ROUTES
+            receipt['routes_allowed'] = {key: False for key in ROUTES}
+        return receipt
     # RFC9309 sections 2.2/2.2.1: zero groups is a valid empty robots file and
     # has no applicable rules. Only exact empty success is added here; nonempty
     # unknown text/HTML, denial and transport failure keep existing behaviour.
     if raw == b'':
-        return {'status': code, 'allowed': True, 'delay': 10}
+        receipt = {'status': code, 'allowed': True, 'delay': 10}
+        if source_id == 'ngv':
+            from shelf.ngv_events import ROUTES
+            receipt['routes_allowed'] = {key: True for key in ROUTES}
+        return receipt
     text = raw.decode('utf-8')
     if (not any(line.lower().startswith('user-agent:') for line in text.splitlines())
             or '<html' in text.lower() or '<!doctype' in text.lower()):
@@ -176,7 +208,13 @@ def _robots_rules(source_id, code, raw):
     rate = rules.request_rate(USER_AGENT)
     if rate:
         delay = max(delay, rate.seconds / rate.requests)
-    return {'status': code, 'allowed': rules.can_fetch(USER_AGENT, TARGETS[source_id][0]), 'delay': delay}
+    result = {'status': code, 'allowed': rules.can_fetch(USER_AGENT, TARGETS[source_id][0]), 'delay': delay}
+    if source_id == 'ngv':
+        from shelf.ngv_events import ROUTES
+        # Evaluate both paths against this same response, never refetch robots
+        # for the second route or create another pacing allowance.
+        result['routes_allowed'] = {key: rules.can_fetch(USER_AGENT, url) for key, url in ROUTES.items()}
+    return result
 
 
 def observe_robots(source_id):
