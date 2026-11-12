@@ -6,8 +6,10 @@
   class HoldGesture {
     constructor(hooks = {}, clock = {}) {
       this.hooks = hooks;
-      this.schedule = clock.setTimeout || setTimeout;
-      this.clear = clock.clearTimeout || clearTimeout;
+      // Browser timers need their Window receiver; injected clocks keep theirs.
+      // Calling a raw timer as a gesture method can throw before hold activation.
+      this.schedule = clock.setTimeout ? clock.setTimeout.bind(clock) : setTimeout.bind(globalThis);
+      this.clear = clock.clearTimeout ? clock.clearTimeout.bind(clock) : clearTimeout.bind(globalThis);
       this.phase = 'idle';
       this.pointer = null;
       this.timer = null;

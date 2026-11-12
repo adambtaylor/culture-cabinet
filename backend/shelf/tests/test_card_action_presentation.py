@@ -6,7 +6,7 @@ from django.test import SimpleTestCase, override_settings
 from django.template.loader import render_to_string
 from django.utils.safestring import mark_safe
 
-from shelf.card_action_presentation import card_action_context, local_event_display_context, ACTIONS
+from shelf.card_action_presentation import card_action_context, card_action_refresh_context, local_event_display_context, render_card_action_refusal, ACTIONS
 from .test_onboarding_experience_views import Document, Poison
 
 PROFILE = '00000000-0000-4000-8000-000000000001'
@@ -120,6 +120,42 @@ class LocalEventDisplayPresentationTests(SimpleTestCase):
 
 
 class CardActionPresentationTests(SimpleTestCase):
+    def test_refresh_keeps_owned_history_separate_from_current_publication_and_projects_only_primitives(self):
+        receipt = dict(command_id=COMMAND, target_ref=TARGET, requested_action='like',
+            preference_outcome='committed', selected_state='like', interest_revision=1,
+            saved_revision=0, ranking_state='feedback_pending', secret=Poison(), title=Poison())
+        current = dict(published=True, publication_ref=PUBLICATION, publication_revision=2)
+        result = card_action_refresh_context(profile_ref=PROFILE, interaction=current,
+            receipt=receipt, command_id=COMMAND)
+        self.assertEqual(result['publication_revision'],2)
+        self.assertEqual(result['read_state'],'current')
+        self.assertEqual(set(result['receipt']),{'command_id','target_ref','requested_action',
+            'preference_outcome','selected_state','interest_revision','saved_revision','ranking_state'})
+        unavailable = card_action_refresh_context(profile_ref=PROFILE, interaction=current,
+            receipt=receipt, command_id=COMMAND, read_available=False)
+        self.assertEqual(unavailable['receipt'],result['receipt'])
+        self.assertEqual(unavailable['read_state'],'unavailable')
+        self.assertIsNone(unavailable['publication_ref'])
+        self.assertIsNone(unavailable['publication_revision'])
+
+    def test_refresh_rejects_forged_command_unsafe_revisions_and_unknown_outcomes(self):
+        receipt = dict(command_id=COMMAND,target_ref=TARGET,requested_action='like',
+            preference_outcome='committed',selected_state='like',interest_revision=1,
+            saved_revision=0,ranking_state='feedback_pending')
+        current = dict(published=True,publication_ref=PUBLICATION,publication_revision=1)
+        for key,bad in (('command_id',TARGET),('target_ref','bad'),('requested_action','injected'),
+                ('preference_outcome','pending'),('selected_state','obtain'),('ranking_state','stale'),
+                ('interest_revision',True),('saved_revision',2**53)):
+            with self.subTest(key=key),self.assertRaises(ValueError):
+                card_action_refresh_context(profile_ref=PROFILE,interaction=current,
+                    receipt={**receipt,key:bad},command_id=COMMAND)
+        with self.assertRaises(ValueError):
+            card_action_refresh_context(profile_ref=PROFILE,interaction=current,command_id=COMMAND)
+        for changed in ({**current,'publication_ref':'ABCDEFAB-0000-4000-8000-000000000001'},
+                        {**current,'publication_revision':True}):
+            with self.assertRaises(ValueError):
+                card_action_refresh_context(profile_ref=PROFILE,interaction=changed)
+
     def render(self, value=None, **extra):
         context = card_action_context(value or projection())
         card = dict(title='A fictional <book>', card_actions=context, reasons=[{'label': 'Previous association', 'text': 'OLD-PERSONAL-EXPLANATION', 'evidence_count': 1}], feedback={'signals': [
@@ -251,3 +287,57 @@ class CardActionPresentationTests(SimpleTestCase):
         self.assertTrue(any(t == 'form' and a.get('action') == '/cabinet/actions/undo/' for t, a in doc.tags))
         value['undo']['fields']['profile_ref'] = TARGET
         with self.assertRaises(ValueError): card_action_context(value)
+
+
+class CardActionRefusalPresentationTests(SimpleTestCase):
+    def render_refusal(self, **facts):
+        with override_settings(TEMPLATES=template_settings()):
+            return render_card_action_refusal(**facts)
+
+    def test_response_and_undo_keep_uncertain_outcomes_action_specific(self):
+        # The same status may cover pre-effect denial or an existing command;
+        # neither response is entitled to promise that nothing was saved.
+        for operation, phrase in [('response', 'Your card response is not confirmed.'),
+                                  ('undo', 'Undo is not confirmed.')]:
+            for code, status in [('UNAUTHENTICATED', 401), ('AUTHORITY_DENIED', 403),
+                                 ('IDEMPOTENCY_CONFLICT', 409),
+                                 ('UNKNOWN_RECONCILIATION_REQUIRED', 503)]:
+                with self.subTest(operation=operation, code=code):
+                    response = self.render_refusal(operation=operation, code=code, status=status)
+                    html = response.content.decode()
+                    self.assertEqual(response.status_code, status)
+                    self.assertEqual(response['Cache-Control'], 'no-store')
+                    self.assertEqual(response['X-Content-Type-Options'], 'nosniff')
+                    self.assertIn(phrase, html)
+                    self.assertIn('Nothing is retried automatically.', html)
+                    self.assertIn('explicitly choose the action you intend', html)
+                    for absent in ('not saved', 'Enhance progress', 'existing round',
+                                   'This round is blocked', code):
+                        self.assertNotIn(absent, html)
+
+    def test_recovery_has_fixed_get_links_no_forms_or_request_context(self):
+        # A context processor would expose request facts; no request is passed
+        # into rendering and this deliberately invalid processor must not run.
+        settings = template_settings()
+        settings[0]['OPTIONS']['context_processors'] = ['not_a_real_module.must_not_run']
+        with override_settings(TEMPLATES=settings):
+            response = render_card_action_refusal(operation='response', code='UNAUTHENTICATED', status=401)
+        html = response.content.decode(); doc = Document(html)
+        self.assertEqual([a['href'] for t, a in doc.tags if t == 'a'],
+                         ['#main', '/setup', '/setup/cabinet'])
+        self.assertFalse(any(t in ('form', 'input', 'button', 'script') for t, a in doc.tags))
+        self.assertIn('href="/enhance/style.css"', html)
+        self.assertNotIn('csrf', html.lower())
+        with self.assertRaises(TypeError):
+            render_card_action_refusal(operation='response', code='UNAUTHENTICATED', status=401, request=Poison())
+
+    def test_untrusted_or_nonprimitive_refusal_facts_fail_closed(self):
+        for key, bad in [('operation', 'like'), ('operation', Poison()),
+                         ('operation', mark_safe('response')),
+                         ('code', '<script>private</script>'), ('code', Poison()),
+                         ('code', mark_safe('UNAUTHENTICATED')), ('status', True),
+                         ('status', '401'), ('status', 200), ('status', 600)]:
+            facts = dict(operation='response', code='UNAUTHENTICATED', status=401)
+            facts[key] = bad
+            with self.subTest(key=key, value_type=type(bad).__name__), self.assertRaises(ValueError):
+                self.render_refusal(**facts)

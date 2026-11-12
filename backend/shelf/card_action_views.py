@@ -1,13 +1,14 @@
 """Fixed native action/Undo forms and an owned historical receipt reader."""
+from functools import wraps
 from urllib.parse import urlencode
-from django.http import HttpResponse
+from django.http import HttpResponse,JsonResponse
 from django.utils.html import format_html
 from django.views.decorators.csrf import csrf_protect
 from django.views.decorators.debug import sensitive_variables
 from django.views.decorators.http import require_GET,require_POST
 from . import grant_authority as ga
 from .card_actions import CardAction,CardUndo,CardActions,ACTION_FIELDS,UNDO_FIELDS
-from .enhancement_views import _portable_errors
+from .enhancement_views import _portable_errors,_portable_json
 from .portable_setup_views import _form
 from .portable_source_views import _revision
 
@@ -38,9 +39,33 @@ def redirect(profile_ref,command_id,result):
     return HttpResponse(status=303,headers={'Location':location,'Cache-Control':'no-store'})
 
 
+def _card_errors(operation):
+    """Keep action refusals separate from Enhance progress without new authority."""
+    from .enhance_contract import SAFE_CODES
+    from .portable_authority import AuthorityFault
+    from django.views.decorators.debug import sensitive_post_parameters
+    def decorate(view):
+        @wraps(view)
+        @sensitive_variables()
+        @sensitive_post_parameters()
+        def wrapped(request,*args,**kwargs):
+            try:return view(request,*args,**kwargs)
+            except AuthorityFault as error:
+                code=error.code if error.code in SAFE_CODES else 'CONTRACT_INVALID'
+                if _portable_json(request):
+                    return JsonResponse({'ok':False,'code':code},status=error.status,
+                        headers={'Cache-Control':'no-store'})
+                # A refusal can follow an existing or uncertain effect. Never
+                # infer not-saved from HTTP status, or replay the submitted body.
+                from .card_action_presentation import render_card_action_refusal
+                return render_card_action_refusal(operation=operation,code=code,status=error.status)
+        return wrapped
+    return decorate
+
+
 @require_POST
 @csrf_protect
-@_portable_errors
+@_card_errors('response')
 @sensitive_variables()
 def action(request):
     command=CardAction.parse(fields(request,ACTION_FIELDS))
@@ -54,7 +79,7 @@ def action(request):
 
 @require_POST
 @csrf_protect
-@_portable_errors
+@_card_errors('undo')
 @sensitive_variables()
 def undo(request):
     command=CardUndo.parse(fields(request,UNDO_FIELDS))
