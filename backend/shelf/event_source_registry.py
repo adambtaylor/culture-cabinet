@@ -188,6 +188,9 @@ def _descriptor(row):
         'affordable_art_fair': ('permission-required',
             'The official access-policy request was refused; no fair listing was fetched. '
             'Current Melbourne fair dates and sessions remain unverified.'),
+        'improv_conspiracy': ('not-implemented',
+            'A current readable programme and the advertised Performance Calendar target '
+            'have not been established for this reader. No shows or sessions are confirmed.'),
         'halftix': ('permission-required', 'Publisher permission for retrieval and storage is required; open the official link manually.'),
         'la_sirene': ('owner-action-required', 'A permitted, witnessed visual observation is needed; no public posts are available to this reader.'),
         'hamer_hall': ('access-unverified', 'The official programme reached a waiting room; no bypass or alternate route is attempted.'),

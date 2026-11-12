@@ -227,3 +227,19 @@ exact robots target, closed listing gate, zero-I/O collector and actual normal
 authenticated action/render/replay. They establish safe handling of this blocker,
 not fair acquisition, a verified run/session parser, browser or working acceptance.
 Legitimate access evidence is still required before the listing can be read.
+
+### Improv Conspiracy calendar readiness (E7)
+
+The assigned homepage and robots paths use the existing fixed transport and one
+ten-second origin reservation. Robots404 was permitted under the current reader.
+The single bounded homepage attempt failed before usable HTTP with
+`PublicTransportError(reason=child_exit)`. No current programme, advertised
+calendar link or show/session format was obtained. The earlier research mention
+of a Performance Calendar is not a verified endpoint and no calendar path is
+guessed. No retry, alternative route, image, account or workshop acquisition occurs.
+
+The unimplemented descriptor explicitly reports that current programme/calendar
+evidence is missing. Its normal action renders unavailable; GET/replay make no
+source request or taste write. Fixed-target, shared-origin and authenticated
+normal-action checks cover that boundary without fabricating event rows. This is
+a readiness component with a retained live failure, not working acquisition.
