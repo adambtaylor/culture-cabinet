@@ -371,3 +371,32 @@ failure, duplicate occurrence identity, current grant revalidation and truthful
 unavailable production descriptors. Real NGV parsing/acquisition and affected
 rendered acceptance remain outstanding; this package is a complete route caller
 and transport prerequisite, not a working-source claim.
+
+### Linden current public programmes (E6)
+
+The thin Linden adapter reads only the fixed official public-programmes page's
+`s8-datarepeater1_ajaxcontainer` region. The separately identified past-events
+repeater is excluded. Each current boxed card supplies one heading, date/time
+paragraph and one consistent official `/event-rsvp/` destination; no RSVP,
+detail, archive pagination, script or image endpoint is requested.
+
+The exact robots read returned HTTP 200/77 bytes and allowed the page at the
+existing ten-second origin floor. Visible text boundaries preserve dates, clocks,
+venue/audience notices and labels such as `Ages 2+` and `Ages 8-16`. Names and age
+labels never create verified artist identities, public eligibility, prices or
+ticket availability.
+
+Explicit weekday/calendar dates are checked; missing years stay unknown. Local
+clock ranges distinguish occurrences without inventing a timezone or absolute
+instant. An overnight clock without a following date does not gain a guessed end
+day. Session-scoped cancellations reconcile before the eight-week projection;
+malformed/challenge pages are invalid and recognized out-of-window-only cards
+are unavailable. Shared limits remain 512 KiB, 48 scanned cards, nine leads and
+fifteen-minute content retention. No durable source-reference grant is supplied.
+
+Prior evidence records 29 focused parser/transport/registry/engine/normal-handler
+checks passing. One actual guarded action made one fixed HTTP 200 read and
+returned four current events with source dates, local clock ranges and audience
+notices. POST/replay and render evidence is separate from browser acceptance and
+independent working-source acceptance. Retain the initial failed inspection;
+no automatic retry or extra source read is implied.
