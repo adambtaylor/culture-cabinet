@@ -56,6 +56,8 @@ SOURCES = MappingProxyType({
     'pbs': EventSource('PBS events', 'https://www.pbsfm.org.au/news/pbs-events', 'radio_editorial', 'music'),
     'fringe': EventSource('Melbourne Fringe', 'https://www.melbournefringe.com.au/whats-on/events',
         'editorial','all','bounded-public-html'),
+    'gertrude': EventSource('Gertrude exhibitions', 'https://gertrude.org.au/exhibitions/',
+        'venue', 'gallery', 'bounded-public-html; factual exhibition runs only'),
     'darebin': EventSource('Darebin Arts',
         'https://arts.darebin.vic.gov.au/Whats-on/Event-calendar', 'council_arts', 'community'),
     'thornbury': EventSource('Thornbury Theatre',

@@ -71,6 +71,11 @@ def _fringe(now):
     return fringe()
 
 
+def _gertrude(now):
+    from shelf.event_listing_transport import gertrude
+    return gertrude()
+
+
 def _parse_rrr(raw, *, now, retrieved_at):
     from shelf.rrr_events import parse_listing
     return parse_listing(raw, retrieved_at=retrieved_at)
@@ -104,6 +109,11 @@ def _parse_moons24(raw, *, now, retrieved_at):
 def _parse_fringe(raw, *, now, retrieved_at):
     from shelf.fringe_events import parse_listing
     return parse_listing(raw,retrieved_at=retrieved_at)
+
+
+def _parse_gertrude(raw, *, now, retrieved_at):
+    from shelf.gertrude_events import parse_listing
+    return parse_listing(raw, now=now, retrieved_at=retrieved_at)
 
 
 # Finite owner/Architecture catalogue, not an expandable client-controlled list.
@@ -174,6 +184,9 @@ def _descriptor(row):
         'fringe': (_fringe,_parse_fringe,524288,
                 'Partial Fringe coverage: one fixed listing, up to nine eligible dated leads '
                 'within eight weeks; runs are not individual sessions or ticket availability.'),
+        'gertrude': (_gertrude, _parse_gertrude, 524288,
+                'Partial Gertrude coverage: current and upcoming exhibition runs from one fixed '
+                'listing page; opening sessions, admission and availability are unverified.'),
     }
     if source_id in active:
         acquire, parse, limit, coverage = active[source_id]

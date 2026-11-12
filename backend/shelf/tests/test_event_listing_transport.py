@@ -39,6 +39,19 @@ class ListingTransportTests(TestCase):
             transport.moons24()
             self.assertEqual(send.call_args.args[0][-1],'https://24moons.com.au/events')
 
+    def test_gertrude_uses_fixed_target_and_shared_robots_listing_reservation(self):
+        with patch.object(transport, '_send', return_value=(404, b'')) as send:
+            receipt = transport.observe_robots('gertrude')
+            self.assertEqual(receipt, {'status': 404, 'allowed': True, 'delay': 10})
+            with self.assertRaises(transport.ListingIntervalPending):
+                transport.gertrude()
+        send.assert_called_once()
+        self.assertEqual(send.call_args.args[0][-1], 'https://gertrude.org.au/robots.txt')
+        with patch.object(transport, '_reserve'), patch.object(
+                transport, '_send', return_value=(200, b'HTML')) as send:
+            transport.gertrude()
+        self.assertEqual(send.call_args.args[0][-1], 'https://gertrude.org.au/exhibitions/')
+
     def test_refused_send_still_reserves_and_unsafe_state_never_fetches(self):
         with patch.object(transport, '_send', return_value=(403, b'CANARY')) as send:
             transport.venue303()
