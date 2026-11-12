@@ -1,4 +1,19 @@
-<article class="paper-panel" id="catalogue-card-{{ row.card.key }}" data-feedback-card data-card-key="{{ row.card.key }}" tabindex="-1">
+<article class="paper-panel{% if row.reference_only %} event-reference-card{% endif %}" id="catalogue-card-{{ row.card.key }}" data-feedback-card data-card-key="{{ row.card.key }}" tabindex="-1">
+  {% if row.reference_only %}
+  {% comment %}The caller separately checks saved_reference against current policy, restrictions, mode and occurrence identity. Never backfill this link from Candidate.url or treat a retained identity as fresh source evidence or a recommendation.{% endcomment %}
+  <p class="eyebrow">Saved event identity</p>
+  <h3>Saved event {% if row.saved_reference %}reference{% else %}identity{% endif %} — source details expired</h3>
+  <p>Stale — current source details are unverified. Your response is retained separately; this is not a new recommendation or a ticket check.</p>
+  <details><summary>Saved source identity</summary>
+    <p><small>Identity: {{ row.card.key }}</small></p>
+    {% if mode == 'household' and row.saved_reference.schema == 'event-saved-reference/v1' and row.saved_reference.official_url %}
+    <p>Recorded source: {{ row.saved_reference.source_id }}</p>
+    {% if row.saved_reference.occurrence_ref %}<p>Occurrence reference: <code>{{ row.saved_reference.occurrence_ref }}</code><br>Identification basis: {{ row.saved_reference.occurrence_basis }}</p>{% endif %}
+    <p><a href="{{ row.saved_reference.official_url }}" target="_blank" rel="noopener noreferrer">Original source page; current details unverified</a></p>
+    <p>Different sessions may share this page. The link does not confirm an exact current session.</p>
+    {% else %}<p>No checked source link is available. Only your saved response identity is shown; no source details have been reconstructed.</p>{% endif %}
+  </details>
+  {% else %}
   <p class="eyebrow">{% if row.card.kind == 'artist' %}Band / artist{% else %}{{ row.card.kind }}{% endif %}</p>
   <h3>{{ row.card.title }}</h3>
   <p class="for-you"><strong>For you</strong> · <span data-for-you data-version="{{ row.for_you.version }}">{% if row.for_you.text %}{{ row.for_you.text }}{% else %}An exploratory pick from {{ row.card.source }}. Your response can help shape future picks.{% endif %}</span></p>
@@ -27,10 +42,12 @@
   {% endif %}
   {% if row.card.kind == 'event' %}
   {% if row.card.gallery_data %}{% include 'cabinet/gallery_detail.html' with event=row.card %}{% else %}
-  <p>{{ row.card.starts_at|default:'Date unknown' }} · {{ row.date_status }}<br>
+  {% comment %}Source-listed date/range is attributed wording, not a timezone-confirmed start. Shared outgoing URLs do not merge distinct source/session card keys; the backend owns occurrence identity and cancellation filtering.{% endcomment %}
+  <p>{% if row.card.listed_date %}Source-listed date or range: {{ row.card.listed_date }}{% else %}{{ row.card.starts_at|default:'Date unknown' }}{% endif %} · {{ row.date_status }}<br>
   {{ row.card.venue }} · Locality: {{ row.card.locality|default:'unknown' }}<br>
   Distance unknown — coordinates unavailable. Price and availability are not guaranteed.</p>
   <p>{{ row.card.artwork_label }}. Entry fee: {{ row.card.entry_fee|default:'unknown; check official source' }}.</p>
+  {% if row.card.source_notice %}<p class="source-meta"><strong>Source notice:</strong> {{ row.card.source_notice }} · reported by the listing, not a seller or current ticket-availability check.</p>{% endif %}
   {% endif %}
   {% if row.card.source_id == 'beat' %}{% include 'cabinet/beat_detail.html' with event=row.card %}{% endif %}
   {% if row.card.source_id == 'rrr' %}
@@ -46,17 +63,20 @@
   {% if row.card.url %}<p><a href="{{ row.card.url }}" rel="noopener noreferrer" target="_blank">Deep dive: official source page</a></p>
   {% else %}<p>Deep-dive link unavailable for this {% if mode == 'sample' %}fixture{% else %}identity{% endif %}.</p>{% endif %}
   {% if row.card.kind == 'recording' %}<p>Listening link unavailable — source identity is not licensed audio or verified playback.</p>{% endif %}
-  {% if row.choice %}<p>Your current response: {{ row.choice }}. Respond again to correct it.</p>{% endif %}
+  {% endif %}
+  {% comment %}Humanize this saved response label only; native choices and stored history keep their original machine value.{% endcomment %}
+  {% if row.choice %}<p>Your current response: {% if row.reference_only and row.choice == 'mildly_interested' %}Mildly interested{% else %}{{ row.choice }}{% endif %}. Respond again to correct it.</p>{% endif %}
   {% if row.saved %}<p>Saved locally for later; this is not enjoyment or a listen.</p>{% endif %}
   {% if available %}
-  {% if queue != 'artist' and mode == 'household' and row.card.kind == 'artist' and row.card.provenance == 'manual-attributed' and row.card.key|slice:':19' == 'musicbrainz:artist:' %}
+  {% if not row.reference_only and queue != 'artist' and mode == 'household' and row.card.kind == 'artist' and row.card.provenance == 'manual-attributed' and row.card.key|slice:':19' == 'musicbrainz:artist:' %}
   <form method="post" action="{{ action_url }}">{% include 'cabinet/discovery_fields.html' %}
     <input type="hidden" name="key" value="{{ row.card.key }}">
     <label>Radio mode <select name="radio_mode"><option value="easy">Easy</option><option value="medium" selected>Medium</option><option value="hard">Hard</option></select></label>
     <button name="operation" value="radio">Read public ListenBrainz artist radio</button>
   </form>
   {% endif %}
-  <form data-feedback-form {% if row.choice %}data-feedback-correction="respond"{% endif %} method="post" action="{{ action_url }}">
+  {% comment %}Expired history is outside the recommendation deck. Use the full native POST rather than the JS partial-response path, whose deck-membership guard must remain intact. Current cards keep their existing interception/correction markers and all forms keep the same native fields.{% endcomment %}
+  <form {% if not row.reference_only %}data-feedback-form {% if row.choice %}data-feedback-correction="respond"{% endif %}{% endif %} method="post" action="{{ action_url }}">
     {% include 'cabinet/discovery_fields.html' %}
     <input type="hidden" name="key" value="{{ row.card.key }}">
     {% if not row.choice %}<input type="hidden" name="operation" value="respond">{% endif %}

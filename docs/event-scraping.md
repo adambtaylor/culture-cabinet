@@ -153,6 +153,84 @@ separate narrow persistence decision: an opaque saved ID is not advertised as a
 complete source reference. No new source store, native Enhance activation,
 scheduler, source expansion, model call or private browser access is added.
 
+### Saved references (EVENT-SCRAPER-02B)
+
+The optional `event.saved_reference` contains exactly schema, source_id,
+official_url, occurrence_ref, occurrence_basis and retention_policy_ref, bounded
+to 3072 UTF-8 bytes. Only a current server-owned event on Save or Respond can
+produce it. Existing whole-request receipts, human choices and save/Undo semantics
+remain unchanged. No title, date, body, image, availability or new taste card is
+stored through this field. Legacy rows are never backfilled from old card content.
+
+Persistent bookmark permission is separate from the 900-second content cache.
+Descriptors must supply a reviewed positive `reference_policy_ref`, a fixed
+`restriction_namespace`, and an exact public `reference_url_validator`. Missing
+policy means the existing opaque identity fallback, not permission by default.
+Architecture's 02B1 disposition leaves all five production policies null:
+no inspected source record establishes durable bookmark retention. This is a
+missing basis, not a finding that private bookmarks are prohibited. The reserved
+internal production identifier `event-private-bookmark-reference/v1` grants no
+permission. Tests supply `fixture-event-private-bookmark-reference/v1` only in
+fictional descriptors; production lookup rejects those references.
+
+`SOURCE_NAMESPACES` is the immutable literal map for PBS, RRR, 303, Forum and
+Moshtix to their respective `event-source:<source_id>` identities. No prefix
+parser recognizes arbitrary source IDs. `events` is only the existing Moshtix
+operation alias, not another restriction namespace. Restrictions remain valid
+with no references or FeedbackTarget and when an active descriptor/policy is
+missing. Recovery consumes the fixed map rather than inferring from labels or
+requiring present references. The helper's optional `namespace_map` input defaults
+to this immutable map; the original `descriptors` argument stays compatible.
+
+After cache loss, a validated reference uses `ReferenceCandidate`, whose `url`
+stays empty. `_display` supplies `reference_only` and the detached optional
+`saved_reference` separately to Experience's stale-link conditional. The source
+link does not assert navigation to an exact session, current content or stock.
+Reference-only identities are excluded from fresh recommendation ranking, remain
+available for the person's existing response/save actions and cannot refill a
+reference on a later Save. Fresh source candidates take precedence by exact key.
+
+`reference_only` means expired event history, including the real null-policy
+opaque fallback. It does not mean permission to retain a link. A non-null
+`saved_reference` independently identifies the checked permitted optional link;
+null means render a stale opaque identity without a link. A current source card
+without a URL still has `reference_only=False`. Consumers must use these explicit
+fields rather than infer expiry or permission from a title or missing URL.
+
+The pure helper exports `make_reference`, `validate_reference`,
+`project_references`, `redact_history` and `referenced_namespaces`. Callers hold
+the existing source-restriction barrier through reads/rendering or mutation;
+current denied retention hides links without GET purges or source calls. Taste
+owns the separate recovery transaction/replay/restore tail consuming the frozen
+helper; Experience owns the template and actual rendered evidence. The helper's
+detached redaction removes only this new field from every affected historical
+action, including undone saves. Component handler tests do not establish that
+separate recovery/restore or browser acceptance.
+
+### Coherent producer, interface and recovery candidate
+
+The E4 composition consumes PR83's producer/opaque-history corrections, PR84's
+source controls, PR85's corrected native history forms and PR90's recovery tail.
+The authored template and recovery files are consumed unchanged. Reference-only
+response forms use a full native POST: the partial response endpoint retains its
+current-deck membership guard and refuses an expired history row.
+
+`test_event_reference_integration.py` exercises those actual rendered forms with
+CSRF checks, a mocked PBS response and both fictional positive-reference and
+ordinary production-null policies. It checks expiry, recommendation exclusion,
+response/replay, save/Undo and a fresh authenticated session. Its separate isolated
+recovery case creates the reference through normal handlers, applies an actual
+source restriction without a FeedbackTarget and restores a pre-restriction backup.
+Only the optional reference is purged; choices, saved identity, receipts and nonce
+survive, and Undo cannot restore the removed reference. It uses the accepted
+isolated migrated-memory recovery fixture pattern without changing production
+authority, recovery or SQL guards.
+
+These are mocked-source handler/recovery checks, not live acquisition, real browser
+acceptance, a new retention permission or acceptance of all 35 sources. The first
+combined run retained three old assertions for raw status labels; the checks now
+assert both the actual outcome status and the interface's authored human wording.
+
 ### Bar Open / Make It Up Club (E5)
 
 The exact official homepage was reachable but exposed a Gigs shell without dated

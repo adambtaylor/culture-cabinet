@@ -66,7 +66,8 @@ class VenueEventUITests(TestCase):
         page = self.client.get(self.url)
         self.assertNotContains(page, 'SYNTHETIC')
         self.assertNotContains(page, 'CANARY')
-        self.assertContains(page, 'rate-limited')
+        self.assertContains(page, 'Read deferred')
+        self.assertEqual(page.context['public_results'][0]['outcome'].status, 'rate-limited')
 
     def test_forum_actual_action_replay_and_rendered_same_url_sessions(self):
         from shelf.tests.test_forum_events import listing as forum_listing, session
@@ -89,7 +90,8 @@ class VenueEventUITests(TestCase):
         with patch.object(transport, 'forum', side_effect=TimeoutError('CANARY')) as read:
             self.client.post(self.action, self.form('forum'))
             page = self.client.get(self.url)
-            self.assertContains(page, 'timeout')
+            self.assertContains(page, 'Read timed out')
+            self.assertEqual(page.context['public_results'][0]['outcome'].status, 'timeout')
             self.assertNotContains(page, 'CANARY')
             read.assert_called_once_with()
         data = self.form('forum')
