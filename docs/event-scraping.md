@@ -295,3 +295,36 @@ the correction, while retaining the original recognition/test failures. No body,
 poster or private/account endpoint is archived or followed. My Aeon's full
 working-source acceptance still needs a permitted current programme, source
 reference basis, rendered/browser evidence and independent acceptance.
+
+### West Space programme runs (E6)
+
+The fixed official `/whats-on/` page contains rendered programme cards with
+separate title, artist and explicit date-range text nodes. The thin adapter reads
+only those fields and their same-origin `/program/` links. It does not execute
+Gatsby scripts, fetch detail pages/images, adopt artwork offers or infer a
+performance lineup from an artist label. The observed robots path returned 404;
+the existing reader's 4xx rules and ten-second shared origin interval apply.
+
+Programme ranges remain separate from openings, hours and performances:
+`starts_at`, `ends_at` and `opening_date` stay unset. The existing pure gallery
+overlap helper selects current runs and runs starting within eight weeks; no
+gallery acquisition client is used. An abbreviated range takes its calendar-year
+context from the publisher's trailing year, including a November-to-January wrap,
+never from the retrieval date. A complete explicit range binds occurrence identity.
+Changed markup is invalid; recognized out-of-window-only cards are unavailable,
+not a verified current empty programme. The shared bounds remain 512 KiB,
+48 scanned cards, nine leads and fifteen-minute content retention.
+
+Fictional markup tests exercise normal guarded acquisition, replay/GET without
+additional reads, run rendering and explicit response/save/Undo/fresh-session
+identity persistence. They are component checks, not source-level real browser or
+independent working acceptance. Persistent source-link permission is not supplied.
+
+The actual guarded source action at `c1ab2a9` made one fixed HTTP200 read
+(15774 bytes) and returned two current overlapping programme runs, with explicit
+range occurrence identities and no invented opening/performance times. The May
+2027 card was outside the eight-week start window. POST/replay returned302 and
+render returned200; the single-request assertion covers replay and reload, and
+history remained empty. Only bounded fact/diagnostic evidence was retained, no
+page body or images. This is live normal-handler evidence, not a real rendered
+browser, source retention grant or independent working-source acceptance.
