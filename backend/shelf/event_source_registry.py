@@ -11,7 +11,9 @@ from urllib.parse import urlsplit
 from shelf.discovery_sources import SourceError
 
 # Restriction identities outlive acquisition and bookmark-policy readiness.
-# This is a closed map, not permission or an event-source:* prefix parser.
+# Keep the map closed to reviewed grants: Linden's adapter is available, but its
+# source evidence supplies no durable-reference grant, so Linden stays opaque.
+# This is not permission or an event-source:* prefix parser.
 SOURCE_NAMESPACES = MappingProxyType({
     'pbs': 'event-source:pbs', 'rrr': 'event-source:rrr',
     'venue303': 'event-source:venue303', 'forum': 'event-source:forum',
