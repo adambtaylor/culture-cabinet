@@ -78,6 +78,26 @@ class ListingTransportTests(TestCase):
              patch.object(transport, '_send', return_value=(200, b'<html>challenge</html>')):
             with self.assertRaises(SourceError): transport.observe_robots('venue303')
 
+    def test_empty_successful_robots_has_no_exclusion_rules(self):
+        with patch.object(transport,'_send',return_value=(200,b'')) as send:
+            receipt=transport.observe_robots('my_aeon')
+            self.assertTrue(receipt['allowed'])
+            self.assertEqual(receipt['delay'],10)
+            with self.assertRaises(transport.ListingIntervalPending):transport.my_aeon()
+            send.assert_called_once()
+
+    def test_empty_robots_does_not_relax_retained_stricter_origin_delay(self):
+        with patch.dict(transport._DELAYS,{'my_aeon':10}), \
+             patch.object(transport.time,'monotonic',return_value=100) as clock, \
+             patch.object(transport,'_send',side_effect=[
+                 (200,b'User-agent: *\nCrawl-delay: 20\n'),(200,b'')]) as send:
+            self.assertEqual(transport.observe_robots('my_aeon')['delay'],20)
+            clock.return_value=121
+            self.assertTrue(transport.observe_robots('my_aeon')['allowed'])
+            clock.return_value=132
+            with self.assertRaises(transport.ListingIntervalPending):transport.my_aeon()
+            self.assertEqual(send.call_count,2)
+
     def test_stricter_policy_is_visible_to_a_fresh_process(self):
         import subprocess, sys
         with patch.dict(transport._DELAYS, {'venue303': 10}), patch.object(transport, '_send',

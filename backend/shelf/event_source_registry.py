@@ -71,6 +71,11 @@ def _moons24(now):
     return moons24()
 
 
+def _my_aeon(now):
+    from shelf.event_listing_transport import my_aeon
+    return my_aeon()
+
+
 def _parse_rrr(raw, *, now, retrieved_at):
     from shelf.rrr_events import parse_listing
     return parse_listing(raw, retrieved_at=retrieved_at)
@@ -103,6 +108,11 @@ def _parse_bar_open(raw, *, now, retrieved_at):
 
 def _parse_moons24(raw, *, now, retrieved_at):
     from shelf.moons24_events import parse_listing
+    return parse_listing(raw, retrieved_at=retrieved_at)
+
+
+def _parse_my_aeon(raw, *, now, retrieved_at):
+    from shelf.my_aeon_events import parse_listing
     return parse_listing(raw, retrieved_at=retrieved_at)
 
 
@@ -174,14 +184,23 @@ def _descriptor(row):
                 'Partial 24 Moons coverage: current-week plus later programme, up to nine leads '
                 'within eight weeks. Unknown dates remain unverified; source links open the '
                 'programme, not an exact session or a checked seller.'),
+        'my_aeon': (_my_aeon, _parse_my_aeon, 524288,
+                'Partial My Aeon coverage: one official listing, up to nine leads; known dates limited '
+                'to eight weeks. Date-only labels are not show times; unknown dates and ticket '
+                'availability remain unverified.'),
     }
     if source_id in active:
         acquire, parse, limit, coverage = active[source_id]
-        missing = ('The official page is reachable, but this reader cannot establish a dated programme. '
-            'A weekly recurrence is not a confirmed next event. Check the official source for details.')
+        missing = {
+            'bar_open': ('The official page is reachable, but this reader cannot establish a dated programme. '
+                'A weekly recurrence is not a confirmed next event. Check the official source for details.'),
+            'my_aeon': ('The official listing supplies no supported current leads in this page. '
+                'Old years are not rolled forward; this is not proof that no upcoming events exist. '
+                'Check the official source for the current programme.'),
+        }
         return EventSourceDescriptor(**common, acquire=acquire, parse=parse, coverage=coverage,
             access_state='access-unverified' if source_id == 'forum' else 'implemented-unproved',
-            unavailable_message=missing if source_id == 'bar_open' else 'This source is not connected yet.',
+            unavailable_message=missing.get(source_id,'This source is not connected yet.'),
             max_bytes=limit, retention_seconds=900,
             policy_scope='Existing bounded factual-link scope only; no model or redistribution grant.')
     blocked = {

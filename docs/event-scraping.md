@@ -179,7 +179,6 @@ It needs a usable current programme or a separately scoped legitimate visual
 observation path; existing social links do not grant private access. This source
 failure does not hold My Aeon or other assigned adapters.
 
-
 ### 24 Moons (E5 first slice)
 
 `moons24` adds only the fixed official `/events` programme and its exact robots
@@ -265,3 +264,34 @@ Tests cover one shared stricter delay, fixed destinations, unchanged independent
 source receipt names, zero-I/O gates and authenticated action/replay/render with
 no taste writes. They prove readiness and truthful access handling, not current
 Melbourne gig acquisition, article-as-gig semantics or working-source acceptance.
+
+### My Aeon (E5)
+
+The adapter recognizes the exact official Webflow event header/list/card fields.
+It preserves explicit calendar years, date-only precision and unknown show time,
+timezone, admission, lineup and availability. Known dates are filtered to the
+local eight-week window; unknown-year labels remain unresolved observations.
+An unsupported explicit year/date format fails visibly rather than hiding an
+old year as an unknown current lead. Exact URL/date duplicates may reconcile;
+similar titles, different URLs or separate dates never bridge identities.
+The shared 48-card/nine-lead limits and existing transient cache remain.
+
+The actual official page still supplies January–April 2026 cards in November.
+One normal guarded action at `46a5b51` fetched HTTP200 (27663 bytes) and returned
+`unavailable`, not successful empty or a rolled-forward current programme.
+Replay/GET extra acquisitions and acquired taste-history rows were zero. Current
+card fixtures exercise the supported parser, but no current live event is claimed.
+
+The first robots response was HTTP200 with exactly zero bytes. The prior reader
+rejected it locally. The narrow correction recognizes a valid empty file with no
+groups/rules under [RFC 9309 sections 2.2/2.2.1](https://www.rfc-editor.org/rfc/rfc9309.html#section-2.2.1).
+The exact original empty body was reinterpreted from its retained byte count/hash
+without another source request. Nonempty unknown text, challenge HTML, denials,
+transport failures and Forum's gate remain unchanged; existing stricter pacing
+survives an empty file. This is protocol parsing, not a content/retention licence.
+
+Saved focused evidence records 76 pure and 7 normal-handler checks passing after
+the correction, while retaining the original recognition/test failures. No body,
+poster or private/account endpoint is archived or followed. My Aeon's full
+working-source acceptance still needs a permitted current programme, source
+reference basis, rendered/browser evidence and independent acceptance.

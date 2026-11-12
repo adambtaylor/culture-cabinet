@@ -24,10 +24,11 @@ TARGETS = MappingProxyType({
     'improv_conspiracy': ('https://improvconspiracy.com/', 'https://improvconspiracy.com/robots.txt'),
     'triple_j': ('https://www.abc.net.au/triplej/touring', 'https://www.abc.net.au/robots.txt'),
     'double_j': ('https://www.abc.net.au/listen/doublej/touring', 'https://www.abc.net.au/robots.txt'),
+    'my_aeon': ('https://www.myaeon.com.au/my-aeon-events', 'https://www.myaeon.com.au/robots.txt'),
 })
 _DELAYS = {'venue303': 10, 'forum': 10, 'bar_open': 10, 'moons24': 10,
            'affordable_art_fair': 10, 'improv_conspiracy': 10,
-           'triple_j': 10, 'double_j': 10}
+           'triple_j': 10, 'double_j': 10, 'my_aeon': 10}
 _ORIGIN_GROUPS = MappingProxyType({'triple_j': 'abc', 'double_j': 'abc'})
 _RATE_DIRECTORY = '/tmp'
 # Initial bounded observations: 303 robots allowed this path; Forum returned
@@ -38,7 +39,7 @@ _RATE_DIRECTORY = '/tmp'
 LISTING_ACCESS = MappingProxyType({'venue303': True, 'forum': False, 'bar_open': True,
                                  'moons24': True, 'affordable_art_fair': False,
                                  'improv_conspiracy': True, 'triple_j': False,
-                                 'double_j': False})
+                                 'double_j': False, 'my_aeon': True})
 
 
 class ListingIntervalPending(SourceError):
@@ -143,17 +144,21 @@ def double_j():
     return _read('double_j')
 
 
-def observe_robots(source_id):
-    """Explicit readiness observation only; listing actions never crawl robots.
+def my_aeon():
+    return _read('my_aeon')
 
-    The engineering caller records this receipt and honors allowed/delay before
-    its first live listing. Robots permission is not a content/model licence.
-    """
-    code, raw = _read(source_id, robots=True)
+
+def _robots_rules(source_id, code, raw):
+    """Pure interpretation also permits checking exact retained source bytes."""
     if code == 404:
         return {'status': code, 'allowed': True, 'delay': 10}
     if code != 200:
         return {'status': code, 'allowed': False, 'delay': 10}
+    # RFC9309 sections 2.2/2.2.1: zero groups is a valid empty robots file and
+    # has no applicable rules. Only exact empty success is added here; nonempty
+    # unknown text/HTML, denial and transport failure keep existing behaviour.
+    if raw == b'':
+        return {'status': code, 'allowed': True, 'delay': 10}
     text = raw.decode('utf-8')
     if (not any(line.lower().startswith('user-agent:') for line in text.splitlines())
             or '<html' in text.lower() or '<!doctype' in text.lower()):
@@ -164,6 +169,18 @@ def observe_robots(source_id):
     rate = rules.request_rate(USER_AGENT)
     if rate:
         delay = max(delay, rate.seconds / rate.requests)
-    _DELAYS[source_id] = delay
-    _reserve(source_id, policy_delay=delay)
     return {'status': code, 'allowed': rules.can_fetch(USER_AGENT, TARGETS[source_id][0]), 'delay': delay}
+
+
+def observe_robots(source_id):
+    """Explicit readiness observation only; listing actions never crawl robots.
+
+    The engineering caller records this receipt and honors allowed/delay before
+    its first live listing. Robots permission is not a content/model licence.
+    """
+    code, raw = _read(source_id, robots=True)
+    receipt = _robots_rules(source_id, code, raw)
+    if code == 200:
+        _DELAYS[source_id] = receipt['delay']
+        _reserve(source_id, policy_delay=receipt['delay'])
+    return receipt
