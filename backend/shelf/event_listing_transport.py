@@ -23,8 +23,9 @@ TARGETS = MappingProxyType({
     'comedy_festival': ('https://www.comedyfestival.com.au/browse-shows/', 'https://www.comedyfestival.com.au/robots.txt'),
     'fringe': ('https://www.melbournefringe.com.au/whats-on/events', 'https://www.melbournefringe.com.au/robots.txt'),
     'gertrude': ('https://gertrude.org.au/exhibitions/', 'https://gertrude.org.au/robots.txt'),
+    'arts_house': ('https://www.artshouse.com.au/whats-on/', 'https://www.artshouse.com.au/robots.txt'),
 })
-_DELAYS = {'venue303': 10, 'forum': 10, 'moons24': 10, 'miff': 10, 'comedy_festival': 10, 'fringe': 10, 'gertrude': 10}
+_DELAYS = {'venue303': 10, 'forum': 10, 'moons24': 10, 'miff': 10, 'comedy_festival': 10, 'fringe': 10, 'gertrude': 10, 'arts_house': 10}
 _RATE_DIRECTORY = '/tmp'
 # Initial bounded observations: 303 robots allowed this path; Forum returned
 # unrecognized content. The first exact 24 Moons robots read allowed /events
@@ -32,7 +33,7 @@ _RATE_DIRECTORY = '/tmp'
 # and synthetic caller remain testable. This is not model/republication consent.
 LISTING_ACCESS = MappingProxyType({'venue303': True, 'forum': False, 'moons24': True,
                                  'miff': True, 'comedy_festival': True, 'fringe': True,
-                                 'gertrude': True})
+                                 'gertrude': True, 'arts_house': True})
 
 
 class ListingIntervalPending(SourceError):
@@ -128,6 +129,10 @@ def fringe():
 
 def gertrude():
     return _read('gertrude')
+
+
+def arts_house():
+    return _read('arts_house')
 
 
 def observe_robots(source_id):

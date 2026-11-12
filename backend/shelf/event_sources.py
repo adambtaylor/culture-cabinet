@@ -58,6 +58,8 @@ SOURCES = MappingProxyType({
         'editorial','all','bounded-public-html'),
     'gertrude': EventSource('Gertrude exhibitions', 'https://gertrude.org.au/exhibitions/',
         'venue', 'gallery', 'bounded-public-html; factual exhibition runs only'),
+    'arts_house': EventSource('Arts House', 'https://www.artshouse.com.au/whats-on/',
+        'venue', 'all', 'bounded-public-html'),
     'darebin': EventSource('Darebin Arts',
         'https://arts.darebin.vic.gov.au/Whats-on/Event-calendar', 'council_arts', 'community'),
     'thornbury': EventSource('Thornbury Theatre',

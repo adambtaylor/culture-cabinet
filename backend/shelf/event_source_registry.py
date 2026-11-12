@@ -76,6 +76,11 @@ def _gertrude(now):
     return gertrude()
 
 
+def _arts_house(now):
+    from shelf.event_listing_transport import arts_house
+    return arts_house()
+
+
 def _parse_rrr(raw, *, now, retrieved_at):
     from shelf.rrr_events import parse_listing
     return parse_listing(raw, retrieved_at=retrieved_at)
@@ -113,6 +118,11 @@ def _parse_fringe(raw, *, now, retrieved_at):
 
 def _parse_gertrude(raw, *, now, retrieved_at):
     from shelf.gertrude_events import parse_listing
+    return parse_listing(raw, now=now, retrieved_at=retrieved_at)
+
+
+def _parse_arts_house(raw, *, now, retrieved_at):
+    from shelf.arts_house_events import parse_listing
     return parse_listing(raw, now=now, retrieved_at=retrieved_at)
 
 
@@ -187,6 +197,9 @@ def _descriptor(row):
         'gertrude': (_gertrude, _parse_gertrude, 524288,
                 'Partial Gertrude coverage: current and upcoming exhibition runs from one fixed '
                 'listing page; opening sessions, admission and availability are unverified.'),
+        'arts_house': (_arts_house, _parse_arts_house, 524288,
+                'Partial Arts House coverage: up to nine eligible dated programme cards from one '
+                'fixed listing page; date ranges are programme runs, not individual sessions.'),
     }
     if source_id in active:
         acquire, parse, limit, coverage = active[source_id]
@@ -194,7 +207,10 @@ def _descriptor(row):
             access_state='access-unverified' if source_id == 'forum' else 'implemented-unproved',
             unavailable_message=('This bounded Fringe listing establishes no eligible current event; '
                 'past festival rows are not current or year-round Common Rooms coverage.')
-                if source_id=='fringe' else 'This source is not connected yet.',
+                if source_id=='fringe' else
+                ('This bounded Arts House listing establishes no eligible current programme card; '
+                 'date ranges are programme runs, not individual sessions.')
+                if source_id=='arts_house' else 'This source is not connected yet.',
             max_bytes=limit, retention_seconds=900,
             policy_scope='Existing bounded factual-link scope only; no model or redistribution grant.')
     blocked = {
