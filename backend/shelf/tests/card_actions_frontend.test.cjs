@@ -302,6 +302,30 @@ test('pending and failed response show unknown status with a single native recov
     assert.equal(message.textContent.includes('Response recorded'), recorded);
   }
 });
+test('slot compensation measures settled geometry before entry motion, keeping final position and focus', () => {
+  for (const reduced of [false, true]) {
+    let scroll = 1926, entryOffset = 0, measuredOffset = null, focus = null;
+    const steps = [], heading = { focus(options) { focus = options; steps.push('focus'); } };
+    const anchor = { style: {}, querySelector: () => heading,
+      getBoundingClientRect() { measuredOffset = entryOffset; steps.push('measure'); return { top: 1936 - scroll + entryOffset }; },
+      classList: { add(name) { assert.equal(name, 'card-slot-enter'); entryOffset = reduced ? 0 : 10; steps.push('enter'); } } };
+    const viewport = { scrollBy(options) { assert.equal(options.behavior, 'instant'); scroll += options.top; steps.push('scroll'); } };
+    slots.positionCardSlot(anchor, { top: -110.796875, height: 700, focus: true }, viewport, true);
+    assert.deepEqual(steps, ['focus', 'measure', 'scroll', 'enter']);
+    assert.equal(measuredOffset, 0, 'entry transform must never influence viewport compensation');
+    assert.equal(anchor.style.minHeight, '700px'); assert.equal(heading.tabIndex, -1);
+    assert.deepEqual(focus, { preventScroll: true });
+    entryOffset = 0; // The normal entry animation has finished; reduced motion never offset it.
+    assert.equal(anchor.getBoundingClientRect().top, -110.796875, 'settled replacement retains its occupied slot');
+  }
+});
+test('no-successor positioning neither animates nor steals focus moved to another control', () => {
+  let scrolls = 0;
+  const anchor = { style: {}, querySelector: () => ({ focus() { assert.fail('Unrelated control keeps focus'); } }),
+    getBoundingClientRect: () => ({ top: 17 }), classList: { add() { assert.fail('No incoming successor'); } } };
+  slots.positionCardSlot(anchor, { top: 17, height: 600, focus: false }, { scrollBy(options) { scrolls++; assert.equal(options.top, 0); } }, false);
+  assert.equal(scrolls, 1); assert.equal(anchor.style.minHeight, '600px');
+});
 test('contextual read retains category, connection and run barriers with redirects forbidden and no second write', async () => {
   const f = slotFixture(), calls = [];
   f.pageURL += '&connection_ref=' + slotRef(8) + '&run_ref=' + slotRef(9) + '&category=movie';

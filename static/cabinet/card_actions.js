@@ -221,6 +221,16 @@
     root.prepend(message);
     return message;
   }
+  function positionCardSlot(anchor, prepared, viewport, enter) {
+    anchor.style.minHeight = prepared.height + 'px';
+    const heading = anchor.querySelector('h3');
+    if (prepared.focus && heading) { heading.tabIndex = -1; heading.focus({ preventScroll: true }); }
+    // Measure the settled layout before starting the decorative transform.
+    // Compensating for an animated offset leaves a lasting scroll error after
+    // that offset disappears. Focus must not add a second scroll adjustment.
+    viewport.scrollBy({ top: anchor.getBoundingClientRect().top - prepared.top, behavior: 'instant' });
+    if (enter) anchor.classList.add('card-slot-enter');
+  }
   function one(root, selector) {
     const nodes = root.querySelectorAll(selector);
     if (nodes.length !== 1) throw new SlotReadError();
@@ -305,7 +315,7 @@
       boundNoiseInputs.add(input);
     }
   }
-  if (typeof module !== 'undefined' && module.exports) module.exports = { HoldGesture, SubmissionGate, targetAt, bindNoiseControls, confirmedSlotResult, refreshMarker, cabinetReadURL, saveRedirectURL, boundedSlotHTML, requestCardSave, encodeCardAction, showCardPending, renderSlotFailure, parseSlotDocument, currentSlotView };
+  if (typeof module !== 'undefined' && module.exports) module.exports = { HoldGesture, SubmissionGate, targetAt, bindNoiseControls, confirmedSlotResult, refreshMarker, cabinetReadURL, saveRedirectURL, boundedSlotHTML, requestCardSave, encodeCardAction, showCardPending, renderSlotFailure, positionCardSlot, parseSlotDocument, currentSlotView };
   if (typeof document === 'undefined') return;
   // Guide/Prepare pages have no cards; the range binding must precede that exit.
   bindNoiseControls(document);
@@ -472,7 +482,6 @@
           result.saved.node.replaceWith(placeholder);
           result.next.node.replaceWith(result.saved.node);
           placeholder.replaceWith(result.next.node); anchor = result.next.node;
-          anchor.classList.add('card-slot-enter');
         }
         slotMessage(anchor, result.next ? labels[submitted.action] + ' recorded. Next available pick in this category. Your previous response and Undo remain in the deck.' :
           labels[submitted.action] + ' recorded. No later unanswered pick is available in this category. You can review or Undo this response here.');
@@ -493,10 +502,7 @@
         try { window.CabinetObtain?.mount(status); } catch (_) { /* Native Obtain details remain available. */ }
       }
       if (anchor) {
-        anchor.style.minHeight = prepared.height + 'px';
-        const heading = anchor.querySelector('h3');
-        if (shouldFocus && heading) { heading.tabIndex = -1; heading.focus({ preventScroll: true }); }
-        window.scrollBy({ top: anchor.getBoundingClientRect().top - targetTop, behavior: 'instant' });
+        positionCardSlot(anchor, { height: prepared.height, top: targetTop, focus: shouldFocus }, window, !!result?.next);
       } else if (shouldFocus) view.status.querySelector('[data-card-slot-feedback]')?.focus({ preventScroll: true });
       announcer.textContent = result?.next ? 'Response recorded. Next pick ready in the same place.' : 'Response recorded. Current cabinet refreshed.';
     } catch (error) { showSlotFailure(card, recorded || error?.recorded === true, error?.refused === true); }
