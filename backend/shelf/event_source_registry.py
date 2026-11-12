@@ -66,6 +66,11 @@ def _bar_open(now):
     return bar_open()
 
 
+def _west_space(now):
+    from shelf.event_listing_transport import west_space
+    return west_space()
+
+
 def _moons24(now):
     from shelf.event_listing_transport import moons24
     return moons24()
@@ -103,6 +108,11 @@ def _parse_moshtix(raw, *, now, retrieved_at):
 
 def _parse_bar_open(raw, *, now, retrieved_at):
     from shelf.bar_open_events import parse_listing
+    return parse_listing(raw, retrieved_at=retrieved_at)
+
+
+def _parse_west_space(raw, *, now, retrieved_at):
+    from shelf.west_space_events import parse_listing
     return parse_listing(raw, retrieved_at=retrieved_at)
 
 
@@ -180,6 +190,9 @@ def _descriptor(row):
         'bar_open': (_bar_open, _parse_bar_open, 524288,
                 'Partial Bar Open coverage: the official Make It Up Club page only; '
                 'venue-wide dated inventory is unverified.'),
+        'west_space': (_west_space, _parse_west_space, 524288,
+                'Partial West Space coverage: one programme index, up to nine overlapping/current '
+                'or next-eight-week runs. A date range is not an opening, daily hours or a confirmed session.'),
         'moons24': (_moons24, _parse_moons24, 524288,
                 'Partial 24 Moons coverage: current-week plus later programme, up to nine leads '
                 'within eight weeks. Unknown dates remain unverified; source links open the '
@@ -197,6 +210,8 @@ def _descriptor(row):
             'my_aeon': ('The official listing supplies no supported current leads in this page. '
                 'Old years are not rolled forward; this is not proof that no upcoming events exist. '
                 'Check the official source for the current programme.'),
+            'west_space': ('No supported current or next-eight-week programme run was established '
+                'on this page; this is not proof of no events.'),
         }
         return EventSourceDescriptor(**common, acquire=acquire, parse=parse, coverage=coverage,
             access_state='access-unverified' if source_id == 'forum' else 'implemented-unproved',

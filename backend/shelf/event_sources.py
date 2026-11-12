@@ -56,6 +56,8 @@ SOURCES = MappingProxyType({
     'pbs': EventSource('PBS events', 'https://www.pbsfm.org.au/news/pbs-events', 'radio_editorial', 'music'),
     'my_aeon': EventSource('My Aeon', 'https://www.myaeon.com.au/my-aeon-events',
         'venue', 'music', 'bounded-public-html'),
+    'west_space': EventSource('West Space', 'https://westspace.org.au/whats-on/',
+        'venue', 'gallery', 'bounded-public-html'),
     'darebin': EventSource('Darebin Arts',
         'https://arts.darebin.vic.gov.au/Whats-on/Event-calendar', 'council_arts', 'community'),
     'thornbury': EventSource('Thornbury Theatre',

@@ -14,6 +14,18 @@ class ListingTransportTests(TestCase):
         self.setting = patch.object(transport, '_RATE_DIRECTORY', self.directory.name)
         self.setting.start(); self.addCleanup(self.setting.stop)
 
+    def test_west_space_fixed_target_uses_same_robots_listing_origin_reservation(self):
+        with patch.object(transport, '_send', return_value=(404, b'Not found')) as send:
+            self.assertTrue(transport.observe_robots('west_space')['allowed'])
+            self.assertEqual(send.call_args.args[0][-1], 'https://westspace.org.au/robots.txt')
+            with self.assertRaises(transport.ListingIntervalPending):
+                transport.west_space()
+            send.assert_called_once()
+        with patch.object(transport, '_reserve'), patch.object(transport, '_send',
+                return_value=(200, b'HTML')) as send:
+            transport.west_space()
+            self.assertEqual(send.call_args.args[0][-1], 'https://westspace.org.au/whats-on/')
+
     def test_fixed_bounds_same_origin_refusal_and_other_origin_independence(self):
         with patch.object(transport, '_send', return_value=(200, b'HTML')) as send:
             transport.venue303()
