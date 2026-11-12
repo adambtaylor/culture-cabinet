@@ -40,6 +40,8 @@ class EventSource:
 
 # A registry entry is source navigation, not an event or a connected website API.
 SOURCES = MappingProxyType({
+    'venue303': EventSource('303 gigs and events', 'https://303.net.au/gigs-events',
+        'venue', 'music', 'bounded-public-html'),
     'halftix': EventSource('Halftix Melbourne', 'https://halftixmelbourne.com/all-events/',
         'ticket_retailer', 'all', 'manual-link-only; permission-required'),
     'beat': EventSource('Beat Magazine', 'https://beat.com.au/gig-guide/',
@@ -52,6 +54,10 @@ SOURCES = MappingProxyType({
     'forum': EventSource('Forum Melbourne', 'https://forummelbourne.com.au/shows', 'venue', 'music'),
     'rrr': EventSource('Triple R events', 'https://www.rrr.org.au/events', 'radio_editorial', 'music'),
     'pbs': EventSource('PBS events', 'https://www.pbsfm.org.au/news/pbs-events', 'radio_editorial', 'music'),
+    'my_aeon': EventSource('My Aeon', 'https://www.myaeon.com.au/my-aeon-events',
+        'venue', 'music', 'bounded-public-html'),
+    'west_space': EventSource('West Space', 'https://westspace.org.au/whats-on/',
+        'venue', 'gallery', 'bounded-public-html'),
     'darebin': EventSource('Darebin Arts',
         'https://arts.darebin.vic.gov.au/Whats-on/Event-calendar', 'council_arts', 'community'),
     'thornbury': EventSource('Thornbury Theatre',
@@ -74,6 +80,8 @@ class EventEvidence:
     provenance: str
     snapshot_sha256: str
     position: int
+    occurrence_ref: str | None = None
+    occurrence_basis: str | None = None
 
 
 @dataclass(frozen=True)
@@ -116,9 +124,57 @@ class EventCandidate(Candidate):
     entry_currency: str | None = None
     evidence: tuple = ()
     lineup_references: tuple[LineupReference, ...] = ()
+    occurrence_ref: str | None = None
+    occurrence_basis: str | None = None
 
     def date_status(self, now):
         return event_timing(self, now)
+
+
+OCCURRENCE_BASES = frozenset({'source_session_id', 'explicit_datetime', 'explicit_date',
+                              'explicit_range', 'unresolved_observation'})
+
+
+@dataclass(frozen=True)
+class ListingEvent(EventCandidate):
+    """Small attributed listing labels; no article or seller inventory."""
+    listed_date: str = ''
+    source_notice: str = ''
+
+    def date_status(self, now):
+        precision = ('date/time unverified' if self.date_precision == 'unknown' else
+                     'timezone unverified' if self.event_timezone is None else event_timing(self, now))
+        scope = ('unresolved observation; no stable session identity' if
+                 self.occurrence_basis == 'unresolved_observation' else self.occurrence_basis)
+        notice = f' Source notice: {self.source_notice} (not a seller check).' if self.source_notice else ''
+        return f'Source lists {self.listed_date or "unknown date"}; {precision}; {scope}.{notice}'
+
+
+def occurrence_event(event, *, session_id=None, unresolved=False):
+    """Bind one explicitly observed occurrence, never a show URL alias.
+
+    Local clocks may distinguish labelled sessions even if their timezone is
+    unknown. Unresolved dates instead identify only this snapshot/position.
+    """
+    evidence, = event.evidence
+    if unresolved:
+        basis = 'unresolved_observation'
+        discriminator = f'{evidence.snapshot_sha256}\0{evidence.position}'
+    elif session_id is not None:
+        basis, discriminator = 'source_session_id', label(session_id)
+    elif event.source_start:
+        basis = ('explicit_range' if event.source_end else
+                 'explicit_datetime' if 'T' in event.source_start else 'explicit_date')
+        discriminator = '\0'.join((event.official_url, event.source_start,
+                                   event.source_end or '', event.date_precision, event.end_precision))
+    else:
+        basis = 'unresolved_observation'
+        discriminator = f'{evidence.snapshot_sha256}\0{evidence.position}'
+    ref = 'v1:' + sha256(f'{basis}\0{discriminator}'.encode()).hexdigest()
+    key = sha256(f'occurrence-v1\0{event.source_id}\0{ref}'.encode()).hexdigest()
+    bound = replace(evidence, occurrence_ref=ref, occurrence_basis=basis)
+    return replace(event, key=identity('fixture' if event.provenance == 'fixture' else 'official', 'event', key),
+                   occurrence_ref=ref, occurrence_basis=basis, evidence=(bound,))
 
 
 def _aware(now):
@@ -483,6 +539,18 @@ def fetch_moshtix(now):
 def _aliases(event):
     # Fixture and supplied/live identities cannot reconcile with each other.
     mode = 'fixture' if event.provenance == 'fixture' else 'source'
+    if event.occurrence_ref is not None or event.occurrence_basis is not None:
+        label(event.occurrence_ref)
+        if event.occurrence_basis not in OCCURRENCE_BASES or any(
+                e.source_id != event.source_id or e.occurrence_ref != event.occurrence_ref
+                or e.occurrence_basis != event.occurrence_basis
+                or (e.provenance == 'fixture') != (mode == 'fixture') for e in event.evidence):
+            raise SourceError('Evidence must address one occurrence and source mode.')
+        # A legacy record with the same URL/show ID cannot bridge sessions.
+        # The separate alias namespace also prevents transitive cross-mode joins.
+        return {(mode, 'occurrence', event.source_id, event.occurrence_ref)}
+    if any(e.occurrence_ref is not None or e.occurrence_basis is not None for e in event.evidence):
+        raise SourceError('Legacy event cannot carry occurrence evidence.')
     return {(mode, 'id', e.source_id, e.event_id) for e in event.evidence if e.event_id} | {
         (mode, 'url', e.official_url) for e in event.evidence if e.official_url}
 

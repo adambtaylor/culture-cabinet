@@ -318,10 +318,35 @@ def strict_json(raw):
                       parse_float=finite_float)
 
 
-def fetch_public(operation, seed, mode, now):
+def parse_public_event_response(raw, *, now, retrieved_at):
+    """The accepted one-row Moshtix projection, shared by both normal controls."""
+    document = strict_json(raw)
+    cards = parse_events(document, retrieved_at)
+    rows = document['data']['viewer']['getEvents']['items']
+    if len(rows) > 1:
+        raise SourceError('Public page budget exceeded.')
+    for row in rows:
+        venue = row['venue']
+        if (type(row['id']) is not int or type(venue['id']) is not int or venue['id'] <= 0
+                or venue['address']['region'] != 'VIC' or not label(venue['name'])
+                or not label(venue['address']['locality'])
+                or timestamp(row['startDate']) is None
+                or not now.replace(microsecond=0) <= timestamp(row['startDate']) <= now + timedelta(weeks=8)):
+            raise SourceError('Invalid public event fields.')
+    return tuple(cards)
+
+
+def fetch_public(operation, seed, mode, now, *, source_id='', event_route=''):
     """Only the explicit authenticated POST binds this runtime transport."""
     from shelf import discovery_transport as transport
     try:
+        if type(event_route) is not str:
+            raise SourceError('Invalid fixed event route.')
+        if operation == 'event_source' and not seed and not mode:
+            from shelf.event_scraping import collect
+            return collect(source_id, now=now, **({'event_route': event_route} if event_route else {}))
+        if source_id or event_route:
+            raise SourceError('Unexpected event source field.')
         if operation == 'gallery' and not seed and not mode:
             from shelf.gallery_sources import fetch
             return fetch(now)
@@ -334,6 +359,9 @@ def fetch_public(operation, seed, mode, now):
         if operation == 'pbs' and not seed and not mode:
             from shelf.event_scraping import collect
             return collect('pbs', now=now)
+        if operation in ('venue303', 'forum') and not seed and not mode:
+            from shelf.event_scraping import collect
+            return collect(operation, now=now)
         if operation == 'rrr' and not seed and not mode:
             from shelf.event_scraping import collect
             return collect('rrr', now=now)
@@ -353,22 +381,10 @@ def fetch_public(operation, seed, mode, now):
             from shelf.beat_events import parse_listing
             cards = parse_listing(raw, retrieved_at=now.isoformat())
             return Outcome('ready' if cards else 'empty', cards, 'Partial coverage: up to nine single-date Beat leads within 14 days from the first 48 cards. Multi-day runs omitted; times, status and tickets need confirmation.')
-        document = strict_json(raw)
         if operation == 'radio':
-            cards = parse_radio(document, seed, now.isoformat())
+            cards = parse_radio(strict_json(raw), seed, now.isoformat())
         else:
-            cards = parse_events(document, now.isoformat())
-            rows = document['data']['viewer']['getEvents']['items']
-            if len(rows) > 1:
-                raise SourceError('Public page budget exceeded.')
-            for row in rows:
-                venue = row['venue']
-                if (type(row['id']) is not int or type(venue['id']) is not int or venue['id'] <= 0
-                        or venue['address']['region'] != 'VIC' or not label(venue['name'])
-                        or not label(venue['address']['locality'])
-                        or timestamp(row['startDate']) is None
-                        or not now.replace(microsecond=0) <= timestamp(row['startDate']) <= now + timedelta(weeks=8)):
-                    raise SourceError('Invalid public event fields.')
+            cards = parse_public_event_response(raw, now=now, retrieved_at=now.isoformat())
         return Outcome('ready' if cards else 'empty', tuple(cards),
                        'Partial source coverage; availability unverified.' if cards else
                        'Source returned no results in this bounded request; coverage remains unknown.')

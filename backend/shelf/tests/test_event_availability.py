@@ -217,3 +217,33 @@ class AvailabilityTests(TestCase):
                   for i in range(a.MAX_MEMORY)]
         with self.assertRaises(SourceError):
             a.reduce_availability([item], [seller(item)], now=NOW, previous=memory)
+
+
+class OccurrenceSellerBindingTests(TestCase):
+    def test_seller_for_other_occurrence_with_same_url_is_rejected(self):
+        from shelf.event_sources import occurrence_event
+        first = occurrence_event(event())
+        second = occurrence_event(replace(event(), source_start='2026-11-01T21:00:00+11:00',
+                                         starts_at='2026-11-01T21:00:00+11:00'))
+        signal = seller(first, scope=a.AvailabilityScope(second.key))
+        with self.assertRaises(SourceError):
+            a.reduce_availability([first, second], [signal], now=NOW)
+
+    def test_fresh_receipt_and_partial_mixed_source_mode_or_locator_mismatches(self):
+        from shelf.event_sources import occurrence_event
+        item = occurrence_event(event())
+        evidence = replace(item.evidence[0], retrieved_at=(NOW + timedelta(seconds=1)).isoformat(),
+                           snapshot_sha256='f'*64)
+        valid = seller(item, evidence=evidence)
+        self.assertEqual(len(a.reduce_availability([item], [valid], now=NOW + timedelta(seconds=1)).views), 1)
+        for wrong in (replace(evidence, occurrence_ref='different'),
+                      replace(evidence, occurrence_basis='explicit_date'),
+                      replace(evidence, occurrence_ref=None), replace(evidence, occurrence_basis=None),
+                      replace(evidence, occurrence_ref=None, occurrence_basis=None),
+                      replace(evidence, source_id='other'), replace(evidence, provenance='live-automated'),
+                      replace(evidence, official_url='https://events.unimelb.edu.au/else', event_id='else')):
+            with self.subTest(wrong=wrong), self.assertRaises(SourceError):
+                a.reduce_availability([item], [replace(valid, evidence=wrong)], now=NOW)
+        legacy = event()
+        with self.assertRaises(SourceError):
+            a.reduce_availability([legacy], [seller(legacy, evidence=evidence)], now=NOW)

@@ -151,6 +151,103 @@ death with no observed terminal event does not become an invented timeout.
 Previously accepted v2 receipts remain readable without the observation field.
 The private ordinary RPC is unchanged.
 
+The first A4 continuation stopped before any pointer or OS mutation because its
+retained failure receipt has six evidence-path keys, four above the ordinary
+128-byte field-name limit (maximum139). Only the exact unchanged receipt matching
+`PENDING_FAILURE_SHA` now uses a private decoder: keys immediately within its root
+`evidence` mapping may be absolute POSIX attribution strings up to256 UTF8 bytes,
+without control characters and with SHA256 values. These strings are never file
+targets. All other keys, including nested evidence maps, retain128 bytes; ordinary
+RPC, record, selection and archive-wrapper decoding is unchanged. Frame, depth,
+member, duplicate, type and UTF8 limits also remain unchanged. The outer archive
+keeps the original receipt bytes as a string and verifies them again on reread;
+the frozen failure/selection/terminal/predecessor hashes and retirement guards
+are unchanged. Pure decoding and hermetic archive tests do not establish real
+GCR input or encrypted persistence. The actual refused attempt remains retained.
+
+The subsequent run archived that pointer and reached a new prompt, but its
+geometry check refused before input. Operation
+`b8cc865d-df30-46da-969a-cf7fa40c6eba` retained acknowledgement only, no Completed
+reference and no input/canary/master progress. Terminal-only
+`retire_owned_dialog_dummy` checks the exact terminal/positive/input/caller raw
+hashes, v2 identity and observation predicate, and original caller closure through
+bus metadata. It archives original strings before CAS-retiring only that pointer.
+The same envelope,32768-byte bound, exclusive creation/fsync/identical replay and
+all three immutable ancestors are required; neither older continuation can bypass
+the new tombstone. Possible OS collections remain unknown and untouched.
+
+The private `single-owned-surface/v1` input method binds one GCR process generation,
+one same-process compositor window, one accessibility application and one direct
+active nondefunct dialog. Inactive extra peers also cause refusal before labels
+are read. Nonce/labelled controls remain inside that dialog; identities, ancestry
+and cardinalities are rechecked before every focus/edit/Create. Coordinates are
+diagnostic only, without transforms, tolerances, coordinate input or fallback.
+Before-effect markers distinguish uncertain native actions from acknowledgement.
+The private dummy value is generated only after binding/interface gates, retained
+under proof custody for the later checks, and explicitly disposed. No password is
+evidence. Source/fixture success still does not establish actual field support,
+Completed identity, encrypted association, persistence or normal native readiness.
+The proof custodian keeps that one value in a nondumpable detached process, using
+a same-UID0600 socket in an owned0700 runtime directory. Receipt metadata contains
+its PID/generation and socket reference; private acquisition remains bound to the
+original nonce. Empty failed preflight disposes the custodian. A value that may
+have been used stays under explicit custody until the final proof/handoff or
+precise uncertain-outcome disposition, followed by explicit disposal. Provider
+credentials and collection/API operations are outside this custodian interface.
+
+The next actual creation form passed singleton/nonce ownership but exposed two
+relationless `PASSWORD_TEXT` controls and Continue/Cancel. The explicit private
+profile `gcr-owned-creation-password-pair-continue/v1` supports only that owned
+creation form: exactly two distinct relationless password targets and exactly
+one Continue plus one Cancel, all inside the frozen dialog. Both targets receive
+the same retained nonempty value; stable A/B identity order has no asserted
+password/confirmation meaning. All four identities are revalidated before each
+native effect. Cancel is never invoked; PAIR_A/PAIR_B/CONTINUE pending markers
+precede dispatch and acknowledgements remain separate from Completed. No labelled
+profile, unlock form, tab/coordinate input or retry fallback is selected.
+
+The ended `1cc2bd37-8f62-420d-928d-ec9c28945013` attempt still had no input/value,
+canary or master progress. Terminal-only `retire_password_pair_dummy` admits only
+its exact selection,75ce terminal,447f positive,da54 input andae07 caller receipts,
+including the new effects/custody schema and empty disposed custodian. It checks
+original caller closure, preserves original strings in the same bounded immutable
+archive, then applies the same final byte/inode CAS. All four fixed archive links
+are required; older continuation references cannot bypass the newest tombstone.
+No OS outcome is inferred or cleaned up.
+
+The ended owner-operated `2806e95c-fcb6-4ab8-94a7-b090bc52affc`
+attempt has a separate terminal-only `retire_owner_prompt_dummy(enrollment_receipt,
+prompt_binding_receipt, terminal_receipt, retirement_receipt, timeout=10)` path.
+Only the compiled0750/57a9/60eb/7643 receipt bytes and6d96 selection are accepted.
+It checks the exact pre-master predicate, four immutable predecessors, the ended
+original parent generation and bus caller closure. The new closed
+`cabinet-abandoned-owner-prompt/v1` archive preserves the selection and all four
+receipt strings and their digests, plus the four-link predecessor identity.
+The existing private32768-byte,0400, exclusive-create/fsync and final byte/inode
+CAS rules apply. Interrupted identical archives may finish local bookkeeping;
+foreign archives or changed pointers refuse. Possible OS collection existence
+stays unknown. This path never queries the old prompt, discovers collections,
+deletes an OS object, opens a new prompt or handles a password.
+
+Once that fifth archive exists, every ordinary selection/provision/child caller
+requires the explicit2806 continuation and validates all five links; older
+references cannot bypass it. A later separately routed enrollment retains the
+original120-second bound and no automatic retry. The versioned producer and native
+receiver must match the accepted source/helper and five-link ancestry. Runtime
+retirement and enrollment remain unrun by this source repair. Another Create
+requires a proven match between the owner's existing TryOmarchy view and the
+same graphical session receiving GCR; compositor reachability alone is insufficient.
+
+Those two pinned receipts contain the exact recorded clock atom
+`1340075.871266088`, once under the terminal's original_bounds and once at the
+positive root. Only those exact hashes/paths/value may decode that finite float
+as inert attribution; ordinary decoding and all other numeric/field/frame limits
+stay strict. It never supplies a new operation budget, expiry or authority. Outer
+archives remain strict and preserve both original receipt strings unchanged.
+The matched native receiver/build is required before any next positive proof;
+actual field interfaces, encrypted association, fresh-helper/native retrieval,
+protection negatives and final custody closure remain separate evidence.
+
 The versioned dummy input helper must identify both labelled Password and
 Confirm controls within the exact owned GCR dialog, verify intended focus, and
 invoke its explicit Create action once. It cannot assume Tab navigation, read

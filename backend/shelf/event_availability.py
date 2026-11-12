@@ -9,7 +9,7 @@ from enum import StrEnum
 import math
 
 from shelf.discovery_sources import SourceError, label, timestamp
-from shelf.event_sources import EventEvidence, event_timing, reconcile_events
+from shelf.event_sources import EventEvidence, OCCURRENCE_BASES, event_timing, reconcile_events
 
 MAX_INPUTS = 100
 MAX_MEMORY = 200
@@ -183,6 +183,29 @@ class AvailabilityResult:
     memory: tuple[WarningMemory, ...]
 
 
+def _seller_bound(evidence, event):
+    """A show URL alone cannot bind a seller claim to one of its sessions."""
+    aware = any(value is not None for item in (event, evidence, *event.evidence)
+                for value in (item.occurrence_ref, item.occurrence_basis))
+    for ref in event.evidence:
+        if (evidence.provenance == 'fixture') != (event.provenance == 'fixture'):
+            continue
+        if aware and not (
+                event.occurrence_ref and event.occurrence_basis in OCCURRENCE_BASES
+                and evidence.source_id == ref.source_id == event.source_id
+                and evidence.occurrence_ref == ref.occurrence_ref == event.occurrence_ref
+                and evidence.occurrence_basis == ref.occurrence_basis == event.occurrence_basis
+                and (ref.provenance == 'fixture') == (evidence.provenance == 'fixture')):
+            continue
+        # Keep the locator on this same reference. Do not require digest/time
+        # equality: a later genuine seller observation has fresh evidence.
+        if ((evidence.event_id is not None and evidence.source_id == ref.source_id
+             and evidence.event_id == ref.event_id)
+                or (evidence.official_url is not None and evidence.official_url == ref.official_url)):
+            return True
+    return False
+
+
 def reduce_availability(events, signals, *, now, interests=(), previous=(), limit=MAX_WARNINGS):
     """Latest observations per scope; only material changes consume warning slots.
 
@@ -227,11 +250,7 @@ def reduce_availability(events, signals, *, now, interests=(), previous=(), limi
             raise SourceError('Availability must address an exact supplied event.')
         if isinstance(signal, SellerObservation):
             evidence = signal.evidence
-            if ((evidence.provenance == 'fixture') != (event.provenance == 'fixture')
-                    or not any((evidence.source_id == ref.source_id and evidence.event_id is not None
-                                and evidence.event_id == ref.event_id)
-                               or (evidence.official_url is not None and evidence.official_url == ref.official_url)
-                               for ref in event.evidence)):
+            if not _seller_bound(evidence, event):
                 raise SourceError('Seller evidence is not bound to this event/source mode.')
         signal = replace(signal, scope=replace(signal.scope, event_key=event.key))
         channel = 'seller' if isinstance(signal, SellerObservation) else 'estimate'
