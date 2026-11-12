@@ -608,6 +608,69 @@ raw=json.dumps(reply).encode();os.write(write_fd,struct.pack('!I',len(raw))+raw)
             for fd in (request_read,request_write,response_read,response_write,diag_read):os.close(fd)
 
 
+
+class GenericSchemaCompatibilityTests(unittest.TestCase):
+    def test_exact_generic_schema_allowlist_for_all_slots(self):
+        generic='org.freedesktop.Secret.Generic'
+        for slot in ('master','receipt','record'):
+            kind='master' if slot=='master' else 'clean_restart_anchor'
+            expected=store._SecretBackend._attrs(kind,'0'*64,slot)
+            accepted=(dict(expected),{**expected,'xdg:schema':generic})
+            actions=('read',) if slot=='master' else ('read','write')
+            rejected=[]
+            for key in expected:
+                for base in accepted:
+                    rejected.append({k:v for k,v in base.items() if k!=key})
+                    rejected.append({**base,key:'PUBLIC-WRONG-IDENTITY'})
+            for value in ('org.example.Other','',None,False,1,b'org.freedesktop.Secret.Generic',[],{}):
+                rejected.append({**expected,'xdg:schema':value})
+            rejected.extend(({**expected,'foreign':'PUBLIC-EXTRA'},
+                             {**expected,'xdg:schema':generic,'foreign':'PUBLIC-EXTRA'},None,{}))
+
+            def attempt(attributes,*,action='lookup',duplicate=False,locked=False):
+                counts=dict(search=0,attributes=0,locked=0,secret_loads=0,writes=0)
+                def get_attributes():counts['attributes']+=1;return attributes
+                def get_locked():counts['locked']+=1;return locked
+                item=SimpleNamespace(get_attributes=get_attributes,get_locked=get_locked)
+                backend=object.__new__(store._SecretBackend);backend._unlocked=lambda:None
+                def forbidden_value(*args):
+                    counts['writes']+=1;raise AssertionError('Rejected metadata reached write preparation')
+                backend.Secret=SimpleNamespace(SearchFlags=SimpleNamespace(ALL=1),Value=SimpleNamespace(new=forbidden_value))
+                backend.collection=object()
+                def call(*args):
+                    counts['search']+=1
+                    if counts['search']>1:
+                        counts['secret_loads']+=1;raise AssertionError('Rejected metadata reached secret load')
+                    return [item,item] if duplicate else [item]
+                backend.async_=SimpleNamespace(call=call)
+                try:
+                    if action=='read':backend.get(kind,'0'*64,slot)
+                    elif action=='write':backend.set(kind,'0'*64,slot,b'PUBLIC-DUMMY')
+                    else:self.assertIs(backend._item(kind,'0'*64,slot),item)
+                    status='AVAILABLE'
+                except store.Refused as error:status=error.status
+                return status,counts
+
+            for attributes in accepted:
+                with self.subTest(slot=slot,case='accepted'):
+                    status,counts=attempt(attributes)
+                    self.assertEqual(status,'AVAILABLE')
+                    self.assertEqual(counts,dict(search=1,attributes=1,locked=1,secret_loads=0,writes=0))
+            for number,attributes in enumerate(rejected):
+                for action in actions:
+                    with self.subTest(slot=slot,case=number,action=action):
+                        status,counts=attempt(attributes,action=action)
+                        self.assertEqual(status,'CORRUPT')
+                        self.assertEqual(counts,dict(search=1,attributes=1,locked=0,secret_loads=0,writes=0))
+            for action in actions:
+                status,counts=attempt(accepted[1],action=action,duplicate=True)
+                self.assertEqual(status,'CORRUPT')
+                self.assertEqual(counts,dict(search=1,attributes=0,locked=0,secret_loads=0,writes=0))
+                status,counts=attempt(accepted[1],action=action,locked=True)
+                self.assertEqual(status,'LOCKED')
+                self.assertEqual(counts,dict(search=1,attributes=1,locked=1,secret_loads=0,writes=0))
+
+
 class ProtectionTests(unittest.TestCase):
     def setUp(self):
         self.temporary = tempfile.TemporaryDirectory(prefix='cabinet-DUMMY-HEADER-')

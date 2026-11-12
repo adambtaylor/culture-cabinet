@@ -1357,7 +1357,11 @@ class _SecretBackend:
         if not items:
             return None
         item = items[0]
-        _corrupt_require(item.get_attributes() == attrs, 'ATTRIBUTES_MISMATCH', slot)
+        actual = item.get_attributes()
+        # The generic libsecret marker is the only permitted extra metadata.
+        # Both complete maps retain all four exact Cabinet identity fields.
+        _corrupt_require(actual == attrs or actual == {
+            **attrs, 'xdg:schema': 'org.freedesktop.Secret.Generic'}, 'ATTRIBUTES_MISMATCH', slot)
         require(not item.get_locked(), 'LOCKED')
         return item
 
