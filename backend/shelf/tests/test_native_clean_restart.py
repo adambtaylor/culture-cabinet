@@ -20,6 +20,8 @@ class PrivateStore:
         self.items, self.receipts = {}, {}
         self.locked = False
         self.credential_puts = 0
+        self.anchor_puts = 0
+        self.unknown_anchor_put = False
 
     def execute(self,value):
         reply={'version':value['version'],'operation_id':value['operation_id'],
@@ -31,6 +33,9 @@ class PrivateStore:
             return {**reply,'status':'AVAILABLE' if current else 'MISSING'}
         if value['operation']=='reconcile':
             return deepcopy(self.receipts.get(value['operation_id'],{**reply,'status':'UNKNOWN'}))
+        if value['operation']=='put' and value['record_kind']=='clean_restart_anchor':
+            self.anchor_puts+=1
+            if self.unknown_anchor_put:return {**reply,'status':'UNKNOWN'}
         if value['expected_revision']!=(current['revision'] if current else None):
             return {**reply,'status':'CONFLICT'}
         if value['operation']=='read':
@@ -105,6 +110,27 @@ class NativeCleanRestartTests(SimpleTestCase):
         self.assertIn('"events": 2',second)
         self.assertIn('"keyReentry": false',second)
         self.assertNotEqual(first,second)
+
+    def test_fresh_start_without_credential_can_cleanly_restart(self):
+        self.run_child('first-no-credential')
+        self.assertEqual(self.store.credential_puts,0)
+        anchor=next(v['record'] for k,v in self.store.items.items() if k[0]=='clean_restart_anchor')
+        self.assertEqual(anchor['state'],'CLEAN')
+        self.assertEqual(self.store.anchor_puts,2)
+        second=self.run_child('second-no-credential')
+        self.assertIn('"keyReentry": false',second)
+        self.assertEqual(self.store.credential_puts,0)
+        anchor=next(v['record'] for k,v in self.store.items.items() if k[0]=='clean_restart_anchor')
+        self.assertEqual(anchor['state'],'CLEAN')
+        self.assertEqual(self.store.anchor_puts,4)
+
+    def test_unknown_first_checkpoint_enrollment_refuses_clean_restart(self):
+        self.store.unknown_anchor_put=True
+        self.run_child('first-no-credential',expect_refusal=True)
+        self.assertEqual(self.store.credential_puts,0)
+        self.assertEqual(self.store.anchor_puts,1)
+        self.assertFalse(self.store.items)
+        self.assertFalse((self.root/'.portable-clean-restart.json').exists())
 
     def test_locked_restart_refuses_before_database_writes_then_unlock_succeeds(self):
         self.run_child('first')

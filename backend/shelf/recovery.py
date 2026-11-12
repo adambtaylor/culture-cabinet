@@ -1460,10 +1460,17 @@ class NativeCleanCheckpoint:
         self.enrolled = True
 
     def seal(self):
-        if not self.enrolled or not self.clean_stop:
+        if not self.clean_stop:
             return
         if self.writers_stopped is None or self.writers_stopped() is not True:
             raise RecoveryBlocked()
+        if not self.enrolled:
+            # A fresh install may stop cleanly before its first key save enrolls
+            # the checkpoint. Enroll only while that original first-start proof
+            # is still active; an ordinary existing install cannot use this path.
+            if not native_first_start_matches(installed_coordinator(), self.boundary):
+                raise RecoveryBlocked()
+            self.enroll()
         obj = self.coordinator
         # ExitStack has already stopped the selected workers and accepting
         # socket. Close every Django writer before sealing the last raw handle.
