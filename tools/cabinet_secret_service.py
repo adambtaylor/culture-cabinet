@@ -7,6 +7,7 @@ bytes travel through inherited pipes, never argv, environment, stdout or stderr.
 Same-UID hostile processes and OS administrators are outside this boundary.
 """
 from contextlib import contextmanager
+from contextvars import ContextVar
 from datetime import datetime, timezone
 import fcntl
 import hashlib
@@ -65,6 +66,13 @@ PAIR_CALLER_SHA = 'ae07d0f7bf7cee1a4e47de5d3a460c0b9dc42643c1bfdb0b67520785fccb4
 PAIR_CONTROLS_SHA = '192410980df337ad9b9468368622b92b648edeb7660fdaed78e1e940f79b88aa'
 PAIR_PREDECESSOR_SHA = '9d6ada8785c4d05c8d4c77bb56754391ebe812da8d624273a4e0fef291d4819d'
 PAIR_RECORDED_CLOCK = 1340075.871266088
+OWNER_PROMPT_OPERATION = '2806e95c-fcb6-4ab8-94a7-b090bc52affc'
+OWNER_PROMPT_SELECTION_SHA = '6d962b12224290b5820c7258797462f57e714bbe7d23cb5775415c56f8f47779'
+OWNER_PROMPT_ENROLLMENT_SHA = '0750f70efee6b6864bf665e22da8b04f2e1cb47445199efdcbb937f340bb7b62'
+OWNER_PROMPT_BINDING_SHA = '57a9bf752bce0cdc09fdf012a46fbc7bb0ffabcb9ebcf71c5ba21041a04e7807'
+OWNER_PROMPT_TERMINAL_SHA = '60eb208ec6443c764016a1c1a1f7c549531908559ff06ae50e3473f94489447a'
+OWNER_PROMPT_RETIREMENT_SHA = '7643482cd49c7ffc59148480f646fdde8a49433133efa677d8f3fbaaa2f5c5ec'
+OWNER_PROMPT_PREDECESSOR_SHA = '96de05d1e92531b76ce8d998e7ca7a1b24798bdf7df8a75b19219ea3e6dfd89d'
 STATUS = frozenset(('AVAILABLE', 'LOCKED', 'MISSING', 'UNAVAILABLE', 'CONFLICT',
                     'CORRUPT', 'UNKNOWN', 'REMOVED'))
 REQUEST_FIELDS = frozenset(('version', 'operation', 'record_kind', 'binding',
@@ -83,6 +91,100 @@ PURPOSES = {
     'hydra': ('culture-cabinet-hydra-search',),
     'sab': ('culture-cabinet-sab-add-only',),
 }
+
+
+DIAGNOSTIC_SCHEMA = 'cabinet-corruption-site/v1'
+DIAGNOSTIC_MAX = 256
+DIAGNOSTIC_REASONS = frozenset(('NONE', 'LOOKUP_DUPLICATE', 'ATTRIBUTES_MISMATCH',
+    'SECRET_ENCODING', 'MASTER_FORMAT', 'SLOT_SIZE_TYPE', 'SLOT_DECRYPT', 'SLOT_DECODE',
+    'RECORD_INVARIANT', 'RECEIPT_INVARIANT', 'RECEIPT_RECORD_LINK', 'UNCLASSIFIED_CORRUPT'))
+DIAGNOSTIC_SLOTS = frozenset(('master', 'receipt', 'record', 'receipt_record_pair', 'none'))
+DIAGNOSTIC_PHASES = frozenset(('before_mutation', 'mutation_started', 'after_mutation', 'not_observed'))
+_CORRUPTION_DIAGNOSTIC = ContextVar('cabinet_corruption_diagnostic', default=None)
+
+
+class _CorruptionDiagnostic:
+    def __init__(self):
+        self.phase = 'before_mutation'
+        self.first = None
+
+    def capture(self, reason, slot):
+        if self.first is None:
+            self.first = dict(schema=DIAGNOSTIC_SCHEMA, reason=reason, slot=slot, phase=self.phase)
+
+    def projection(self):
+        return self.first or dict(schema=DIAGNOSTIC_SCHEMA, reason='NONE', slot='none', phase='not_observed')
+
+
+def _note_corrupt(reason, slot):
+    observation = _CORRUPTION_DIAGNOSTIC.get()
+    if observation is not None:
+        observation.capture(reason, slot)
+
+
+def _corrupt_require(value, reason, slot):
+    if not value:
+        _note_corrupt(reason, slot)
+        raise Refused('CORRUPT')
+
+
+def _diagnostic_phase(phase):
+    observation = _CORRUPTION_DIAGNOSTIC.get()
+    if observation is not None:
+        if phase == 'after_mutation' and observation.phase != 'mutation_started':
+            return  # Successful reads/availability are not mutations.
+        observation.phase = phase
+
+
+def _validate_diagnostic(raw, status):
+    require(type(raw) is bytes and 0 < len(raw) <= DIAGNOSTIC_MAX)
+    value = strict_json(raw)
+    _shape(value, ('schema', 'reason', 'slot', 'phase'))
+    require(value['schema'] == DIAGNOSTIC_SCHEMA and value['reason'] in DIAGNOSTIC_REASONS
+            and value['slot'] in DIAGNOSTIC_SLOTS and value['phase'] in DIAGNOSTIC_PHASES)
+    reason, slot, phase = (value[key] for key in ('reason', 'slot', 'phase'))
+    slots = {'NONE': ('none',), 'MASTER_FORMAT': ('master',),
+        'SLOT_SIZE_TYPE': ('receipt', 'record'), 'SLOT_DECRYPT': ('receipt', 'record'),
+        'SLOT_DECODE': ('receipt', 'record'), 'RECORD_INVARIANT': ('record',),
+        'RECEIPT_INVARIANT': ('receipt',), 'RECEIPT_RECORD_LINK': ('receipt_record_pair',),
+        'UNCLASSIFIED_CORRUPT': ('none',),
+        'LOOKUP_DUPLICATE': ('master', 'receipt', 'record'),
+        'ATTRIBUTES_MISMATCH': ('master', 'receipt', 'record'),
+        'SECRET_ENCODING': ('master', 'receipt', 'record')}
+    require(slot in slots[reason])
+    if reason == 'NONE':
+        require(phase == 'not_observed' and status != 'CORRUPT')
+    else:
+        require(phase != 'not_observed'
+                and (status == 'CORRUPT' and phase == 'before_mutation' or status == 'UNKNOWN'))
+    return value
+
+
+def _collect_diagnostic(fd, status):
+    # Child is already reaped. Read once within the existing deadline, with no
+    # waits/retry and no raw ancillary bytes retained by the caller's sink.
+    try:
+        raw = os.read(fd, DIAGNOSTIC_MAX + 1)
+        require(os.read(fd, 1) == b'')
+        return _validate_diagnostic(raw, status)
+    except (Refused, OSError, ValueError, TypeError):
+        return None
+
+
+def _emit_diagnostic(fd, observation):
+    try:
+        raw = canonical(observation.projection())
+        require(len(raw) <= DIAGNOSTIC_MAX)
+        # <=PIPE_BUF on a nonblocking inherited pipe: one atomic attempt. A
+        # full/broken observer cannot rewrite, delay or repeat the store result.
+        os.write(fd, raw)
+    except (Refused, OSError):
+        pass
+    finally:
+        try:
+            os.close(fd)
+        except OSError:
+            pass  # Observer loss must not change the ordinary child exit/result.
 
 
 class Refused(Exception):
@@ -387,32 +489,50 @@ def _exchange(write_fd, read_fd, outgoing, deadline, open_fds):
                         require(0 < length <= MAX_FRAME and len(incoming) <= length + 4, 'UNKNOWN')
 
 
-def invoke(request, *, timeout=TIMEOUT):
+def invoke(request, *, timeout=TIMEOUT, diagnostic_sink=None):
     """Native private client. A missing mutation acknowledgement is UNKNOWN.
 
     The helper path/interpreter and environment are fixed by this packaged module,
     not caller fields. No retries, implicit unlock or generic executable selector.
+    A trusted optional diagnostic_sink receives one validated enum projection,
+    or None for invalid/unobserved evidence, after owned child/FD cleanup. Its
+    failure never changes the five-field RPC result. Default callers add no IPC.
     """
     request = validate_request(strict_json(canonical(request)))
     require(type(timeout) in (int, float) and 0 < timeout <= TIMEOUT)
+    require(diagnostic_sink is None or callable(diagnostic_sink))
     process = None
     fds = []
+    diagnostic_read = diagnostic_write = None
+    diagnostic_value = None
     deadline = time.monotonic() + timeout
     failure = 'UNKNOWN' if request['operation'] in ('put', 'delete', 'reconcile') else 'UNAVAILABLE'
     try:
         require(os.getuid() == UID)
+        if diagnostic_sink is not None:
+            diagnostic_read, diagnostic_write = os.pipe()
+            fds.extend((diagnostic_read, diagnostic_write))
+            os.set_blocking(diagnostic_read, False)
+            os.set_blocking(diagnostic_write, False)
         request_read, request_write = os.pipe()
         fds.extend((request_read, request_write))
         response_read, response_write = os.pipe()
         fds.extend((response_read, response_write))
-        process = subprocess.Popen(['/usr/bin/python3', '-I', '-B', HELPER,
-            '--request-fd', str(request_read), '--response-fd', str(response_write)],
+        command = ['/usr/bin/python3', '-I', '-B', HELPER,
+            '--request-fd', str(request_read), '--response-fd', str(response_write)]
+        passed = (request_read, response_write)
+        if diagnostic_write is not None:
+            command.extend(('--diagnostic-fd', str(diagnostic_write)))
+            passed += (diagnostic_write,)
+        process = subprocess.Popen(command,
             stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-            close_fds=True, pass_fds=(request_read, response_write),
+            close_fds=True, pass_fds=passed,
             env={'PATH': '/usr/bin:/bin', 'LANG': 'C.UTF-8',
                  'DBUS_SESSION_BUS_ADDRESS': 'unix:path=/run/user/1000/bus'})
         os.close(request_read); fds.remove(request_read)
         os.close(response_write); fds.remove(response_write)
+        if diagnostic_write is not None:
+            os.close(diagnostic_write); fds.remove(diagnostic_write)
         raw = _exchange(request_write, response_read, encode_frame(request), deadline, fds)
         result = decode_frame(raw)
         _shape(result, RESPONSE_FIELDS)
@@ -438,6 +558,8 @@ def invoke(request, *, timeout=TIMEOUT):
             validate_record(request['record_kind'], request['binding'], record_op, result['record'])
         process.wait(timeout=max(.001, deadline - time.monotonic()))
         require(process.returncode == 0)
+        if diagnostic_read is not None:
+            diagnostic_value = _collect_diagnostic(diagnostic_read, result['status'])
         return result
     except (Refused, OSError, ValueError, TypeError, subprocess.SubprocessError):
         return response(request, failure)
@@ -449,6 +571,12 @@ def invoke(request, *, timeout=TIMEOUT):
                 pass
         if process is not None and process.poll() is None:
             process.kill(); process.wait()
+        if diagnostic_sink is not None:
+            try:
+                diagnostic_sink(diagnostic_value)
+            except BaseException:
+                # Observability is not authority over an acknowledged mutation.
+                pass
 
 
 @contextmanager
@@ -502,6 +630,7 @@ class Store:
         try:
             return Fernet(key)
         except (ValueError, TypeError):
+            _note_corrupt('MASTER_FORMAT', 'master')
             raise Refused('CORRUPT') from None
 
     def _read(self, kind, binding_digest, slot, cipher):
@@ -509,13 +638,20 @@ class Store:
         value = self.backend.get(kind, binding_digest, slot)
         if value is None:
             return None
+        _corrupt_require(type(value) is bytes and len(value) <= MAX_FRAME * 2, 'SLOT_SIZE_TYPE', slot)
         try:
-            require(type(value) is bytes and len(value) <= MAX_FRAME * 2, 'CORRUPT')
-            return strict_json(cipher.decrypt(value))
+            decrypted = cipher.decrypt(value)
         except (InvalidToken, Refused, ValueError, TypeError):
+            _note_corrupt('SLOT_DECRYPT', slot)
+            raise Refused('CORRUPT') from None
+        try:
+            return strict_json(decrypted)
+        except (Refused, ValueError, TypeError):
+            _note_corrupt('SLOT_DECODE', slot)
             raise Refused('CORRUPT') from None
 
     def _write(self, kind, binding_digest, slot, cipher, value):
+        _diagnostic_phase('mutation_started')
         token = cipher.encrypt(canonical(value))
         self.backend.set(kind, binding_digest, slot, token)
         require(self._read(kind, binding_digest, slot, cipher) == value, 'UNKNOWN')
@@ -523,8 +659,13 @@ class Store:
     def execute(self, request):
         validate_request(request)
         try:
-            return self._execute(request)
+            result = self._execute(request)
+            if result['status'] in ('AVAILABLE', 'REMOVED'):
+                _diagnostic_phase('after_mutation')
+            return result
         except Refused as error:
+            if error.status == 'CORRUPT':
+                _note_corrupt('UNCLASSIFIED_CORRUPT', 'none')
             # Mutations below fence *every* intent/target write attempt. Thus a
             # direct-delete LOCKED escaping here is definitive for this call's
             # pre-intent phase, not for any earlier invocation of the same UUID.
@@ -543,16 +684,16 @@ class Store:
         stored = self._read(kind, binding_digest, 'record', cipher)
         if stored is not None:
             _shape(stored, ('schema', 'kind', 'binding', 'revision', 'operation_id', 'record'))
-            require(stored['schema'] == 'cabinet-record/v1' and stored['kind'] == kind
-                    and stored['binding'] == binding, 'CORRUPT')
+            _corrupt_require(stored['schema'] == 'cabinet-record/v1' and stored['kind'] == kind
+                    and stored['binding'] == binding, 'RECORD_INVARIANT', 'record')
             _uuid(stored['revision']); _uuid(stored['operation_id'])
             validate_record(kind, binding, stored['operation_id'], stored['record'])
         if receipt is not None:
             _shape(receipt, ('schema', 'kind', 'binding', 'operation', 'operation_id', 'revision',
                             'previous_revision', 'request_digest', 'status'))
-            require(receipt['schema'] == 'cabinet-receipt/v1' and receipt['kind'] == kind
+            _corrupt_require(receipt['schema'] == 'cabinet-receipt/v1' and receipt['kind'] == kind
                     and receipt['binding'] == binding and receipt['operation'] in ('put', 'delete')
-                    and receipt['status'] in ('PENDING', 'ACTIVE', 'REMOVED'), 'CORRUPT')
+                    and receipt['status'] in ('PENDING', 'ACTIVE', 'REMOVED'), 'RECEIPT_INVARIANT', 'receipt')
             _uuid(receipt['operation_id']); _uuid(receipt['revision']); _digest(receipt['request_digest'])
             if receipt['previous_revision'] is not None:
                 _uuid(receipt['previous_revision'])
@@ -561,9 +702,9 @@ class Store:
         if receipt is not None and receipt['status'] == 'PENDING':
             return response(request, 'UNKNOWN')
         if stored is not None:
-            require(receipt is not None and receipt['status'] == 'ACTIVE'
+            _corrupt_require(receipt is not None and receipt['status'] == 'ACTIVE'
                     and receipt['revision'] == stored['revision']
-                    and receipt['operation_id'] == stored['operation_id'], 'CORRUPT')
+                    and receipt['operation_id'] == stored['operation_id'], 'RECEIPT_RECORD_LINK', 'receipt_record_pair')
         if operation == 'read':
             if stored is None:
                 return response(request, 'MISSING')
@@ -860,7 +1001,7 @@ def _selection_shape(value, *, allow_pending=False):
         if value[field] is not None:
             _object_ref(value[field])
     if value['continuation_archive'] is not None:
-        require(value['continuation_archive'] in (OLD_DUMMY_OPERATION, PENDING_OPERATION, DIALOG_OPERATION, PAIR_OPERATION))
+        require(value['continuation_archive'] in (OLD_DUMMY_OPERATION, PENDING_OPERATION, DIALOG_OPERATION, PAIR_OPERATION, OWNER_PROMPT_OPERATION))
     require(value['terminal_fact'] in (None, 'UNCERTAIN_OR_REFUSED'))
     require(value['canary_state'] in ('NOT_STARTED', 'CREATE_PENDING', 'CREATED', 'DELETE_PENDING', 'DELETED'))
     require(value['master_phase'] in ('NOT_STARTED', 'WRITE_PENDING', 'PRESENT'))
@@ -1185,6 +1326,15 @@ class _SecretBackend:
         self._verify_service()
         return reply.unpack()[0] is False
 
+    def _owner_prompt_caller_closed(self):
+        self._verify_service()
+        require(self.owner == ':1.0')
+        reply = self._dbus('org.freedesktop.DBus', '/org/freedesktop/DBus',
+            'org.freedesktop.DBus', 'NameHasOwner', self.GLib.Variant('(s)', (':1.24305',)))
+        require(reply.get_type_string() == '(b)')
+        self._verify_service()
+        return reply.unpack()[0] is False
+
     def _unlocked(self):
         self._prove()
         result = self._dbus(self.owner, self.path, 'org.freedesktop.DBus.Properties', 'Get',
@@ -1203,11 +1353,15 @@ class _SecretBackend:
         items = self.async_.call(lambda cancel, done: self.collection.search(None, attrs,
             self.Secret.SearchFlags.ALL, cancel, done, None),
             lambda source, result: source.search_finish(result))
-        require(len(items) <= 1, 'CORRUPT')
+        _corrupt_require(len(items) <= 1, 'LOOKUP_DUPLICATE', slot)
         if not items:
             return None
         item = items[0]
-        require(item.get_attributes() == attrs, 'CORRUPT')
+        actual = item.get_attributes()
+        # The generic libsecret marker is the only permitted extra metadata.
+        # Both complete maps retain all four exact Cabinet identity fields.
+        _corrupt_require(actual == attrs or actual == {
+            **attrs, 'xdg:schema': 'org.freedesktop.Secret.Generic'}, 'ATTRIBUTES_MISMATCH', slot)
         require(not item.get_locked(), 'LOCKED')
         return item
 
@@ -1231,10 +1385,11 @@ class _SecretBackend:
         value = item.get_secret()
         require(value is not None, 'LOCKED')
         text = value.get_text()
-        require(type(text) is str, 'CORRUPT')
+        _corrupt_require(type(text) is str, 'SECRET_ENCODING', slot)
         try:
             return text.encode('ascii')
         except UnicodeError:
+            _note_corrupt('SECRET_ENCODING', slot)
             raise Refused('CORRUPT') from None
 
     def master_key(self):
@@ -1678,14 +1833,186 @@ def _pair_predecessor(directory):
     return raw
 
 
+def _owner_prompt_archive_name():
+    return 'abandoned-' + OWNER_PROMPT_OPERATION + '.json'
+
+
+def _owner_prompt_selection(value):
+    _selection_shape(value, allow_pending=True)
+    require(value['state'] == 'PROMPT_PENDING'
+            and value['creation_operation_id'] == OWNER_PROMPT_OPERATION
+            and value['requested_label'] == 'CultureCabineta915d0e1fe954b27bb810365171828e2'
+            and value['service_provenance']['caller'] == ':1.24305'
+            and value['service_provenance']['service_owner'] == ':1.0'
+            and value['returned_prompt_ref'] == '/org/freedesktop/secrets/prompt/p5'
+            and value['continuation_archive'] == PAIR_OPERATION
+            and value['canary_state'] == value['master_phase'] == 'NOT_STARTED'
+            and value['terminal_fact'] is None
+            and value['prompt_observation'] == {'acknowledgement': 'ACKNOWLEDGED',
+                'completion': 'UNOBSERVED', 'termination': 'UNOBSERVED'})
+    for field in ('returned_collection_ref', 'decoded_identifier', 'verified_filename',
+                  'file_binding', 'canary_ref', 'canary_prompt_ref'):
+        require(value[field] is None)
+
+
+def _owner_prompt_receipts(original, enrollment, binding, terminal, retirement):
+    # All authority is compiled raw-byte identity. No evidence path is opened,
+    # and no owner-reported password observation becomes a machine input fact.
+    for raw, expected in ((original, OWNER_PROMPT_SELECTION_SHA),
+            (enrollment, OWNER_PROMPT_ENROLLMENT_SHA), (binding, OWNER_PROMPT_BINDING_SHA),
+            (terminal, OWNER_PROMPT_TERMINAL_SHA), (retirement, OWNER_PROMPT_RETIREMENT_SHA)):
+        require(type(raw) is bytes and hashlib.sha256(raw).hexdigest() == expected)
+    value, enrolled, bound, ended, retired = map(strict_json,
+        (original, enrollment, binding, terminal, retirement))
+    _owner_prompt_selection(value)
+    require(enrolled['last_selection'] == bound['selection'] == ended['preserved_selection'] == value
+            and bound['selection_sha256'] == ended['selection_sha256'] == OWNER_PROMPT_SELECTION_SHA
+            and enrolled['state'] == 'CANCELLED_OR_UNCERTAIN_NO_RETRY'
+            and enrolled['provision_result'] == {'status': 'UNAVAILABLE', 'collection_ref': None}
+            and enrolled['parent_generation'] == [1616904, 135612024]
+            and enrolled['provision_bound_seconds'] == bound['original_bound_seconds'] == 120
+            and retired['state'] == 'PASS' and retired['retirement_returned_operation'] == PAIR_OPERATION
+            and retired['retirement_archive_chain'][-1] == {
+                'operation_id': PAIR_OPERATION, 'archive_sha256': OWNER_PROMPT_PREDECESSOR_SHA})
+    cleanup, facts = ended['cleanup'], ended['actual_facts']
+    require(cleanup['original_parent_generation'] == [1616904, 135612024]
+            and cleanup['original_parent_generation_ended'] is True
+            and cleanup['original_caller'] == ':1.24305' and cleanup['caller_has_owner'] is False
+            and cleanup['agent_password_keeper_ever_started'] is False
+            and cleanup['live_agent_password_custody'] is False
+            and facts['collection_ref'] is facts['file_binding'] is None
+            and facts['canary'] == facts['master'] == facts['dummy_put'] == facts['fresh_read'] == 'NOT_STARTED'
+            and facts['native_proof'] == 'NOT_STARTED' and facts['owner_native_handoff'] == 'NOT_CREATED'
+            and facts['provider_calls'] == 0 and facts['real_key_used'] is False)
+    for receipt in (enrolled, ended, retired):
+        require(receipt['source_head'] == '7af0023c70f1fde66b4da94bfb2557dd5f57974c'
+                and receipt['source_tree'] == 'bedcd9cb5e77de06772d98b22fe82108350f687d'
+                and receipt['keyring_helper_sha256'] == '3466ea63ed310dae59bde7ce4d55eabcdeac8bd6d6717d1596cfe2098a925697')
+    require(ended['enrollment']['sha256'] == OWNER_PROMPT_ENROLLMENT_SHA
+            and ended['prompt_binding']['sha256'] == OWNER_PROMPT_BINDING_SHA
+            and ended['retirement']['sha256'] == OWNER_PROMPT_RETIREMENT_SHA)
+    return value
+
+
+def _validate_owner_prompt_archive(raw):
+    archive = strict_json(raw)
+    _shape(archive, ('schema', 'operation_id', 'original_selection', 'selection_sha256',
+        'enrollment_receipt', 'enrollment_sha256', 'prompt_binding_receipt', 'prompt_binding_sha256',
+        'terminal_receipt', 'terminal_sha256', 'retirement_receipt', 'retirement_sha256',
+        'prior_archive', 'prior_archive_sha256', 'predecessor_chain', 'caller_closed',
+        'parent_generation_ended', 'disposition', 'possible_collection_exists', 'os_orphan_deleted'))
+    require(archive['schema'] == 'cabinet-abandoned-owner-prompt/v1'
+            and archive['operation_id'] == OWNER_PROMPT_OPERATION
+            and archive['selection_sha256'] == OWNER_PROMPT_SELECTION_SHA
+            and archive['enrollment_sha256'] == OWNER_PROMPT_ENROLLMENT_SHA
+            and archive['prompt_binding_sha256'] == OWNER_PROMPT_BINDING_SHA
+            and archive['terminal_sha256'] == OWNER_PROMPT_TERMINAL_SHA
+            and archive['retirement_sha256'] == OWNER_PROMPT_RETIREMENT_SHA
+            and archive['prior_archive'] == PAIR_OPERATION
+            and archive['prior_archive_sha256'] == OWNER_PROMPT_PREDECESSOR_SHA
+            and archive['caller_closed'] is archive['parent_generation_ended'] is True
+            and archive['disposition'] == 'ABANDONED_PREMASTER_PROMPT_UNRESOLVED'
+            and archive['possible_collection_exists'] == 'unknown' and archive['os_orphan_deleted'] is False)
+    fields = ('original_selection', 'enrollment_receipt', 'prompt_binding_receipt',
+              'terminal_receipt', 'retirement_receipt')
+    require(all(type(archive[field]) is str for field in fields))
+    _owner_prompt_receipts(*(archive[field].encode('utf-8') for field in fields))
+    require(archive['predecessor_chain'] == strict_json(archive['retirement_receipt'].encode())['retirement_archive_chain'])
+    return archive
+
+
+def _owner_prompt_predecessor(directory):
+    raw, identity = _read_private_at(directory, _pair_archive_name())
+    require(stat.S_IMODE(identity[4]) == 0o400
+            and hashlib.sha256(raw).hexdigest() == OWNER_PROMPT_PREDECESSOR_SHA
+            and _validate_pending_archive(raw)['operation_id'] == PAIR_OPERATION)
+    _pair_predecessor(directory)
+    return raw
+
+
+def _owner_prompt_parent_ended():
+    # /proc/stat contains public process identity; never inspect args or env.
+    folder = Path('/proc/1616904')
+    try:
+        require(folder.stat().st_uid == UID)
+        start = int((folder / 'stat').read_text().rsplit(')', 1)[1].split()[19])
+    except FileNotFoundError:
+        return True
+    return start != 135612024
+
+
+def retire_owner_prompt_dummy(enrollment_receipt, prompt_binding_receipt, terminal_receipt,
+                             retirement_receipt, *, timeout=10.0):
+    """Archive only the ended2806 pointer; never act on the possible OS orphan.
+
+    This trusted-terminal API is separate from the five-operation secret RPC.
+    Durable exact receipts precede the byte/inode CAS; a failed CAS preserves
+    both pointer and archive. It never replays the old prompt or starts Create.
+    """
+    require(os.getuid() == UID and os.isatty(0)
+            and type(timeout) in (int, float) and 0 < timeout <= 10)
+    # Refuse changed evidence before connecting or touching the private pointer.
+    for raw, expected in ((enrollment_receipt, OWNER_PROMPT_ENROLLMENT_SHA),
+            (prompt_binding_receipt, OWNER_PROMPT_BINDING_SHA),
+            (terminal_receipt, OWNER_PROMPT_TERMINAL_SHA),
+            (retirement_receipt, OWNER_PROMPT_RETIREMENT_SHA)):
+        require(type(raw) is bytes and hashlib.sha256(raw).hexdigest() == expected)
+    deadline = time.monotonic() + timeout
+    with mutation_lock(deadline):
+        directory = _open_checked_directory(str(Path(SELECTION).parent))
+        try:
+            original, identity = _read_private_at(directory, 'selection.json', 4096)
+            require(stat.S_IMODE(identity[4]) == 0o600)
+            _owner_prompt_receipts(original, enrollment_receipt, prompt_binding_receipt,
+                                  terminal_receipt, retirement_receipt)
+            _owner_prompt_predecessor(directory)
+            archive = {'schema': 'cabinet-abandoned-owner-prompt/v1', 'operation_id': OWNER_PROMPT_OPERATION,
+                'original_selection': original.decode(), 'selection_sha256': OWNER_PROMPT_SELECTION_SHA,
+                'enrollment_receipt': enrollment_receipt.decode(), 'enrollment_sha256': OWNER_PROMPT_ENROLLMENT_SHA,
+                'prompt_binding_receipt': prompt_binding_receipt.decode(), 'prompt_binding_sha256': OWNER_PROMPT_BINDING_SHA,
+                'terminal_receipt': terminal_receipt.decode(), 'terminal_sha256': OWNER_PROMPT_TERMINAL_SHA,
+                'retirement_receipt': retirement_receipt.decode(), 'retirement_sha256': OWNER_PROMPT_RETIREMENT_SHA,
+                'prior_archive': PAIR_OPERATION, 'prior_archive_sha256': OWNER_PROMPT_PREDECESSOR_SHA,
+                'predecessor_chain': strict_json(retirement_receipt)['retirement_archive_chain'],
+                'caller_closed': True, 'parent_generation_ended': True,
+                'disposition': 'ABANDONED_PREMASTER_PROMPT_UNRESOLVED',
+                'possible_collection_exists': 'unknown', 'os_orphan_deleted': False}
+            raw = canonical(archive)
+            require(len(raw) <= 32768)
+            _validate_owner_prompt_archive(raw)
+            require(_owner_prompt_parent_ended())
+            backend = object.__new__(_SecretBackend)
+            backend._connect(deadline)
+            require(backend._owner_prompt_caller_closed())
+            _write_prompt_archive(directory, _owner_prompt_archive_name(), raw)
+            current, current_identity = _read_private_at(directory, 'selection.json', 4096)
+            require(current == original and current_identity == identity)
+            require(time.monotonic() < deadline)
+            os.unlink('selection.json', dir_fd=directory)
+            os.fsync(directory)
+            return OWNER_PROMPT_OPERATION
+        finally:
+            os.close(directory)
+
+
 def _check_continuation(reference):
-    require(reference is None or reference in (OLD_DUMMY_OPERATION, PENDING_OPERATION, DIALOG_OPERATION, PAIR_OPERATION))
+    require(reference is None or reference in (OLD_DUMMY_OPERATION, PENDING_OPERATION, DIALOG_OPERATION, PAIR_OPERATION, OWNER_PROMPT_OPERATION))
     try:
         directory = _open_checked_directory(str(Path(SELECTION).parent))
     except FileNotFoundError:
         require(reference is None)
         return
     try:
+        try:
+            owner_raw, identity = _read_private_at(directory, _owner_prompt_archive_name())
+        except FileNotFoundError:
+            owner_raw = None
+        if owner_raw is not None:
+            require(stat.S_IMODE(identity[4]) == 0o400)
+            _validate_owner_prompt_archive(owner_raw)
+            _owner_prompt_predecessor(directory)
+            require(reference == OWNER_PROMPT_OPERATION)
+            return
         try:
             pair_raw, identity = _read_private_at(directory, _pair_archive_name())
         except FileNotFoundError:
@@ -1973,7 +2300,7 @@ def provision(*, timeout=120.0, continuation_archive=None):
     A pending setup intent is not implicitly retried or adopted.
     """
     require(os.isatty(0) and type(timeout) in (int, float) and 0 < timeout <= 120)
-    require(continuation_archive is None or continuation_archive in (OLD_DUMMY_OPERATION, PENDING_OPERATION, DIALOG_OPERATION, PAIR_OPERATION))
+    require(continuation_archive is None or continuation_archive in (OLD_DUMMY_OPERATION, PENDING_OPERATION, DIALOG_OPERATION, PAIR_OPERATION, OWNER_PROMPT_OPERATION))
     operation_id = str(uuid.uuid4())
     result = {'status': 'UNAVAILABLE', 'collection_ref': None}
     read_fd, write_fd = os.pipe()
@@ -2063,7 +2390,7 @@ def _main(argv):
         operation_id, response_fd = _uuid(argv[3]), int(argv[5])
         continuation = None
         if len(argv) == 8:
-            require(argv[6] == '--continuation-archive' and argv[7] in (OLD_DUMMY_OPERATION, PENDING_OPERATION, DIALOG_OPERATION, PAIR_OPERATION))
+            require(argv[6] == '--continuation-archive' and argv[7] in (OLD_DUMMY_OPERATION, PENDING_OPERATION, DIALOG_OPERATION, PAIR_OPERATION, OWNER_PROMPT_OPERATION))
             continuation = argv[7]
         _check_pipe(response_fd, os.O_WRONLY)
         deadline = time.monotonic() + 120
@@ -2076,6 +2403,31 @@ def _main(argv):
             'status': status, 'revision': None, 'record': None}, deadline)
         os.close(response_fd)
         return
+    if len(argv) == 7:
+        require(argv[5] == '--diagnostic-fd')
+        diagnostic_fd = int(argv[6])
+        request_fd, response_fd = int(argv[2]), int(argv[4])
+        require(diagnostic_fd not in (request_fd, response_fd))
+        _check_pipe(diagnostic_fd, os.O_WRONLY)
+        diagnostic_identity = os.fstat(diagnostic_fd)
+        require(all((os.fstat(fd).st_dev, os.fstat(fd).st_ino)
+                    != (diagnostic_identity.st_dev, diagnostic_identity.st_ino)
+                    for fd in (request_fd, response_fd)))
+        os.set_blocking(diagnostic_fd, False)
+        observation = _CorruptionDiagnostic()
+        token = _CORRUPTION_DIAGNOSTIC.set(observation)
+        try:
+            _request_main(argv[:5])
+        finally:
+            try:
+                _emit_diagnostic(diagnostic_fd, observation)
+            finally:
+                _CORRUPTION_DIAGNOSTIC.reset(token)
+        return
+    _request_main(argv)
+
+
+def _request_main(argv):
     require(os.getuid() == UID and len(argv) == 5 and argv[1] == '--request-fd'
             and argv[3] == '--response-fd')
     request_fd, response_fd = int(argv[2]), int(argv[4])
@@ -2096,6 +2448,8 @@ def _main(argv):
                     result = response(request, 'UNKNOWN' if request['operation'] in
                         ('put', 'delete', 'reconcile') else 'UNAVAILABLE')
     except Refused as error:
+        if error.status == 'CORRUPT':
+            _note_corrupt('UNCLASSIFIED_CORRUPT', 'none')
         result = response(request, error.status)
     except Exception:
         # An unforeseen provider failure during mutation is not evidence of
