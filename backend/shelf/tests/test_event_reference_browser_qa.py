@@ -33,6 +33,7 @@ ADMISSION = OUT / 'admission.json'
 METHOD = 'shelf.tests.test_event_reference_browser_qa.EventReferenceBrowserQA.test_private_browser_round'
 PASSWORD = 'FICTIONAL-only-event-QA-2026!'
 ACTUAL_TARGET = 'e4cc61949aff9d62effdff0b346e7a70f9e5a2d3'
+COMPOSITION_COMMIT = 'c810b854f04cd3aaca71f927f74625d26772349c'
 PACKAGE_SHA = '104b85853aade4064a24d573071e98f5561195bba40a4f8586861ac33c8cecd9'
 RECEIVER = Path('/home/tang/.codex/visualizations/2026/11/01/01a194f6-72e2-7d32-b6f3-e00f7cae7bd6/PR91-E4-BROWSER/pr91-event-reference-browser.cjs')
 RECEIVER_SHA = '90521cedf72caf59dc340aa760244e28030235f9aa40dc96c6ace47326f61864'
@@ -75,6 +76,21 @@ def _process_start_ticks():
     if value <= 0:
         raise RuntimeError('PR91_PROCESS_START_TICKS')
     return value
+
+
+def _has_actual_main_ancestry(candidate, composition, target):
+    """Require the pinned composition merge, target parent, and candidate ancestry."""
+    try:
+        parents = subprocess.check_output(
+            ['git', '-C', str(ROOT), 'rev-list', '--parents', '-n', '1', composition],
+            text=True).strip().split()
+        if len(parents) != 3 or parents[2] != target:
+            return False
+        subprocess.check_call(['git', '-C', str(ROOT), 'merge-base', '--is-ancestor',
+            composition, candidate], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        return True
+    except (OSError, subprocess.CalledProcessError):
+        return False
 
 
 def seed(case):
@@ -156,6 +172,16 @@ class EventBrowserSeedTests(TestCase):
         self.assertEqual(len(DiscoveryState.objects.get().history), 8)
 
 
+class EventBrowserCandidateBindingTests(TestCase):
+    def test_composition_merge_retains_expected_actual_main(self):
+        self.assertTrue(_has_actual_main_ancestry(
+            'HEAD', COMPOSITION_COMMIT, ACTUAL_TARGET))
+
+    def test_composition_merge_rejects_wrong_actual_main(self):
+        self.assertFalse(_has_actual_main_ancestry(
+            'HEAD', COMPOSITION_COMMIT, '98b0daadc71fc84abc8af771edfe3978bc0699b2'))
+
+
 @override_settings(ROOT_URLCONF='cabinet.provider_urls',
     ALLOWED_HOSTS=['localhost', '127.0.0.1', 'testserver'])
 class EventReferenceBrowserQA(StaticLiveServerTestCase):
@@ -180,8 +206,8 @@ class EventReferenceBrowserQA(StaticLiveServerTestCase):
             if subprocess.check_output(['git', '-C', str(ROOT), 'rev-parse', revision],
                     text=True).strip() != admission[name]:
                 raise SkipTest('Candidate changed before browser admission.')
-        if subprocess.check_output(['git', '-C', str(ROOT), 'rev-parse', 'HEAD^2'],
-                text=True).strip() != ACTUAL_TARGET:
+        if not _has_actual_main_ancestry(
+                admission['head'], COMPOSITION_COMMIT, ACTUAL_TARGET):
             raise SkipTest('Candidate must preserve the exact composed current-main parent.')
         if subprocess.check_output(['git', '-C', str(ROOT), 'status', '--porcelain'], text=True).strip():
             raise SkipTest('Clean candidate required.')
