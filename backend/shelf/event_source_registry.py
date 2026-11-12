@@ -61,6 +61,11 @@ def _moshtix(now):
     return events(now)  # Accepted one-row normal query, not the nine-row helper.
 
 
+def _bar_open(now):
+    from shelf.event_listing_transport import bar_open
+    return bar_open()
+
+
 def _moons24(now):
     from shelf.event_listing_transport import moons24
     return moons24()
@@ -89,6 +94,11 @@ def _parse_forum(raw, *, now, retrieved_at):
 def _parse_moshtix(raw, *, now, retrieved_at):
     from shelf.discovery_sources import parse_public_event_response
     return parse_public_event_response(raw, now=now, retrieved_at=retrieved_at)
+
+
+def _parse_bar_open(raw, *, now, retrieved_at):
+    from shelf.bar_open_events import parse_listing
+    return parse_listing(raw, retrieved_at=retrieved_at)
 
 
 def _parse_moons24(raw, *, now, retrieved_at):
@@ -157,6 +167,9 @@ def _descriptor(row):
         'moshtix': (_moshtix, _parse_moshtix, 131072,
                 'Partial Moshtix coverage: one public event in VIC within eight weeks; '
                 'status and ticket availability unverified.'),
+        'bar_open': (_bar_open, _parse_bar_open, 524288,
+                'Partial Bar Open coverage: the official Make It Up Club page only; '
+                'venue-wide dated inventory is unverified.'),
         'moons24': (_moons24, _parse_moons24, 524288,
                 'Partial 24 Moons coverage: current-week plus later programme, up to nine leads '
                 'within eight weeks. Unknown dates remain unverified; source links open the '
@@ -164,8 +177,11 @@ def _descriptor(row):
     }
     if source_id in active:
         acquire, parse, limit, coverage = active[source_id]
+        missing = ('The official page is reachable, but this reader cannot establish a dated programme. '
+            'A weekly recurrence is not a confirmed next event. Check the official source for details.')
         return EventSourceDescriptor(**common, acquire=acquire, parse=parse, coverage=coverage,
             access_state='access-unverified' if source_id == 'forum' else 'implemented-unproved',
+            unavailable_message=missing if source_id == 'bar_open' else 'This source is not connected yet.',
             max_bytes=limit, retention_seconds=900,
             policy_scope='Existing bounded factual-link scope only; no model or redistribution grant.')
     blocked = {
