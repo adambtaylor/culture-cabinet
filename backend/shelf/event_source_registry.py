@@ -250,13 +250,26 @@ def get_source(source_id):
     return SOURCES[source_id]
 
 
-def source_cache_key(source_id):
+def source_route(source_id, event_route=''):
+    """Only NGV has two fixed event indexes; routes never contain URLs."""
+    get_source(source_id)
+    if source_id == 'ngv':
+        from shelf.ngv_events import selected_route
+        return selected_route(event_route)
+    if type(event_route) is not str or event_route:
+        raise SourceError('Unexpected event route for this source.')
+    return ''
+
+
+def source_cache_key(source_id, event_route=''):
     """Generic and legacy controls replace the same cached source result.
 
     Keeping legacy keys avoids both duplicate source cards and stale success
     surviving a failed refresh through the other control. No source I/O occurs.
     """
-    get_source(source_id)
+    route = source_route(source_id, event_route)
+    if route:
+        return source_id, route, ''
     legacy = next((alias for alias, source in LEGACY_ALIASES.items() if source == source_id), source_id)
     return legacy, '', ''
 
@@ -267,5 +280,9 @@ def source_controls():
                   'implemented': source.implemented, 'access_state': source.access_state,
                   'official_urls': source.targets, 'origin_groups': source.origin_groups,
                   'coverage': source.coverage, 'retention_seconds': source.retention_seconds,
+                  'event_routes': tuple({'event_route': route, 'label': label}
+                      for route, label in (('programs', 'Programs & events'),
+                                           ('exhibitions', 'Exhibition runs')))
+                      if source.source_id == 'ngv' else (),
                   'unavailable_message': source.unavailable_message}
                  for source in SOURCES.values())
