@@ -36,7 +36,7 @@ ACTUAL_TARGET = 'e4cc61949aff9d62effdff0b346e7a70f9e5a2d3'
 COMPOSITION_COMMIT = 'c810b854f04cd3aaca71f927f74625d26772349c'
 PACKAGE_SHA = '104b85853aade4064a24d573071e98f5561195bba40a4f8586861ac33c8cecd9'
 RECEIVER = Path('/home/tang/.codex/visualizations/2026/11/01/01a194f6-72e2-7d32-b6f3-e00f7cae7bd6/PR91-E4-BROWSER/pr91-event-reference-browser.cjs')
-RECEIVER_SHA = '32e0e2eeded996090509f357ff1bcdb7ca06043aa38fe31b992f10dd3d3155c7'
+RECEIVER_SHA = '2b2e6e53480db9c3b66415d3fa8fbc94b45f0059b2813717fe66e214c4acd8b8'
 
 
 def _json_once(path, value):
