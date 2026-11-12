@@ -184,3 +184,31 @@ that semantic failure and its correction are retained separately. These receipts
 are live acquisition/handler evidence, not a browser or working-source acceptance.
 No body or image archive, durable source-reference grant or native activation is
 introduced. The 24 Moons release remains independent of PR83's recovery/UI tails.
+
+### Butterfly Club / Impro Melbourne (E7 first pair)
+
+The Butterfly Club's exact robots read returned200/292 bytes and denied this
+reader access to the homepage. Its fixed listing gate remains closed before
+reservation/I/O and its descriptor reports access unconfirmed. No homepage,
+alternate user agent, details or account route was used. This does not establish
+the venue's operating status or supply a current programme.
+
+Impro Melbourne's exact robots404 was permitted under the existing transport's
+rules and ten-second origin floor. Its fixed2026 season has explicit Now Playing
+and Past Shows sections. Only show-marked current cards are accepted; past cards
+and workshops are excluded. The source image-alt label supplies the show title;
+the `cards__card-title` node is a date range. Image URLs/content are not fetched.
+The explicit2026 page title scopes the full/abbreviated month-day ranges, not the
+retrieval year. No cross-year rollover, weekly recurrence or individual session
+is generated. Run dates have no invented performance instant, venue, audience
+eligibility, price or stock. Occurrence identity binds source URL plus explicit
+range rather than title or retrieval time.
+
+Twenty-nine focused source/common-engine/transport/normal-handler checks pass,
+including persisted response/save/Undo/fresh-session identity and the closed
+Butterfly path. An actual guarded Impro action at `ccf5905` made one fixed
+HTTP200 read (27503 bytes) and returned two current show runs: Dice Goblins and
+The Wishing Tree. POST/replay302 and render200 made no additional acquisitions
+and wrote no taste history. The normal handler receipt remains distinct from
+actual browser/Usability and independent working-source acceptance. No durable
+source-reference permission, native activation or model invocation is supplied.
