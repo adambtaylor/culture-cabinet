@@ -19,3 +19,16 @@ button { min-height: 2.8rem; max-width: 100%; padding: .6rem 1rem; font: 600 1re
 .category-outcomes li { padding: 1rem; border: 1px solid #b6bda9; overflow-wrap: anywhere; }.journey-navigation { display: flex; flex-wrap: wrap; gap: .6rem; margin-block: 1.5rem; }
 :focus-visible { outline: 3px solid #895317; outline-offset: 3px; }.skip-link { position: absolute; top: -5rem; left: 1rem; background: #fffefa; padding: .5rem; }.skip-link:focus { top: .2rem; }
 @media (forced-colors:active) { button,input,.provider-panel,.journey-status { border-color: ButtonText; } }
+
+.category-navigation { display: flex; flex-wrap: wrap; gap: .6rem 1rem; margin-block: 1rem; }
+.category-navigation a { display: inline-flex; align-items: center; min-height: 2.8rem; padding: .4rem .6rem; }
+
+.noise-control { max-width: 38rem; margin-block: .8rem; padding: .8rem; border: 1px solid #858a7d; }
+.noise-control input[type=range] { width: 100%; min-height: 2.8rem; accent-color: #354e3c; }
+.noise-endpoints { display: flex; justify-content: space-between; gap: 1rem; flex-wrap: wrap; }
+.location-panel { padding: 1rem; border: 1px solid #b6bda9; border-radius: .3rem; margin-block: 1rem; overflow-wrap: anywhere; }
+.location-panel summary { min-height: 2.8rem; padding-block: .6rem; cursor: pointer; font-weight: 600; }
+.location-panel input[type=number] { width: min(100%,12rem); min-height: 2.8rem; padding: .65rem; font: inherit; border: 1px solid #747b6d; border-radius: .25rem; background: #fffefa; color: inherit; }
+
+.journey-navigation-intro { margin-block: .5rem 1rem; }
+.journey-navigation-intro form { margin: 0; }

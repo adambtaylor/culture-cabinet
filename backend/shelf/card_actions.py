@@ -305,6 +305,8 @@ class CardActions:
                         guard_inventory=inventory))
             if command.action == 'obtain':
                 result = self._obtain(session_ref, command, card, result)
+            from .portable_taste_history import capture_committed
+            capture_committed(self.authority,session_ref,command.profile_ref,origin_command_ref=command.command_id)
             return result
 
     def undo(self, session_ref, command):
@@ -356,11 +358,14 @@ class CardActions:
                     except FeedbackError:
                         raise ga.AuthorityFault('AUTHORITY_DENIED', 403) from None
                     children.append(accepted.event_id)
-                return self._record(cabinet, command, kind='card.undo', target=target, children=children,
+                result = self._record(cabinet, command, kind='card.undo', target=target, children=children,
                     before=before, subject_before=subject_before, session_ref=session_ref, values=dict(
                         target_ref=original.result['target_ref'], publication_ref=original.descriptor['publication_ref'],
                         publication_revision=original.descriptor['publication_revision'],before_frame=before_frame,
                         before_rows=before_rows,authority_digest=authority_digest,guard_inventory=inventory))
+            from .portable_taste_history import capture_committed
+            capture_committed(self.authority,session_ref,command.profile_ref,origin_command_ref=command.command_id)
+            return result
 
     def _obtain(self, session_ref, command, card, result):
         # Preference has already committed. A missing acquisition adapter is a
@@ -696,8 +701,13 @@ def validate_journey_history(raw):
         if row['descriptor_digest']!=history_digest(descriptor):raise ValueError('Invalid command digest')
         command_id=identifier(row['command_id']);kind=row['kind']
         if kind not in {'card.action','card.undo','journey.name','journey.step','journey.provider.configure',
-            'journey.provider.save','journey.favourite','journey.prepare','source.check'}:raise ValueError('Unknown command')
-        if row['state'] not in {'reserved','partial','unknown','committed'}:raise ValueError('Invalid command state')
+            'journey.provider.save','journey.favourite','journey.prepare','journey.location','source.check',
+            'taste.checkpoint','taste.preview','taste.restore','taste.undo'}:raise ValueError('Unknown command')
+        if row['state'] not in {'reserved','partial','unknown','committed'} and not (
+            kind.startswith('taste.') and row['state']=='retired'):raise ValueError('Invalid command state')
+        if kind.startswith('taste.'):
+            from .portable_taste_history import validate_history_command
+            validate_history_command(raw,row,descriptor,result,cabinet)
         if kind in ('card.action','card.undo'):
             command=(CardAction if kind=='card.action' else CardUndo).parse({**descriptor,'command_id':command_id})
             if command.profile_ref!=identifier(cabinet[1]) or row['state']!='committed':raise ValueError('Foreign action')
@@ -732,6 +742,11 @@ def validate_journey_history(raw):
     for row in objects(PortableJourneyState):
         cabinet=cabinets[row['cabinet_id']]
         revision(row['revision'])
+        from .local_event_preferences import validate_setting
+        revision(row['location_revision'])
+        if any(row[key] is not None for key in ('home_country','home_postcode','radius_km')):
+            validate_setting(row['home_country'],row['home_postcode'],row['radius_km'])
+        if type(row['next_noise']) is not int or not 0<=row['next_noise']<=100:raise ValueError('Invalid Noise')
         if row['step'] not in STEPS:raise ValueError('Invalid journey step')
         for key in ('completed','skipped'):
             value=document(row[key])
@@ -747,11 +762,11 @@ def validate_journey_history(raw):
                                    (uuid.UUID(ref).hex,)).fetchone()
                 if not source or identifier(source[0])!=identifier(cabinet[2]) or source[1] not in PROVIDER_ADAPTERS[provider]:
                     raise ValueError('Foreign provider row')
-        if type(slots) is not dict or len(slots)>65:raise ValueError('Invalid favourites')
+        if type(slots) is not dict or len(slots)>70:raise ValueError('Invalid favourites')
         from .category_registry import KEYS
         for key,slot in slots.items():
             category,number=key.rsplit(':',1)
-            if category not in KEYS or number not in ('1','2','3','4','5') or set(slot)!={'entry_ref','saved_revision'}:
+            if category not in (*KEYS,'visual_artist') or number not in ('1','2','3','4','5') or set(slot)!={'entry_ref','saved_revision'}:
                 raise ValueError('Invalid favourite slot')
             identifier(slot['entry_ref']);revision(slot['saved_revision'],positive=True)
     for row in objects(PortableSourceCheckAttempt):

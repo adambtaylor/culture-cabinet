@@ -6,7 +6,7 @@ from django.http import HttpResponse
 from django.middleware.csrf import get_token
 from django.views.decorators.csrf import csrf_protect
 from django.views.decorators.debug import sensitive_post_parameters, sensitive_variables
-from django.views.decorators.http import require_GET, require_POST
+from django.views.decorators.http import require_GET, require_POST, require_http_methods
 
 from . import grant_authority as ga
 from .card_action_views import fields
@@ -65,7 +65,7 @@ def _redirect(profile_ref):
         {'profile_ref': profile_ref}), 'Cache-Control': 'no-store'})
 
 
-@require_GET
+@require_http_methods(['GET','HEAD'])
 @_errors
 def page(request):
     ga._require(set(request.GET) <= {'profile_ref'} and all(
@@ -155,9 +155,33 @@ def favourite(request, remove=False):
 @require_POST
 @csrf_protect
 @_errors
+def location(request):
+    action=request.POST.get('action')
+    ga._require(action in ('save','skip','remove'),'CONTRACT_INVALID',422)
+    names=COMMON|{'action'}
+    if action=='save':
+        names|={'country','postcode'}
+        if 'radius_km' in request.POST:names|={'radius_km'}
+    value=_values(request,names)
+    if 'radius_km' in value:
+        from .portable_source_views import _revision
+        # A blank optional HTML number field has the same meaning as omission.
+        # Closed-field and duplicate checks above still apply before defaulting.
+        value['radius_km']=None if value['radius_km']=='' else _revision(value['radius_km'])
+    result=PortableJourney(request.portable_authority).location(request.session.get('portable_session'),**value)
+    return _redirect(result['profile_ref'])
+
+
+@require_POST
+@csrf_protect
+@_errors
 def prepare(request):
-    result = PortableJourney(request.portable_authority).prepare(request.session.get('portable_session'),
-        **_values(request, COMMON | {'connection_ref', 'client_key', 'refresh_nonce'}))
+    value=_values(request, COMMON | {'connection_ref','client_key','refresh_nonce'} |
+        ({'noise'} if 'noise' in request.POST else set()))
+    if 'noise' in value:
+        from .enhance_selection import parse_noise
+        value['noise']=parse_noise(value['noise'])
+    result=PortableJourney(request.portable_authority).prepare(request.session.get('portable_session'),**value)
     return HttpResponse(status=303, headers={'Location': '/enhance?' + urlencode({
         key: result[key] for key in ('profile_ref', 'connection_ref', 'run_ref')}),
         'Cache-Control': 'no-store'})

@@ -1,5 +1,6 @@
 <section class="paper-panel enhancement" data-enhancement data-state="{{ enhancement.state }}" data-schema="{{ enhancement.schema }}" data-status-url="{{ enhancement.status_url }}" aria-labelledby="enhance-heading">
   <h2 id="enhance-heading">Enhance my picks</h2>
+  {% if noise_run %}<section aria-label="This round’s recorded selection policy" data-noise-run>{% if noise_run.legacy %}<p>This older round has no recorded Noise setting. Its original ranking is retained.</p>{% else %}<p>Noise {{ noise_run.value }} · frozen for this round (selection-policy/v1). Editing the next-round control does not change this round.</p>{% for category in noise_run.categories %}<p>{{ category.label }}: {{ category.used }} of {{ category.requested }} requested exploratory slots used. {{ category.reason }}</p>{% endfor %}<p>Exploratory picks use available source evidence; they are not newly learned preferences.</p>{% endif %}</section>{% endif %}
   {% if portable_ui %}<p class="enhance-stage-link"><a href="#enhance-current-stage">Current stage and next action</a></p>{% endif %}
   <div role="status" aria-live="polite" aria-atomic="true"><p data-enhance-label>{% if enhancement.schema == 'enhance/v1' %}Enhance progress{% else %}{{ enhancement.label|default:'Supervised enhancement' }}{% endif %}</p><p data-enhance-explanation{% if enhancement.schema == 'enhance/v1' %} hidden{% endif %}>{{ enhancement.explanation|default:'Enhancement requires a manual, supervised Astra high model handoff. It does not run automatically.' }}</p></div>
   {% comment %}StageEvent.public is display data, not send authority. Keep stage copy here so initial HTML and client updates use the same words; no provider/source prose becomes markup.{% endcomment %}
@@ -173,11 +174,15 @@
     <p><a href="/setup">Open owner setup or Your model</a>. After changing setup or confirming your session, return here and explicitly retry the intended action; nothing is resubmitted for you.</p>
     {% if portable_return_url %}<p><a href="{{ portable_return_url }}">Review this round again after restoring access</a>. Start with its recorded status; no request is repeated by this link.</p>{% endif %}
     {% if portable_commands.start %}
+    {% if noise_control %}
+      {% include 'cabinet/portable_enhance_start.html' with start_label='Start a round and review API requests' noise_id='enhance-noise' %}
+    {% else %}
     <form method="post" action="{{ portable_commands.start }}">{% csrf_token %}
       <input type="hidden" name="profile_ref" value="{{ profile_ref }}"><input type="hidden" name="connection_ref" value="{{ connection_ref }}">
       <input type="hidden" name="client_key" value="{{ client_key }}"><input type="hidden" name="refresh_nonce" value="{{ refresh_nonce }}">
       <button type="submit">Start a round and review API requests</button>
     </form>
+    {% endif %}
     {% endif %}
     {% if portable_commands.preview %}<form method="post" action="{{ portable_commands.preview }}">{% csrf_token %}<button type="submit">Review the next request</button></form>{% endif %}
     {% if disclosure %}

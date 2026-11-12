@@ -5,6 +5,10 @@
 .card-action-buttons [aria-pressed=true] { color: #fff; background: #354e3c; }.card-action-buttons [aria-disabled=true] { pointer-events: none; opacity: .65; }
 .card-action-buttons button:disabled { cursor: not-allowed; color: #5c6257; background: #e2e3da; border-color: #858a7d; }
 .card-actions-open { margin-top: .5rem; }.card-actions-open[hidden],[data-card-action-pending][hidden],.card-bin-layer[hidden] { display: none !important; }
+/* The cabinet's button:hover darkens the background with higher specificity
+   than the plain trigger class, including while Escape returns focus under
+   the pointer. Keep its foreground/background paired; retain the focus ring. */
+.card-actions-open:hover { background: #e4e7da; color: #284f38; }
 [data-card-action-card] { touch-action: pan-y pinch-zoom; }.card-action-floating { user-select: none; position: relative; z-index: 1000; box-shadow: 0 1rem 2.5rem #17271e50; transform: translate(var(--card-dx,0),var(--card-dy,-5px)) scale(1.015); transition: box-shadow .15s; }
 .card-bin-layer { position: fixed; inset: 0; z-index: 1001; pointer-events: none; }
 .card-bin { position: absolute; left: var(--bin-x,50%); top: var(--bin-y,50%); width: 88px; min-height: 70px; border: 2px solid #354e3c; border-bottom-width: 6px; border-radius: .5rem .5rem 1rem 1rem; background: #fffefa; color: #284f38; box-shadow: 0 .3rem .8rem #17271e30; font: 600 .85rem/1.2 system-ui,sans-serif; padding: .5rem .25rem; pointer-events: auto; cursor: pointer; }
@@ -16,3 +20,10 @@
 .card-actions :focus-visible { outline: 3px solid #895317; outline-offset: 3px; }
 @media (prefers-reduced-motion:reduce) { .card-action-floating { transition: none; } }
 @media (forced-colors:active) { .card-bin,.card-action-buttons button,.card-actions-open { border-color: ButtonText; } }
+
+.noise-control { max-width: 38rem; margin-block: .8rem; padding: .8rem; border: 1px solid #858a7d; }
+.noise-control input[type=range] { width: 100%; min-height: 2.8rem; accent-color: #354e3c; }
+.noise-endpoints { display: flex; justify-content: space-between; gap: 1rem; flex-wrap: wrap; }
+.local-event-display { margin-block: .8rem; padding-block: .8rem; border-block: 1px solid #b6bda9; overflow-wrap: anywhere; }
+.local-event-display summary { min-height: 2.8rem; padding-block: .6rem; cursor: pointer; }
+.local-event-display dt { font-weight: 600; } .local-event-display dd { margin-inline: 0; }

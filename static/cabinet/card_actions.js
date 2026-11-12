@@ -6,8 +6,10 @@
   class HoldGesture {
     constructor(hooks = {}, clock = {}) {
       this.hooks = hooks;
-      this.schedule = clock.setTimeout || setTimeout;
-      this.clear = clock.clearTimeout || clearTimeout;
+      // Browser timers need their Window receiver; injected clocks keep theirs.
+      // Calling a raw timer as a gesture method can throw before hold activation.
+      this.schedule = clock.setTimeout ? clock.setTimeout.bind(clock) : setTimeout.bind(globalThis);
+      this.clear = clock.clearTimeout ? clock.clearTimeout.bind(clock) : clearTimeout.bind(globalThis);
       this.phase = 'idle';
       this.pointer = null;
       this.timer = null;
@@ -63,8 +65,31 @@
   function targetAt(targets, x, y) {
     return targets.find(target => x >= target.left && x <= target.right && y >= target.top && y <= target.bottom) || null;
   }
-  if (typeof module !== 'undefined' && module.exports) module.exports = { HoldGesture, SubmissionGate, targetAt };
+  const boundNoiseInputs = new WeakSet();
+  function bindNoiseControls(root) {
+    for (const widget of root.querySelectorAll('[data-noise-control]')) {
+      const input = widget.querySelector('input[type="range"][name="noise"]');
+      const output = widget.querySelector('[data-noise-output]');
+      if (!input || !output || !input.form || input.form !== widget.closest('form') ||
+          !input.id || output.getAttribute('for') !== input.id || boundNoiseInputs.has(input) ||
+          input.min !== '0' || input.max !== '100' || input.step !== '1') continue;
+      // This is a form-local numeric readout only. Never touch a saved default,
+      // frozen run summary, card gesture, storage or native submit path.
+      const update = () => {
+        if (!/^(?:100|[1-9]?\d)$/.test(input.value)) return;
+        output.textContent = input.value;
+        input.setAttribute('aria-valuetext', input.value + ' · next round, Precise to Experimental');
+      };
+      update();
+      input.addEventListener('input', update);
+      input.addEventListener('change', update);
+      boundNoiseInputs.add(input);
+    }
+  }
+  if (typeof module !== 'undefined' && module.exports) module.exports = { HoldGesture, SubmissionGate, targetAt, bindNoiseControls };
   if (typeof document === 'undefined') return;
+  // Guide/Prepare pages have no cards; the range binding must precede that exit.
+  bindNoiseControls(document);
 
   const forms = Array.from(document.querySelectorAll('[data-card-action-form]'));
   if (!forms.length) return;
@@ -188,7 +213,7 @@
     card.addEventListener('pointerdown', event => {
       suppress = null;
       if (current?.keyboard) hide(true);
-      const excluded = !!event.target.closest('a,button,input,select,textarea,label,summary,details,[contenteditable],[role="button"]')
+      const excluded = !!event.target.closest('a,button,input,select,textarea,label,output,summary,details,[data-noise-control],[contenteditable],[role="button"]')
         || !!window.getSelection()?.toString() || livePointers.size > 1;
       gesture.down({ pointerId: event.pointerId, clientX: event.clientX, clientY: event.clientY,
         button: event.button, isPrimary: event.isPrimary, excluded });

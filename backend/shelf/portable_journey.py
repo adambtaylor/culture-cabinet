@@ -2,10 +2,11 @@
 import uuid
 from . import grant_authority as ga
 from .card_actions import revision
-from .category_registry import CATEGORIES
+from .category_registry import CATEGORIES, Category
 
 SCHEMA = 'guided-owner-journey/v2'
-STEPS = ('identity', 'providers', 'favourites', 'prepare', 'finish')
+STEPS = ('identity', 'providers', 'favourites', 'events_location', 'prepare', 'finish')
+INTAKE_CATEGORIES = (*CATEGORIES, Category('visual_artist','Visual artists','art'))
 
 
 def form(action, fields, *, enabled=True, reason=''):
@@ -28,7 +29,7 @@ def journey_actions(*, profile_ref, journey_ref, expected_revision, owner_revisi
 
 def favourite_slot(*, profile_ref, journey_ref, expected_revision, category, slot,
                    entry_ref=None, title='', saved_revision=0):
-    ga._require(category in tuple(c.key for c in CATEGORIES) and type(slot) is int and 1 <= slot <= 5,
+    ga._require(category in tuple(c.key for c in INTAKE_CATEGORIES) and type(slot) is int and 1 <= slot <= 5,
                 'CONTRACT_INVALID', 422)
     revision(expected_revision); revision(saved_revision)
     entry_ref = str(ga._uuid(entry_ref)) if entry_ref else str(uuid.uuid4())
@@ -44,7 +45,8 @@ def favourite_slot(*, profile_ref, journey_ref, expected_revision, category, slo
 
 
 def journey_projection(*, profile_ref, profile_label, journey_ref, revision, step, steps,
-                       providers, favourite_categories, categories, preparation, completion_receipts, actions):
+                       providers, favourite_categories, categories, preparation, completion_receipts, actions,
+                       location=None,next_noise=None):
     ga._require(step in STEPS and type(profile_label) is str and len(profile_label) <= 80,
                 'CONTRACT_INVALID', 422)
     # This detached primitive-only shape is the shared UI port. Authority and
@@ -53,8 +55,48 @@ def journey_projection(*, profile_ref, profile_label, journey_ref, revision, ste
     value = dict(schema=SCHEMA, profile_ref=profile_ref, profile_label=profile_label,
         journey_ref=journey_ref, revision=revision, step=step, steps=steps, providers=providers,
         favourite_categories=favourite_categories, categories=categories, preparation=preparation,
-        completion_receipts=completion_receipts, actions=actions)
+        completion_receipts=completion_receipts, actions=actions, location=location)
+    if next_noise is not None:value['next_noise']=next_noise
     return read_json(canonical_bytes(value))
+
+
+def _current_favourite_slots(cabinet,journey):
+    """Project guided identities onto current authentic saved-event heads."""
+    from .models import PortableJourneyCommand
+    from .portable_taste_history import _supported
+    if journey is None:return {}
+    # History restore and Undo append events without rewriting journey metadata.
+    # Commands locate original guided identities; only event heads decide Saved/CAS.
+    candidates={value['entry_ref']:key for key,value in journey.slots.items()}
+    commands=PortableJourneyCommand.objects.filter(cabinet=cabinet,kind='journey.favourite',
+        state='committed').order_by('created_at','pk')
+    for command in commands:
+        value=command.descriptor
+        if value['journey_ref']==str(journey.pk):
+            candidates.setdefault(value['entry_ref'],value['category']+':'+str(value['slot']))
+    streams,_=_supported(cabinet);active={}
+    for (_,signal),stream in streams.items():
+        target=stream['target']
+        namespace=('owner-stated-visual-artist' if target.category=='visual_artist' else 'owner-stated-favourite')
+        if signal!='saved' or target.source_namespace!=namespace or not stream['available'] or stream['body']!={'value':True}:
+            continue
+        prefix=str(cabinet.profile_ref)+':'
+        entry=target.source_key.removeprefix(prefix)
+        preferred=candidates.get(entry)
+        if preferred and target.source_key==prefix+entry and preferred.split(':')[0]==target.category:
+            active[entry]=(preferred,stream['history'][-1].revision)
+    slots={}
+    # Keep occupied current slots first. Reinstated original identities take their
+    # old slot when free, then the first free slot; never hide an overflow.
+    for entry in candidates:
+        if entry not in active:continue
+        preferred,saved_revision=active[entry]
+        category=preferred.split(':')[0]
+        choices=[preferred,*[category+':'+str(number) for number in range(1,6)]]
+        key=next((key for key in choices if key not in slots),None)
+        ga._require(key is not None,'REVISION_CONFLICT',409)
+        slots[key]=dict(entry_ref=entry,saved_revision=saved_revision)
+    return slots
 
 
 class PortableJourney:
@@ -267,7 +309,7 @@ class PortableJourney:
         from django.db import transaction
         from .models import PortableJourneyCommand
         from .portable_taste_inputs import PortableTasteInputs
-        ga._require(category in tuple(row.key for row in CATEGORIES) and type(slot) is int and 1<=slot<=5,
+        ga._require(category in tuple(row.key for row in INTAKE_CATEGORIES) and type(slot) is int and 1<=slot<=5,
                     'CONTRACT_INVALID',422)
         ga._uuid(entry_ref);ga._uuid(mutation_id);revision(base_revision)
         descriptor=dict(profile_ref=profile_ref,journey_ref=journey_ref,expected_revision=expected_revision,
@@ -280,13 +322,21 @@ class PortableJourney:
             ga._require(remove or type(title) is str and 1<=len(title)<=200 and bool(title.strip())
                 and not any(ord(c)<32 or ord(c)==127 for c in title),'CONTRACT_INVALID',422)
             self._pending(cabinet,exclude=prior.pk if prior else None)
-            key=category+':'+str(slot);old=journey.slots.get(key)
+            slots=_current_favourite_slots(cabinet,journey)
+            key=category+':'+str(slot)
+            # An interrupted exact parent resumes its reserved child receipt;
+            # new commands must bind the current event-derived slot revision.
+            old=(journey.slots if prior else slots).get(key)
             ga._require(journey.revision==expected_revision and
                 (not old or old['entry_ref']==entry_ref and old['saved_revision']==base_revision),
                 'REVISION_CONFLICT',409)
+            if prior is None and category=='visual_artist' and not remove:
+                from .portable_taste_inputs import validate_visual_artist
+                validate_visual_artist(cabinet,profile_ref,entry_ref,title)
             if prior is None:
                 from .models import FeedbackTarget,FeedbackEvent,MutationReceipt
-                target=FeedbackTarget.objects.filter(source_namespace='owner-stated-favourite',
+                namespace='owner-stated-visual-artist' if category=='visual_artist' else 'owner-stated-favourite'
+                target=FeedbackTarget.objects.filter(source_namespace=namespace,
                     source_key=profile_ref+':'+entry_ref,kind='item').first()
                 ga._require(not remove or target is not None,'REVISION_CONFLICT',409)
                 if target is not None:
@@ -309,7 +359,6 @@ class PortableJourney:
             accepted=PortableTasteInputs(self.authority).mutate_favourite(session_ref,profile_ref,
                 entry_ref=entry_ref,mutation_id=mutation_id,base_revision=base_revision,
                 category=category,title=title,remove=remove)
-            slots=dict(journey.slots)
             if remove:slots.pop(key,None)
             else:slots[key]=dict(entry_ref=entry_ref,saved_revision=accepted['revision'])
             with transaction.atomic(),ga._write_window():
@@ -317,11 +366,48 @@ class PortableJourney:
                 result=dict(profile_ref=profile_ref,journey_ref=journey_ref,revision=journey.revision,
                     entry_ref=entry_ref,saved_revision=accepted['revision'],event_ref=accepted['event_ref'])
                 PortableJourneyCommand.objects.filter(pk=prior.pk).update(state='committed',result=result)
+            from .portable_taste_history import capture_committed
+            capture_committed(self.authority,session_ref,profile_ref,origin_command_ref=command_id)
             return result
 
 
+    def location(self, session_ref, *, profile_ref, journey_ref, expected_revision,command_id,
+                 action,country=None,postcode=None,radius_km=None):
+        from .local_event_preferences import validate_setting
+        ga._require(action in ('save','skip','remove'),'CONTRACT_INVALID',422)
+        ga._uuid(command_id);revision(expected_revision)
+        values=validate_setting(country,postcode,radius_km) if action=='save' else (None,None,None)
+        ga._require(action=='save' or country is postcode is radius_km is None,'CONTRACT_INVALID',422)
+        descriptor=dict(profile_ref=profile_ref,journey_ref=journey_ref,expected_revision=expected_revision,
+                        action=action,**(dict(zip(('country','postcode','radius_km'),values)) if action=='save' else {}))
+        with ga.recovery_guard(self.authority,session_ref,profile_ref=profile_ref) as checkpoint, \
+                self.authority._lock,ga._checked_transaction(checkpoint):
+            cabinet,journey=self._state(session_ref,profile_ref,journey_ref,sensitive=True,
+                                        expected_revision=expected_revision)
+            prior=self._prior(cabinet,command_id,'journey.location',descriptor)
+            if prior:return prior.result
+            self._pending(cabinet)
+            ga._require(journey.revision==expected_revision,'REVISION_CONFLICT',409)
+            if action!='skip' and (journey.home_country,journey.home_postcode,journey.radius_km)!=values:
+                journey.home_country,journey.home_postcode,journey.radius_km=values
+                journey.location_revision+=1
+            # Skip keeps an existing setting. Neither navigation nor the radius
+            # creates a feedback signal or an outbound source/model parameter.
+            if journey.step=='events_location':
+                collection='skipped' if action=='skip' else 'completed'
+                setattr(journey,collection,list(dict.fromkeys([*getattr(journey,collection),'events_location'])))
+                journey.step='prepare'
+            journey.revision+=1;journey.updated_at=self.authority.now()
+            result=dict(profile_ref=profile_ref,journey_ref=journey_ref,revision=journey.revision,
+                location_revision=journey.location_revision,step=journey.step,code='LOCATION_'+action.upper())
+            with ga._write_window():
+                journey.save(update_fields=['home_country','home_postcode','radius_km','location_revision',
+                    'step','completed','skipped','revision','updated_at'])
+                self._record(cabinet,command_id,'journey.location',descriptor,result)
+            return result
+
     def prepare(self, session_ref, *, profile_ref, journey_ref, expected_revision,
-                command_id, connection_ref, client_key, refresh_nonce):
+                command_id, connection_ref, client_key, refresh_nonce,noise=None):
         from django.db import transaction
         from .models import PortableJourneyCommand,SynthesisRun
         from .enhance_contract import EnhanceFault
@@ -330,6 +416,9 @@ class PortableJourney:
         for value in (command_id,connection_ref,client_key,refresh_nonce):ga._uuid(value)
         descriptor=dict(profile_ref=profile_ref,journey_ref=journey_ref,expected_revision=expected_revision,
             connection_ref=connection_ref,client_key=client_key,refresh_nonce=refresh_nonce)
+        if noise is not None:
+            from .enhance_selection import RunSelectionPolicy
+            RunSelectionPolicy(noise);descriptor['noise']=noise
         with ga.current_writer(self.authority,session_ref,profile_ref) as cabinet:
             _,journey=self._state(session_ref,profile_ref,journey_ref,sensitive=True,expected_revision=expected_revision)
             prior=self._prior(cabinet,command_id,'journey.prepare',descriptor)
@@ -347,7 +436,8 @@ class PortableJourney:
             # this form nor a replay confirms source access or personal inference.
             try:
                 outcome=get_service(self.authority).start(session_ref,profile_ref=profile_ref,
-                    connection_ref=connection_ref,client_key=client_key,refresh_nonce=refresh_nonce)
+                    connection_ref=connection_ref,client_key=client_key,refresh_nonce=refresh_nonce,
+                    **({'noise':noise} if noise is not None else {}))
             except (ga.AuthorityFault,EnhanceFault,DisclosureError) as fault:
                 # Start only plans. A known refusal with no admitted owned run
                 # is a completed no-effect command. An admitted child or unknown
@@ -370,6 +460,7 @@ class PortableJourney:
             return result
 
     def project(self, session_ref, *, profile_ref=None):
+        from .local_event_preferences import location_projection
         from .models import PortableJourneyState,ProfileCabinetState,PortableConnection,SavedCredentialBinding,FeedbackTarget
         from .source_connection_validation import SourceConnectionValidation
         from .portable_authority import AuthorityFault
@@ -390,7 +481,7 @@ class PortableJourney:
             journey=PortableJourneyState.objects.filter(cabinet=cabinet).first()
             journey_ref=str(journey.pk if journey else uuid.uuid5(cabinet.profile_ref,'guided-owner-journey:v2'))
             rev=journey.revision if journey else 0;step=journey.step if journey else 'providers'
-            connections=journey.connections if journey else {};slots=journey.slots if journey else {}
+            connections=journey.connections if journey else {};slots=_current_favourite_slots(cabinet,journey)
             recent=True
             try:self.authority.authorize(session_ref,sensitive=True,touch=False)
             except AuthorityFault:recent=False
@@ -448,13 +539,14 @@ class PortableJourney:
                     actions=({ 'configure':config, 'save':save, **({'test':test_action} if provider!='openai' else {})}
                         if keyed else {'configure':config})))
             favourites=[]
-            for category in CATEGORIES:
+            for category in INTAKE_CATEGORIES:
                 entries=[]
                 for number in range(1,6):
                     stored=slots.get(category.key+':'+str(number));title='';entry=None;saved_revision=0
                     if stored:
                         entry=stored['entry_ref'];saved_revision=stored['saved_revision']
-                        target=FeedbackTarget.objects.filter(source_namespace='owner-stated-favourite',
+                        namespace='owner-stated-visual-artist' if category.key=='visual_artist' else 'owner-stated-favourite'
+                        target=FeedbackTarget.objects.filter(source_namespace=namespace,
                             source_key=profile_ref+':'+entry,category=category.key,deleted=False).first()
                         ga._require(target is not None,'REVISION_CONFLICT',409)
                         title=target.title
@@ -462,7 +554,7 @@ class PortableJourney:
                         category=category.key,slot=number,entry_ref=entry,title=title,saved_revision=saved_revision)
                     for action in value['actions'].values():action['enabled']=action['enabled'] and recent
                     entries.append(value)
-                favourites.append(dict(category=category.key,label=category.label,slots=entries))
+                favourites.append(dict(category=category.key,label=category.label,group=category.group,slots=entries))
             categories=[dict(category=row.key,label=row.label,state='not_started',code='',count=0,
                 publication_ref=None,publication_revision=None,ranking_state='none',cards=[],next_action='prepare',
                 href='/cabinet?profile_ref='+profile_ref+'&category='+row.key) for row in CATEGORIES]
@@ -491,13 +583,16 @@ class PortableJourney:
                 actions['prepare']['fields']['connection_ref']=model['connection_refs'][0]
                 actions['prepare']['enabled']=recent
                 actions['prepare']['disabled_reason']='' if recent else 'REAUTHENTICATION_REQUIRED'
+            next_noise=journey.next_noise if journey is not None else 25
+            actions['prepare']['fields']['noise']=next_noise
             return journey_projection(profile_ref=profile_ref,profile_label=cabinet.profile.label,
                 journey_ref=journey_ref,revision=rev,step=step,
                 steps=[dict(step=key,label=key.title(),state='current' if key==step else
                     'completed' if journey and key in journey.completed else
                     'skipped' if journey and key in journey.skipped else 'pending') for key in STEPS],
                 providers=providers,favourite_categories=favourites,categories=categories,
-                preparation=preparation,completion_receipts=[],actions=actions)
+                preparation=preparation,completion_receipts=[],actions=actions,
+                location=location_projection(cabinet,journey_ref=journey_ref,expected_revision=rev,enabled=recent),next_noise=next_noise)
 
 
 PROVIDER_ADAPTERS = {'openai':('openai_responses',),'tmdb':('tmdb_movie','tmdb_tv'),

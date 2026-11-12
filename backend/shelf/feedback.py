@@ -338,8 +338,14 @@ def mutate(*, actor, profile_id, command):
         for attempt in range(3):
             try:
                 with immediate(), writer_window(actor, profile_id):
+                    recorded=MutationReceipt.objects.filter(actor=actor,mutation_id=command.mutation_id).exists()
                     result = mutate_in_transaction(actor=actor, profile_id=profile_id,
                         command=command, barrier=barrier)
+                # A receipt replay cannot invent a point lost in the original
+                # post-commit crash gap or attribute later choices to this input.
+                if not recorded:
+                    from shelf.portable_taste_history import capture_native_mutation
+                    capture_native_mutation(actor,profile_id,command)
                 return result
             except Exception as error:
                 if not is_busy(error): raise

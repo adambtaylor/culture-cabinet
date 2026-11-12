@@ -6,7 +6,7 @@ from uuid import UUID
 from django.test import SimpleTestCase, override_settings
 from django.utils.safestring import mark_safe
 
-from shelf.guided_journey_presentation import render_guided_journey, guided_journey_context, CATEGORIES, STEPS
+from shelf.guided_journey_presentation import render_guided_journey, guided_journey_context, CATEGORIES, STEPS, A1_STEPS
 from .test_onboarding_experience_views import Document, Poison
 
 
@@ -57,6 +57,36 @@ def forbidden_processor(request):
     raise AssertionError('Request processor invoked')
 
 
+def a1_projection(step='events_location', state='unset', postcode='0800'):
+    """Primitive row shape pinned by Taste's actual interfaces-a1-01 producer."""
+    p = projection()
+    p['step'] = step
+    p['steps'] = [dict(step=s, label=s.replace('_', ' ').title(), state='current' if s == step else 'pending') for s in A1_STEPS]
+    for row in p['actions']['step'].values(): row['fields']['step'] = step
+    saved = state != 'unset'
+    common = dict(profile_ref=p['profile_ref'], journey_ref=p['journey_ref'], expected_revision=p['revision'])
+    actions = {}
+    for number, action in enumerate(('save', 'skip', 'remove')):
+        fields = {**common, 'command_id': ref(80+number), 'action': action}
+        if action == 'save': fields.update(country='AU', postcode=postcode if saved else '', radius_km=25)
+        actions[action] = form('/cabinet/journey/location', fields, enabled=action != 'remove' or saved)
+    p['location'] = dict(country='AU' if saved else None, postcode=postcode if saved else None,
+        radius_km=25 if saved else None, location_revision=1 if saved else 0, state=state,
+        dataset_revision='a'*64, approximation_notice='Postal reference estimates are approximate.',
+        attribution='GeoNames Australian postal data, CC BY 4.0; normalized by Culture Cabinet.', actions=actions)
+    return p
+
+class NativeForms(Document):
+    def __init__(self, html):
+        self.all_forms = []
+        super().__init__(html)
+
+    def handle_starttag(self, tag, attributes):
+        super().handle_starttag(tag, attributes)
+        if tag == 'form':
+            self.all_forms.append(self.current)
+
+
 class GuidedJourneyPresentationTests(SimpleTestCase):
     def render(self, value, **options):
         response = render_guided_journey(value, csrf_token='s'*64, **options)
@@ -78,6 +108,60 @@ class GuidedJourneyPresentationTests(SimpleTestCase):
         self.assertNotIn('experienced_ack', values)
         self.assertNotIn('signal', values)
         self.assertFalse(any(t == 'select' for t, a in doc.tags))
+
+    def test_long_optional_step_has_intro_actions_with_identical_lower_native_commands(self):
+        p = projection(); prototype = deepcopy(p['favourite_categories'][0]['slots'][0])
+        p['favourite_categories'] = []
+        for index, category in enumerate(CATEGORIES):
+            slots = []
+            for number in range(1, 6):
+                slot = deepcopy(prototype); base = 1000 + index*100 + number*10
+                slot.update(slot=number, entry_ref=ref(base), mutation_id=ref(base+1))
+                for offset, action in enumerate(slot['actions'].values()):
+                    action['fields'].update(category=category, slot=number, entry_ref=slot['entry_ref'],
+                        mutation_id=ref(base+2+offset), command_id=ref(base+4+offset))
+                slots.append(slot)
+            p['favourite_categories'].append(dict(category=category, label=category, slots=slots))
+        _, html, doc = self.render(p)
+        intro_start = html.index('<nav class="journey-navigation journey-navigation-intro"')
+        intro_end = html.index('</nav>', intro_start)
+        lower_start = html.index('<nav class="journey-navigation" aria-label="Continue setup"')
+        lower_end = html.index('</nav>', lower_start)
+        self.assertLess(intro_end, html.index('class="favourite-category"'))
+        self.assertLess(intro_end, html.index('Any number from zero to five is fine'))
+        self.assertIn('Both choices keep entries you have already saved', html[:intro_end])
+        self.assertIn('Skip this step</button>', html[intro_start:intro_end])
+        self.assertIn('Continue</button>', html[intro_start:intro_end])
+        self.assertNotIn(' hidden', html[intro_start:intro_end])
+        def commands(segment):
+            rows = NativeForms(segment).all_forms
+            return {next(i['value'] for i in row['inputs'] if i.get('name') == 'action'): row for row in rows}
+        intro, lower = commands(html[intro_start:intro_end]), commands(html[lower_start:lower_end])
+        self.assertEqual(set(intro), {'skip', 'continue'})
+        self.assertEqual(set(lower), {'back', 'skip', 'continue'})
+        for action, row in intro.items():
+            self.assertEqual(row, lower[action])
+            self.assertEqual(row['attrs'], {'method': 'post', 'action': '/cabinet/journey/step'})
+            fields = {i['name']: i['value'] for i in row['inputs']}
+            self.assertEqual(fields['csrfmiddlewaretoken'], 's'*64)
+            self.assertEqual(fields['profile_ref'], p['profile_ref'])
+            self.assertEqual(fields['journey_ref'], p['journey_ref'])
+            self.assertEqual(fields['expected_revision'], '1')
+        self.assertEqual(sum(t == 'form' and a.get('action') == '/cabinet/journey/favourites/add' for t, a in doc.tags), 65)
+        ids = [a['id'] for t, a in doc.tags if 'id' in a]
+        self.assertEqual(len(ids), len(set(ids)))
+
+    def test_intro_actions_keep_disabled_state_and_do_not_appear_on_other_steps(self):
+        p = projection(); p['actions']['step']['skip']['enabled'] = False
+        _, html, _ = self.render(p)
+        native = NativeForms(html).all_forms
+        skip = [f for f in native if any(i.get('name') == 'action' and i.get('value') == 'skip' for i in f['inputs'])]
+        self.assertEqual(len(skip), 2)
+        self.assertTrue(all('disabled' in f['buttons'][0] for f in skip))
+        self.assertEqual(skip[0]['inputs'], skip[1]['inputs'])
+        for step in ('providers', 'prepare', 'finish'):
+            _, other, _ = self.render(projection(step))
+            self.assertNotIn('journey-navigation-intro', other)
 
     def test_failed_provider_test_keeps_key_and_never_replays_or_echoes_secret(self):
         p = projection('providers'); p['providers'] = [provider(p)]; p.update(request=Poison(), secret='NEVER-ECHO')
@@ -171,3 +255,117 @@ class GuidedJourneyPresentationTests(SimpleTestCase):
             with self.subTest(href=href), self.assertRaises(ValueError):
                 bad = deepcopy(p); bad['categories'][0]['href'] = href
                 guided_journey_context(bad)
+
+    def test_visual_artist_slots_are_separate_owner_statements_not_an_output_queue(self):
+        p = projection()
+        visual = deepcopy(p['favourite_categories'][0])
+        visual.update(category='visual_artist', label='Visual artists')
+        template = deepcopy(visual['slots'][0])
+        visual['slots'] = []
+        for number in range(1, 6):
+            slot = deepcopy(template)
+            slot.update(slot=number, title='Fictional <Artist> ' + str(number))
+            for action in slot['actions'].values():
+                action['fields'].update(category='visual_artist', slot=number)
+            slot['actions']['add']['fields']['title'] = slot['title']
+            visual['slots'].append(slot)
+        music = deepcopy(p['favourite_categories'][0])
+        music.update(category='artist', label='Artists')
+        for action in music['slots'][0]['actions'].values():
+            action['fields']['category'] = 'artist'
+        p['favourite_categories'] = [visual, music]
+        _, html, doc = self.render(p)
+        self.assertIn('Visual artists', html)
+        self.assertIn('Music artists', html)
+        self.assertIn('does not verify the person', html)
+        self.assertIn('Fictional &lt;Artist&gt; 1', html)
+        self.assertEqual(len([i for i in doc.inputs if i.get('name') == 'category' and i.get('value') == 'visual_artist']), 5)
+        data = guided_journey_context(p)
+        self.assertEqual(len(data['categories']), 13)
+        self.assertNotIn('visual_artist', {r['category'] for r in data['categories']})
+        self.assertEqual(data['favourite_groups'][0]['key'], 'music')
+        self.assertEqual(data['favourite_groups'][1]['key'], 'art')
+        visual['slots'].append(deepcopy(visual['slots'][0]))
+        with self.assertRaises(ValueError): guided_journey_context(p)
+
+    def test_art_groups_existing_queues_and_does_not_borrow_music_identity(self):
+        p = projection('finish')
+        _, html, doc = self.render(p)
+        self.assertIn('href="#outcome-group-art"', html)
+        self.assertIn('Exhibitions &amp; openings', html)
+        self.assertIn('Art fairs', html)
+        data = guided_journey_context(p)
+        art = next(g for g in data['category_groups'] if g['key'] == 'art')
+        self.assertEqual({r['category'] for r in art['categories']}, {'gallery', 'art_fair'})
+        self.assertEqual({a['data-category'] for t, a in doc.tags if 'data-category' in a}, set(CATEGORIES))
+        p['categories'][-1]['category'] = 'visual_artist'
+        with self.assertRaises(ValueError): guided_journey_context(p)
+
+    def test_location_step_uses_actual_six_step_order_and_blank_optional_native_form(self):
+        p = a1_projection(); _, html, doc = self.render(p)
+        self.assertEqual([row['step'] for row in guided_journey_context(p)['steps']], list(A1_STEPS))
+        self.assertIn('data-journey-step="events_location"', html)
+        self.assertIn('id="events-location" open', html)
+        postcode = next(i for i in doc.inputs if i.get('name') == 'postcode')
+        self.assertEqual(postcode['value'], '')
+        self.assertEqual(postcode['pattern'], '[0-9]{4}')
+        self.assertEqual(postcode['type'], 'text')
+        self.assertIn('Australia (currently supported)', html)
+        self.assertIn('Save location and continue', html)
+        self.assertIn('keep any saved setting', html)
+        self.assertIn('used only if you explicitly save', html)
+        data = guided_journey_context(p)['location']
+        self.assertEqual({f['name'] for f in data['actions']['skip']['fields']},
+                         {'profile_ref', 'journey_ref', 'expected_revision', 'command_id', 'action'})
+        self.assertFalse(data['actions']['remove']['enabled'])
+        self.assertFalse(any(i.get('name') in ('latitude', 'longitude', 'distance') for i in doc.inputs))
+
+    def test_saved_leading_zero_and_unmapped_unavailable_states_are_truthful_and_nonblocking(self):
+        for state in ('mapped', 'unmapped', 'dataset_unavailable'):
+            p = a1_projection(state=state); _, html, doc = self.render(p)
+            self.assertEqual(next(i for i in doc.inputs if i.get('name') == 'postcode')['value'], '0800')
+            self.assertIn('Saved home postcode: 0800', html)
+            self.assertIn('Preferred radius: 25 km', html)
+            self.assertIn('Unknown locations remain visible', html)
+            self.assertIn('not automatically excluded', html)
+            self.assertIn('CC BY 4.0', html)
+            self.assertIn('Postal reference estimates are approximate.', html)
+            if state == 'unmapped': self.assertIn('does not prove the postcode is invalid', html)
+            if state == 'dataset_unavailable': self.assertIn('your setting remains saved', html)
+            data = guided_journey_context(p)['location']
+            self.assertTrue(data['actions']['skip']['enabled'])
+            self.assertTrue(data['actions']['remove']['enabled'])
+
+    def test_location_native_routes_current_bindings_and_display_values_fail_closed(self):
+        for change in ('profile', 'route', 'unicode', 'radius', 'remove_unset', 'markup', 'skip_extra'):
+            p = a1_projection(); row = p['location']['actions']['save']
+            if change == 'profile': row['fields']['profile_ref'] = ref(99)
+            elif change == 'route': row['form_action'] = 'https://fictional.invalid/location'
+            elif change == 'unicode': row['fields']['postcode'] = '０８００'
+            elif change == 'radius': row['fields']['radius_km'] = True
+            elif change == 'remove_unset': p['location']['actions']['remove']['enabled'] = True
+            elif change == 'markup': p['location']['attribution'] = mark_safe('<script>bad</script>')
+            else: p['location']['actions']['skip']['fields']['postcode'] = '0800'
+            with self.subTest(change=change), self.assertRaises(ValueError): self.render(p)
+
+    def test_location_access_from_art_events_and_cabinet_uses_existing_get_with_fragment(self):
+        p = a1_projection('finish', 'mapped'); _, html, doc = self.render(p)
+        self.assertIn('href="#events-location"', html)
+        self.assertEqual({a['data-category'] for t, a in doc.tags if 'data-category' in a}, set(CATEGORIES))
+        from .test_card_action_presentation import template_settings
+        from django.template.loader import render_to_string
+        with override_settings(TEMPLATES=template_settings()):
+            cabinet = render_to_string('cabinet/portable_cabinet.html', {'enhancement_base': 'test_card_base.html',
+                'profile_ref': ref(1), 'published': False})
+        self.assertIn('/setup/journey?profile_ref=' + ref(1) + '#events-location', cabinet)
+        self.assertNotIn('step=events_location', cabinet)
+
+    def test_rejected_location_command_displays_current_values_without_submitted_context(self):
+        p = a1_projection(state='mapped'); p.update(request=Poison(), postcode='DO-NOT-ECHO')
+        _, html, _ = self.render(p, status=422)
+        self.assertIn('That change was not accepted', html)
+        self.assertIn('Nothing is retried automatically', html)
+        self.assertIn('Saved home postcode: 0800', html)
+        self.assertNotIn('DO-NOT-ECHO', html)
+        _, html, _ = self.render(p, status=409)
+        self.assertIn('Your setup changed', html)

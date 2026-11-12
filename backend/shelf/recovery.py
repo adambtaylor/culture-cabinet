@@ -520,6 +520,11 @@ def apply_restriction(raw, frame, r, *, audit=None):
             else: revision=last['revision']
             raw.execute(f'UPDATE shelf_feedbackprojection SET value=NULL,effective_event_id=NULL,erased=1,revision=? WHERE {key}',(revision,*args))
         raw.execute("UPDATE shelf_mutationreceipt SET state='retired',payload_sha256=NULL WHERE profile_id=?",(profile,))
+        # A complete point covers the whole supported vector. Erasing any stream
+        # retires its old points/previews/receipts instead of implying a partial
+        # vector proves absence. Immutable command identity remains audit-only.
+        if raw.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='shelf_portablejourneycommand'").fetchone():
+            raw.execute("UPDATE shelf_portablejourneycommand SET state='retired',result='{}' WHERE cabinet_id IN (SELECT profile_id FROM shelf_profilecabinetstate WHERE profile_id=?) AND kind IN ('taste.checkpoint','taste.preview','taste.restore','taste.undo')",(profile,))
         if audit:
             from datetime import datetime, timezone
             raw.execute("INSERT OR IGNORE INTO shelf_mutationreceipt (actor_id,mutation_id,profile_id,operation_family,state,created_at) VALUES (?,?,?,'feedback.erase','retired',?)",
@@ -664,6 +669,27 @@ class RestoreReport:
     isolated_database: str | None = None
 
 
+
+def _validate_selection_history(raw):
+    """Raw restore uses the same original fingerprint and redacted projection."""
+    from .disclosure import read_json
+    from .enhance_selection import validate_selection_history
+    try:
+        for row in rows(raw,"SELECT * FROM shelf_synthesisrun WHERE contract_version='enhance/v1'"):
+            evidence=read_json(row['evidence'].encode())
+            if 'selection_policy' in evidence and not raw.execute("SELECT 1 FROM django_migrations WHERE app='shelf' AND name='0030_run_selection_retention'").fetchone():
+                raise RecoveryBlocked('Policy enforcing migration missing.')
+            record=read_json(row['portable_bindings'].encode())
+            validate_selection_history(record,evidence,input_digest=row['input_digest'],
+                refresh_nonce=str(uuid.UUID(row['refresh_nonce'])),run_ref=str(uuid.UUID(row['id'])),
+                collection_digest=row['collection_digest'],redacted=row['content_redacted_at'] is not None)
+            if row['content_redacted_at'] is not None:
+                if read_json(row['output'].encode())!={} or read_json(row['input_snapshot'].encode())!={}:
+                    raise RecoveryBlocked('Redacted run content present.')
+    except (ValueError,TypeError,KeyError):
+        raise RecoveryBlocked('Run selection history semantics failed.') from None
+
+
 def semantic_check(raw):
     """Integrity is necessary but cannot detect an incomplete main-file WAL copy.
 
@@ -688,6 +714,7 @@ def semantic_check(raw):
         validate_journey_history(raw)
     except (ValueError, TypeError, KeyError, IndexError, AuthorityFault):
         raise RecoveryBlocked('Journey history semantics failed.') from None
+    _validate_selection_history(raw)
     if not raw.execute("SELECT 1 FROM django_migrations WHERE app='shelf' AND name='0002_feedback'").fetchone(): raise RecoveryBlocked('Unknown schema.')
     events=rows(raw,'SELECT * FROM shelf_feedbackevent ORDER BY profile_id,target_id,signal,scope,revision')
     targets={r['id']:r for r in rows(raw,'SELECT * FROM shelf_feedbacktarget')}
@@ -830,16 +857,27 @@ def isolated_restore(*, backup, sandbox, recovery):
             prefix=[(f,r) for f,r in recovery.committed_restrictions() if r['sequence']<=manifest.snapshot_sequence]
             if local!=[mirror_values(f,r) for f,r in prefix] or len(local)!=manifest.snapshot_sequence: return blocked('INVALID_RESTRICTION_PREFIX')
             if prefix and prefix[-1][0]['head_id']!=manifest.snapshot_head_id: return blocked('INVALID_SNAPSHOT_HEAD')
+            # Only this verified isolated copy receives a local write window:
+            # backup identity/hash, exact restriction prefix and live witness
+            # were checked above. Policy metadata supplies no authority. Native
+            # v2 erasure/retirement guards must stay active during replay too.
+            raw.create_function('cabinet_disclosure_write',0,lambda:1)
             raw.execute('BEGIN IMMEDIATE')
-            for frame,r in recovery.committed_restrictions():
-                if r['sequence']>manifest.snapshot_sequence:
-                    apply_restriction(raw,frame,r,audit=getattr(recovery,'audits',{}).get(frame['operation_uuid']))
-                    applied.append(r['sequence'])
-            # A backup contains auth rows but restored rows cannot authorize access.
-            raw.execute('DELETE FROM django_session')
-            raw.execute("UPDATE auth_user SET is_active=0,password='!isolated-restore'")
-            raw.execute('UPDATE shelf_grant SET can_view=0,can_select=0,can_mutate=0,can_export=0')
-            raw.commit()
+            try:
+                for frame,r in recovery.committed_restrictions():
+                    if r['sequence']>manifest.snapshot_sequence:
+                        apply_restriction(raw,frame,r,audit=getattr(recovery,'audits',{}).get(frame['operation_uuid']))
+                        applied.append(r['sequence'])
+                # A backup contains auth rows but restored rows cannot authorize access.
+                raw.execute('DELETE FROM django_session')
+                raw.execute("UPDATE auth_user SET is_active=0,password='!isolated-restore'")
+                raw.execute('UPDATE shelf_grant SET can_view=0,can_select=0,can_mutate=0,can_export=0')
+                raw.commit()
+            except BaseException:
+                if raw.in_transaction:raw.execute('ROLLBACK')
+                raise
+            finally:
+                raw.create_function('cabinet_disclosure_write',0,lambda:0)
             semantic_check(raw); recovery.verify_mirror(raw); recovery.verify_current()
             checks.extend(('current_restrictions','reconciled_reducer','no_sessions','neutralized_authority','current_witness'))
             return RestoreReport('ISOLATED_READY',manifest.backup_id,manifest.snapshot_head_id,recovery.head_id,
@@ -892,7 +930,7 @@ def _fictional_target(target):
 def _effective_guards(raw):
     from importlib import import_module
     import re
-    current = import_module('shelf.migrations.0028_guided_owner_journey')
+    current = import_module('shelf.migrations.0030_run_selection_retention')
     try:
         definitions = current.effective_inventory(raw)
     except RuntimeError:
@@ -1306,7 +1344,8 @@ def trusted_restart_fixture(boundary, *, confirmed, fresh=False):
         # object cannot survive a synthetic restart merely because SQL is clean.
         for close in tuple(boundary._closing):
             close()
-        from shelf.models import _content_digest
+        from shelf.models import _content_digest,register_closed_sql_guards
+        register_closed_sql_guards(raw)
         raw.create_function('cabinet_disclosure_write', 0, lambda: 1)
         raw.create_function('cabinet_content_digest', -1, _content_digest)
         raw.execute('BEGIN IMMEDIATE')
@@ -1320,7 +1359,7 @@ def trusted_restart_fixture(boundary, *, confirmed, fresh=False):
             affected = {row[0] for row in raw.execute("SELECT profile_id FROM shelf_synthesisrun WHERE contract_version='enhance/v1' AND content_redacted_at IS NULL AND julianday(portable_expires_at)<=julianday(?)", (now,))}
             affected.update(row[0] for row in raw.execute("SELECT cabinet_id FROM shelf_portablecabinetmanifest WHERE content_redacted_at IS NULL AND julianday(expires_at)<=julianday(?)", (now,)))
             raw.execute("UPDATE shelf_portablecabinetmanifest SET content_digest=cabinet_content_digest(manifest),manifest='{}',content_redacted_at=? WHERE content_redacted_at IS NULL AND julianday(expires_at)<=julianday(?)", (now, now))
-            raw.execute("UPDATE shelf_synthesisrun SET content_digest=cabinet_content_digest(output,evidence),output='{}',evidence='{}',content_redacted_at=?,revision=revision+1 WHERE contract_version='enhance/v1' AND content_redacted_at IS NULL AND julianday(portable_expires_at)<=julianday(?)", (now, now))
+            raw.execute("UPDATE shelf_synthesisrun SET content_digest=cabinet_content_digest(output,evidence),output='{}',evidence=cabinet_redacted_selection(evidence),content_redacted_at=?,revision=revision+1 WHERE contract_version='enhance/v1' AND content_redacted_at IS NULL AND julianday(portable_expires_at)<=julianday(?)", (now, now))
             for profile in affected:
                 raw.execute('UPDATE shelf_profilecabinetstate SET policy_epoch=policy_epoch+1,restriction_watermark=restriction_watermark+1 WHERE profile_id=?', (profile,))
             raw.execute('COMMIT')
@@ -1536,7 +1575,8 @@ class NativeCleanCheckpoint:
 
 def _invalidate_native_restart(raw):
     """Retain data/reactions, expire all process-old sessions and sending proofs."""
-    from shelf.models import _content_digest
+    from shelf.models import _content_digest,register_closed_sql_guards
+    register_closed_sql_guards(raw)
     raw.create_function('cabinet_disclosure_write', 0, lambda: 1)
     raw.create_function('cabinet_content_digest', -1, _content_digest)
     raw.execute('BEGIN IMMEDIATE')
@@ -1551,7 +1591,7 @@ def _invalidate_native_restart(raw):
         affected = {row[0] for row in raw.execute("SELECT profile_id FROM shelf_synthesisrun WHERE contract_version='enhance/v1' AND content_redacted_at IS NULL AND julianday(portable_expires_at)<=julianday(?)", (now,))}
         affected.update(row[0] for row in raw.execute("SELECT cabinet_id FROM shelf_portablecabinetmanifest WHERE content_redacted_at IS NULL AND julianday(expires_at)<=julianday(?)", (now,)))
         raw.execute("UPDATE shelf_portablecabinetmanifest SET content_digest=cabinet_content_digest(manifest),manifest='{}',content_redacted_at=? WHERE content_redacted_at IS NULL AND julianday(expires_at)<=julianday(?)", (now, now))
-        raw.execute("UPDATE shelf_synthesisrun SET content_digest=cabinet_content_digest(output,evidence),output='{}',evidence='{}',content_redacted_at=?,revision=revision+1 WHERE contract_version='enhance/v1' AND content_redacted_at IS NULL AND julianday(portable_expires_at)<=julianday(?)", (now, now))
+        raw.execute("UPDATE shelf_synthesisrun SET content_digest=cabinet_content_digest(output,evidence),output='{}',evidence=cabinet_redacted_selection(evidence),content_redacted_at=?,revision=revision+1 WHERE contract_version='enhance/v1' AND content_redacted_at IS NULL AND julianday(portable_expires_at)<=julianday(?)", (now, now))
         for profile in affected:
             raw.execute('UPDATE shelf_profilecabinetstate SET policy_epoch=policy_epoch+1,restriction_watermark=restriction_watermark+1 WHERE profile_id=?', (profile,))
         raw.execute('COMMIT')

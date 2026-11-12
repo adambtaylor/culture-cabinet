@@ -127,7 +127,7 @@ def _feedback(view):
                 'medium': current.target.category, 'roots': []}
         node = _node(view, 'feedback:' + str(effective), card, 'typed_feedback',
                      {'signal': signal, 'scope': scope, 'value': body})
-        if current.target.source_namespace=='owner-stated-favourite':
+        if current.target.source_namespace in ('owner-stated-favourite','owner-stated-visual-artist'):
             # A title supplied by the owner is personal text, never a provider
             # identity. Its separate text permission remains necessary.
             node['identity_status']='unresolved_personal'
@@ -150,6 +150,26 @@ def _feedback(view):
                     node['key']='candidate-key-sha256:'+current.target.source_key
                     node['source_ref']='card-action:'+str(parent.command_id)
                     break
+            if not node['key'].startswith('candidate-key-sha256:'):
+                # Restore changes statement revisions, never provider identity.
+                # Reuse only an actual prior card's crosswalk when the complete
+                # restore vector names today's exact pair heads. This is not a
+                # publication/send continuity proof; those checks stay strict.
+                source_parent=next((parent for parent in PortableJourneyCommand.objects.filter(
+                    cabinet_id=view.profile_id,kind='card.action',state='committed').order_by('-created_at','-id')[:1000]
+                    if parent.result.get('target_ref')==opaque and parent.proof.get('schema')=='card-action-continuity/v2'
+                    and parent.proof.get('child_event_refs')==parent.result.get('child_event_refs')),None)
+                if source_parent is not None:
+                    for parent in PortableJourneyCommand.objects.filter(cabinet_id=view.profile_id,
+                            kind__in=['taste.restore','taste.undo'],state='committed').order_by('-created_at','-id')[:1000]:
+                        heads={(row[0],row[1]):row for row in parent.result.get('after_vector',[])}
+                        if all((heads.get((str(current.target_id),name),[None]*5)[3:]==
+                            [history[-1].revision,str(history[-1].pk)] if history else
+                            (str(current.target_id),name) not in heads) for name,history in
+                            (('interest',interest),('saved',saved))):
+                            node['key']='candidate-key-sha256:'+current.target.source_key
+                            node['source_ref']='card-action:'+str(source_parent.command_id)
+                            break
         node['data_classes'] = classes
         node['event_lineage'] = [{'event_ref': _id(view, 'event:' + str(e.pk)), 'revision': e.revision,
             'operation': e.operation, 'reverses_ref': _id(view, 'event:' + str(e.reverses_id)) if e.reverses_id else None,

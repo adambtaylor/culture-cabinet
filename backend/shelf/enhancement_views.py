@@ -229,6 +229,45 @@ _PORTABLE_ENHANCE_BASE = '''<!doctype html><html lang="en"><head>
 <main id="main" tabindex="-1">{% block content %}{% endblock %}</main></body></html>'''
 
 
+def _noise_run(value):
+    from .taste_history_presentation import noise_run_context
+    policy=value.get('selection_policy')
+    if policy is None:return None
+    rows=(value.get('selection_report') or {}).get('categories',[])
+    return noise_run_context(policy_version=policy['version'],noise=policy['noise'],categories=[
+        dict(label=_CATEGORY_LABELS.get(row['category'],row['category']),
+             requested=row['requested'],used=row['used'],reason=row['reason']) for row in rows])
+
+
+def _current_start_context(request,service,session_ref,selection,readiness=None):
+    """One read-only native start caller shared by Enhance and the cabinet.
+
+    Omitted run_ref cannot hide an owned unresolved attempt. A GET creates only
+    ephemeral form IDs; it neither admits a round nor writes the Noise default.
+    """
+    from . import grant_authority as ga
+    from .models import SynthesisRun,PortableJourneyState
+    import uuid
+    from .taste_history_presentation import noise_control_context
+    authority=request.portable_authority
+    with ga.recovery_guard(authority,session_ref,profile_ref=selection['profile_ref']),authority._lock:
+        cabinet,_=ga._bound(authority,session_ref,selection['profile_ref'])
+        runs=SynthesisRun.objects.filter(installation=cabinet.installation,actor=cabinet.actor,
+            profile=cabinet.profile,contract_version='enhance/v1')
+        pending=runs.filter(attempts=1,state__in=['running','unknown']).order_by('-created_at','-id').first()
+        if pending is None:
+            pending=runs.filter(state='queued',cancel_requested=False).order_by('-created_at','-id').first()
+        if pending is not None:
+            url='/enhance?'+urlencode({'run_ref':str(pending.pk)})
+            return {'portable_commands':{},'round_blocks_start':True,'round_pending':True,
+                    'round_url':url,'portable_return_url':url}
+        value=readiness if readiness is not None else service.readiness(session_ref,**selection)
+        if value.get('available') is not True or 'start' not in value.get('actions',[]):return {'portable_commands':{}}
+        saved=PortableJourneyState.objects.filter(cabinet=cabinet).values_list('next_noise',flat=True).first()
+        return {**selection,'portable_commands':{'start':'/enhance/start'},'client_key':str(uuid.uuid4()),
+                'refresh_nonce':str(uuid.uuid4()),'noise_control':noise_control_context(saved if saved is not None else 25)}
+
+
 @sensitive_variables()
 def _portable_html(request, value, *, status=200, selection=None):
     import uuid
@@ -245,13 +284,13 @@ def _portable_html(request, value, *, status=200, selection=None):
                            for row in value[name]]
     context = {'enhancement_base': Engine.get_default().from_string(_PORTABLE_ENHANCE_BASE),
         'portable_ui': True, 'enhancement': value, 'portable_commands': commands,
-        'csrf_token': get_token(request), 'disclosure': value.get('disclosure')}
+        'csrf_token': get_token(request), 'disclosure': value.get('disclosure'),'noise_run':_noise_run(value)}
     if value.get('resume_ref'):
         from .portable_connection_views import _uuid
         context['portable_return_url'] = '/enhance?' + urlencode({'run_ref': str(_uuid(value['resume_ref']))})
-    if selection and value.get('available') is True and 'start' in value.get('actions', []):
-        commands['start'] = '/enhance/start'
-        context.update(selection, client_key=str(uuid.uuid4()), refresh_nonce=str(uuid.uuid4()))
+    if selection:
+        service,session=_portable_service(request)
+        context.update(_current_start_context(request,service,session,selection,readiness=value))
     navigation = selection
     if navigation is None and value.get('run_ref') and status < 400:
         from .portable_authority import AuthorityFault
@@ -379,9 +418,19 @@ def portable_page(request):
 def portable_start(request):
     from .portable_connection_views import _uuid
     service, session_ref = _portable_service(request)
-    value = _portable_fields(request, {k: str for k in
-        ('profile_ref', 'connection_ref', 'client_key', 'refresh_nonce')})
-    value = {key: str(_uuid(ref)) for key, ref in value.items()}
+    names={k:str for k in ('profile_ref','connection_ref','client_key','refresh_nonce')}
+    if request.content_type=='application/json':
+        from .portable_connection_views import _body
+        value=_body(request,names,optional={'noise':int})
+        if 'noise' in value:
+            from .enhance_selection import parse_noise
+            value['noise']=parse_noise(str(value['noise']))
+    else:
+        value=_portable_fields(request,{**names,**({'noise':str} if 'noise' in request.POST else {})})
+        if 'noise' in value:
+            from .enhance_selection import parse_noise
+            value['noise']=parse_noise(value['noise'])
+    value={key:(ref if key=='noise' else str(_uuid(ref))) for key,ref in value.items()}
     return _portable_reply(request, service.start(session_ref, **value))
 
 
@@ -825,6 +874,7 @@ def portable_cabinet(request):
         raise AuthorityFault('AUTHORITY_DENIED', 403)
     service, session_ref = _portable_service(request)
     context = {'entry': False, 'profile_label': profile['label'], 'profile_ref': profile_ref,
+               'taste_history_available': True,
                'connection_ref': connection_ref, 'categories': [], 'published': False,
                # C4: the current producer has no independent durable-attribution
                # signal. Do not offer success until its accepted contract lands;
@@ -838,6 +888,7 @@ def portable_cabinet(request):
         context['enhance_url'] = '/enhance?' + urlencode({'profile_ref': profile_ref, 'connection_ref': connection_ref})
         context['inference_consent_url'] = '/cabinet/consent?' + urlencode({'profile_ref': profile_ref, 'connection_ref': connection_ref})
     status = 200
+    interaction={}
     try:
         interaction = service.current_for_interaction(session_ref, profile_ref=profile_ref)
         context.update(_cabinet_projection(interaction))
@@ -863,6 +914,11 @@ def portable_cabinet(request):
         context['round_blocks_start'] = progress.get('stage') == 'unknown' or progress.get('stage') in STAGES[:-1]
         if context['round_blocks_start']:
             context.pop('enhance_url', None)
+    if connection_ref:
+        context.update(_current_start_context(request,service,session_ref,
+            dict(profile_ref=profile_ref,connection_ref=connection_ref)))
+    if 'selection_policy' in interaction:
+        context['noise_run']=_noise_run(interaction)
     context['active_category'] = category
     # A category change is navigation within this publication/round, never a
     # new run or a way to drop the known unresolved-attempt barrier from the UI.
@@ -883,17 +939,43 @@ def portable_cabinet(request):
             continue
         for card in row['cards']:
             target = feedback_target_ref(profile_ref, card['candidate_key'])
+            exploratory={key for group in (interaction.get('selection_report') or {}).get('categories',[])
+                         for key in group['exploratory_keys']}
+            card['selection_exploratory']=card['candidate_key'] in exploratory
+            local_display=interaction.get('local_event_display',{}).get(card['candidate_key'])
+            if local_display is not None:
+                from .card_action_presentation import local_event_display_context
+                card['local_event_display']=local_event_display_context(local_display,
+                    candidate_key=card['candidate_key'],category=row['category'],profile_ref=profile_ref,
+                    publication_ref=interaction['publication_ref'],
+                    publication_revision=interaction['publication_revision'])
             from .card_action_presentation import card_action_context
             card['card_actions'] = card_action_context(CardActions(request.portable_authority,service=service).project(
                 session_ref,profile_ref=profile_ref,target_ref=target))
+            # Each projection is a fresh guarded read. A publication change
+            # between reads must refuse the whole deck, not mix actionable forms.
+            if (card['card_actions']['profile_ref'] != profile_ref
+                    or any(card['card_actions'][key] != interaction.get(key)
+                           for key in ('publication_ref', 'publication_revision'))):
+                raise AuthorityFault('CONTRACT_INVALID', 422)
             context['card_actions_available'] = True
             from .portable_obtain_views import cabinet_card_obtain_context
             card.update(cabinet_card_obtain_context(request, profile_ref=profile_ref,
                 publication_revision=context.get('publication_revision'), card=card))
+    command_id = None
     if 'action_receipt' in query:
         command_id=str(_uuid(query['action_receipt']))
         context['action_receipt']=CardActions(request.portable_authority,service=service).receipt(
             session_ref,profile_ref,command_id)
+    from .card_action_presentation import card_action_refresh_context
+    # The owned receipt confirms history only. Fresh interaction data supplies
+    # the independent publication/read marker used for coherent reconciliation.
+    try:
+        context['card_action_refresh'] = card_action_refresh_context(profile_ref=profile_ref,
+            interaction=interaction, receipt=context.get('action_receipt'), command_id=command_id,
+            read_available=status == 200 and 'read_code' not in context)
+    except ValueError:
+        raise AuthorityFault('CONTRACT_INVALID', 422) from None
     from .portable_feedback_views import consume_feedback_outcome
     outcome = consume_feedback_outcome(request, profile_ref=profile_ref)
     if outcome is not None:
