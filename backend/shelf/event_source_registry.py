@@ -95,6 +95,11 @@ def _my_aeon(now):
     return my_aeon()
 
 
+def _linden(now):
+    from shelf.event_listing_transport import linden
+    return linden()
+
+
 def _parse_rrr(raw, *, now, retrieved_at):
     from shelf.rrr_events import parse_listing
     return parse_listing(raw, retrieved_at=retrieved_at)
@@ -137,6 +142,11 @@ def _parse_moons24(raw, *, now, retrieved_at):
 
 def _parse_my_aeon(raw, *, now, retrieved_at):
     from shelf.my_aeon_events import parse_listing
+    return parse_listing(raw, retrieved_at=retrieved_at)
+
+
+def _parse_linden(raw, *, now, retrieved_at):
+    from shelf.linden_events import parse_listing
     return parse_listing(raw, retrieved_at=retrieved_at)
 
 
@@ -216,6 +226,10 @@ def _descriptor(row):
                 'Partial My Aeon coverage: one official listing, up to nine leads; known dates limited '
                 'to eight weeks. Date-only labels are not show times; unknown dates and ticket '
                 'availability remain unverified.'),
+        'linden': (_linden, _parse_linden, 524288,
+                'Partial Linden coverage: up to nine current-region leads within eight weeks. '
+                'Local clocks have no verified timezone; audience notices remain source statements. '
+                'Confirm attendance and current conditions with Linden.'),
     }
     if source_id in active:
         acquire, parse, limit, coverage = active[source_id]
@@ -227,6 +241,8 @@ def _descriptor(row):
                 'Check the official source for the current programme.'),
             'west_space': ('No supported current or next-eight-week programme run was established '
                 'on this page; this is not proof of no events.'),
+            'linden': ('No eligible current Linden programme was established in this bounded read; '
+                'this is not proof of no events.'),
         }
         return EventSourceDescriptor(**common, acquire=acquire, parse=parse, coverage=coverage,
             access_state='access-unverified' if source_id == 'forum' else 'implemented-unproved',
