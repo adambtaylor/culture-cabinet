@@ -14,6 +14,14 @@ from shelf.event_source_registry import SOURCES, get_source
 IMPLEMENTED_SOURCES = frozenset(key for key, source in SOURCES.items() if source.implemented)
 
 
+class ProgrammeUnavailable(SourceError):
+    """Recognized source shell/archive cannot establish a current programme.
+
+    Parsers never supply display text here: the closed descriptor owns the
+    explanation. This is distinct from malformed/challenge HTML and empty data.
+    """
+
+
 def collect(source_id, *, now):
     """One fixed acquisition or a truthful unavailable outcome; no retries.
 
@@ -44,6 +52,8 @@ def collect(source_id, *, now):
             return Outcome('empty', cards,
                 'No eligible leads in this bounded page; this does not establish no events or tickets.')
         return Outcome('ready', tuple(cards), source.coverage)
+    except ProgrammeUnavailable:
+        return Outcome('unavailable', message=source.unavailable_message)
     except ListingPolicyUnavailable:
         return Outcome('permission-required', message='Source access policy is unverified; no listing request sent.')
     except ListingIntervalPending:

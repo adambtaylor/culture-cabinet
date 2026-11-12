@@ -184,3 +184,37 @@ that semantic failure and its correction are retained separately. These receipts
 are live acquisition/handler evidence, not a browser or working-source acceptance.
 No body or image archive, durable source-reference grant or native activation is
 introduced. The 24 Moons release remains independent of PR83's recovery/UI tails.
+
+### APW event-only homepage delegation (E6)
+
+The event source calls the existing immutable `gallery_transport.read` for the
+fixed APW homepage. It shares that reader's host lock, ten-second pacing and
+one-hour refusal backoff; no second limiter/client is installed. Its nonwaiting
+public-read callback refuses a busy origin instead of sleeping or retrying;
+the enclosing normal discovery handler revalidates profile authority. Robots
+readiness is explicit and separate. The observed robots200 permitted the homepage
+with Crawl-delay10, matching the existing owner. No gallery transport, native
+authority, offer parser or aggregate gallery fetch is changed or invoked.
+
+The homepage has several promotional hero panels. The source leaf selects only
+one explicitly dated event panel and passes its exact escaped heading/opening/run
+labels to the existing pure APW field validator. Original response provenance and
+hash remain authoritative. Promotional panels do not become events. Opening and
+exhibition run produce distinct occurrence identities; title changes do not change
+those identities. The run has calendar dates, not invented daily sessions. A past
+opening with missing run dates is unavailable, not a current exhibition claim.
+
+Initial fixture failures came from missing whitespace in synthetic title markup
+and inconsistent test clocks; those runs remain recorded. The19-method component
+run retained one stale-fixture clock error (18PASS), whose focused correction then
+passed. After the actual multi-hero selector correction, all seven affected APW
+methods pass. These are qualified checks, not a claimed single green aggregate.
+
+The first actual normal action acquired200/26971 bytes but returned invalid under
+the old single-hero assumption. One necessary field inspection identified the
+multiple panels and the sole dated opening (6 November2026), without run dates.
+The corrected normal action at `a20e516` encountered SourceError before usable HTTP;
+its precise transport subtype is unverified. POST/replay302 and render200 still
+made only one source attempt and no taste history. Both failures are retained,
+with no automatic retry. No current APW acquisition, real browser, persistent
+source-reference permission or independently working-source acceptance is claimed.
