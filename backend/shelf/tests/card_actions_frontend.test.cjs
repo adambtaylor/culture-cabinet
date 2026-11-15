@@ -309,6 +309,19 @@ test('URL-encoded ordinary actions still send once and remain unknown after a lo
     assert.equal(posts, 1, 'no retry, native fallback or second write');
   }
 });
+test('unresolved responses hide invitations across locked cards while recovery links stay available', () => {
+  const guidance = Array.from({ length: 4 }, () => ({ hidden: false }));
+  const receipt = { hidden: false }, currentRead = { hidden: false };
+  const root = { querySelectorAll(selector) {
+    assert.equal(selector, '.card-actions-help,[data-card-actions-open]');
+    return guidance;
+  } };
+  slots.suppressCardActionGuidance(root);
+  slots.suppressCardActionGuidance(root);
+  assert.ok(guidance.every(node => node.hidden), 'help and menu triggers on all locked cards are hidden');
+  assert.equal(receipt.hidden, false);
+  assert.equal(currentRead.hidden, false);
+});
 test('pending and failed response show unknown status with a single native recovery instruction', () => {
   class Node {
     constructor(tag = 'p') { this.tagName = tag; this.children = []; this.dataset = {}; this.hidden = false; this.attrs = {}; }
@@ -341,6 +354,7 @@ test('pending and failed response show unknown status with a single native recov
     const links = message.children.filter(child => typeof child !== 'string');
     assert.deepEqual(links.map(link => link.href), [receipt.href, currentURL]);
     assert.equal(links[1].textContent, 'Read the current cabinet');
+    assert.ok(message.textContent.includes('recorded receipt or Read the current cabinet'), 'recovery destinations remain separated');
     assert.notEqual(links[0], receipt, 'native receipt target is retained without moving the hidden template link');
     assert.equal(message.textContent.includes('Response recorded'), recorded);
   }

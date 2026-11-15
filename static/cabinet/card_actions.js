@@ -199,6 +199,11 @@
     const pending = card.querySelector('[data-card-action-pending]');
     if (pending) pending.hidden = false;
   }
+  function suppressCardActionGuidance(root) {
+    // A lost acknowledgement locks every card until an explicit current read.
+    // Hide invitations to those locked actions; keep the recovery links usable.
+    for (const guidance of root.querySelectorAll('.card-actions-help,[data-card-actions-open]')) guidance.hidden = true;
+  }
   function renderSlotFailure(root, card, recorded, readURL, doc) {
     const pending = card.querySelector('[data-card-action-pending]');
     const receipt = pending?.querySelector('a');
@@ -315,7 +320,7 @@
       boundNoiseInputs.add(input);
     }
   }
-  if (typeof module !== 'undefined' && module.exports) module.exports = { HoldGesture, SubmissionGate, targetAt, bindNoiseControls, confirmedSlotResult, refreshMarker, cabinetReadURL, saveRedirectURL, boundedSlotHTML, requestCardSave, encodeCardAction, showCardPending, renderSlotFailure, positionCardSlot, parseSlotDocument, currentSlotView };
+  if (typeof module !== 'undefined' && module.exports) module.exports = { HoldGesture, SubmissionGate, targetAt, bindNoiseControls, confirmedSlotResult, refreshMarker, cabinetReadURL, saveRedirectURL, boundedSlotHTML, requestCardSave, encodeCardAction, showCardPending, suppressCardActionGuidance, renderSlotFailure, positionCardSlot, parseSlotDocument, currentSlotView };
   if (typeof document === 'undefined') return;
   // Guide/Prepare pages have no cards; the range binding must precede that exit.
   bindNoiseControls(document);
@@ -430,6 +435,7 @@
     // Unknown writes stay locked until an explicit current read. An explicit
     // authority refusal additionally conceals the protected old publication.
     for (const root of [deck, status]) if (root) {
+      suppressCardActionGuidance(root);
       for (const control of root.querySelectorAll('form button,form input:not([type="hidden"]),form select,form textarea')) control.disabled = true;
       for (const reason of root.querySelectorAll('[data-card-reasons]')) reason.hidden = true;
     }
