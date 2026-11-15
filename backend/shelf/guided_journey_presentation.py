@@ -14,6 +14,11 @@ STEPS = ('identity', 'providers', 'favourites', 'prepare', 'finish')
 CATEGORIES = ('book', 'movie', 'tv', 'artist', 'recording', 'podcast_episode', 'event',
               'gallery', 'art_fair', 'community', 'regional_day_trip', 'outing', 'dining')
 PROVIDERS = ('openai', 'tmdb', 'hardcover', 'musicbrainz', 'apple')
+# An owner-stated visual artist is an intake kind, never a fourteenth output
+# queue or a MusicBrainz identity. Preserve its spelling and UUID unchanged.
+INTAKE_KINDS = CATEGORIES + ('visual_artist',)
+CATEGORY_LABELS = {'artist': 'Music artists', 'visual_artist': 'Visual artists',
+                   'gallery': 'Exhibitions & openings', 'art_fair': 'Art fairs'}
 FIELD_SETS = {
     'name': {'expected_owner_revision', 'label', 'command_id'},
     'configure': {'profile_ref', 'journey_ref', 'expected_revision', 'command_id', 'confirmed'},
@@ -68,6 +73,17 @@ def _enum(value, choices):
     if type(value) is not str or value not in choices:
         raise ValueError('Invalid journey presentation state')
     return value
+
+
+def _groups(rows):
+    groups = []
+    for key, label, kinds in (('other', 'Other categories', set(CATEGORIES) - {'artist', 'recording', 'gallery', 'art_fair'}),
+                              ('music', 'Music', {'artist', 'recording'}),
+                              ('art', 'Art', {'visual_artist', 'gallery', 'art_fair'})):
+        members = [row for row in rows if row['category'] in kinds]
+        if members:
+            groups.append({'key': key, 'label': label, 'categories': members})
+    return groups
 
 
 def _href(value):
@@ -129,7 +145,7 @@ def _form(value, kind, *, bound, provider=None, step_action=None):
             if val > 5:
                 raise ValueError('Too many favourite slots')
         elif key == 'category':
-            val = _enum(raw, CATEGORIES)
+            val = _enum(raw, INTAKE_KINDS)
         elif key == 'step':
             val = _enum(raw, STEPS)
         elif key == 'action':
@@ -207,13 +223,13 @@ def guided_journey_context(projection):
     if len({row['provider_id'] for row in data['providers']}) != len(data['providers']):
         raise ValueError('Duplicate guided provider')
     favourites = projection.get('favourite_categories')
-    if type(favourites) is not list or len(favourites) > len(CATEGORIES):
+    if type(favourites) is not list or len(favourites) > len(INTAKE_KINDS):
         raise ValueError('Invalid favourites projection')
     data['favourite_categories'] = []
     for row in favourites:
         if type(row) is not dict or type(row.get('slots')) is not list or len(row['slots']) > 5:
             raise ValueError('Invalid favourite category')
-        category, slots = _enum(row.get('category'), CATEGORIES), []
+        category, slots = _enum(row.get('category'), INTAKE_KINDS), []
         for slot in row['slots']:
             if type(slot) is not dict or type(slot.get('actions')) is not dict:
                 raise ValueError('Invalid favourite slot')
@@ -230,9 +246,11 @@ def guided_journey_context(projection):
                     raise ValueError('Favourite form binding differs')
             slots.append({'slot': number, 'entry_ref': entry, 'title': _text(slot.get('title'), 200),
                           'removable': _boolean(slot, 'removable'), 'add': add, 'remove': remove})
-        data['favourite_categories'].append({'category': category, 'label': _text(row.get('label'), 80), 'slots': slots})
+        label = _text(row.get('label'), 80)
+        data['favourite_categories'].append({'category': category, 'label': CATEGORY_LABELS.get(category, label), 'slots': slots})
     if len({row['category'] for row in data['favourite_categories']}) != len(data['favourite_categories']):
         raise ValueError('Duplicate favourite category')
+    data['favourite_groups'] = _groups(data['favourite_categories'])
     categories = projection.get('categories')
     if type(categories) is not list or len(categories) != len(CATEGORIES):
         raise ValueError('Every enabled category needs an outcome')
@@ -242,11 +260,13 @@ def guided_journey_context(projection):
             raise ValueError('Invalid category outcome')
         category = _enum(row.get('category'), CATEGORIES)
         state = _enum(row.get('state'), CATEGORY_COPY)
-        data['categories'].append({'category': category, 'label': _text(row.get('label'), 80),
+        label = _text(row.get('label'), 80)
+        data['categories'].append({'category': category, 'label': CATEGORY_LABELS.get(category, label),
             'state': state, 'status': CATEGORY_COPY[state], 'count': _number(row.get('count')),
             'href': _href(row.get('href')), 'ranking_state': _enum(row.get('ranking_state'), ('none', 'fresh', 'feedback_pending'))})
     if {row['category'] for row in data['categories']} != set(CATEGORIES):
         raise ValueError('Category outcome missing or repeated')
+    data['category_groups'] = _groups(data['categories'])
     preparation = projection.get('preparation')
     if type(preparation) is not dict:
         raise ValueError('Invalid preparation outcome')

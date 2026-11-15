@@ -171,3 +171,48 @@ class GuidedJourneyPresentationTests(SimpleTestCase):
             with self.subTest(href=href), self.assertRaises(ValueError):
                 bad = deepcopy(p); bad['categories'][0]['href'] = href
                 guided_journey_context(bad)
+
+    def test_visual_artist_slots_are_separate_owner_statements_not_an_output_queue(self):
+        p = projection()
+        visual = deepcopy(p['favourite_categories'][0])
+        visual.update(category='visual_artist', label='Visual artists')
+        template = deepcopy(visual['slots'][0])
+        visual['slots'] = []
+        for number in range(1, 6):
+            slot = deepcopy(template)
+            slot.update(slot=number, title='Fictional <Artist> ' + str(number))
+            for action in slot['actions'].values():
+                action['fields'].update(category='visual_artist', slot=number)
+            slot['actions']['add']['fields']['title'] = slot['title']
+            visual['slots'].append(slot)
+        music = deepcopy(p['favourite_categories'][0])
+        music.update(category='artist', label='Artists')
+        for action in music['slots'][0]['actions'].values():
+            action['fields']['category'] = 'artist'
+        p['favourite_categories'] = [visual, music]
+        _, html, doc = self.render(p)
+        self.assertIn('Visual artists', html)
+        self.assertIn('Music artists', html)
+        self.assertIn('does not verify the person', html)
+        self.assertIn('Fictional &lt;Artist&gt; 1', html)
+        self.assertEqual(len([i for i in doc.inputs if i.get('name') == 'category' and i.get('value') == 'visual_artist']), 5)
+        data = guided_journey_context(p)
+        self.assertEqual(len(data['categories']), 13)
+        self.assertNotIn('visual_artist', {r['category'] for r in data['categories']})
+        self.assertEqual(data['favourite_groups'][0]['key'], 'music')
+        self.assertEqual(data['favourite_groups'][1]['key'], 'art')
+        visual['slots'].append(deepcopy(visual['slots'][0]))
+        with self.assertRaises(ValueError): guided_journey_context(p)
+
+    def test_art_groups_existing_queues_and_does_not_borrow_music_identity(self):
+        p = projection('finish')
+        _, html, doc = self.render(p)
+        self.assertIn('href="#outcome-group-art"', html)
+        self.assertIn('Exhibitions &amp; openings', html)
+        self.assertIn('Art fairs', html)
+        data = guided_journey_context(p)
+        art = next(g for g in data['category_groups'] if g['key'] == 'art')
+        self.assertEqual({r['category'] for r in art['categories']}, {'gallery', 'art_fair'})
+        self.assertEqual({a['data-category'] for t, a in doc.tags if 'data-category' in a}, set(CATEGORIES))
+        p['categories'][-1]['category'] = 'visual_artist'
+        with self.assertRaises(ValueError): guided_journey_context(p)
