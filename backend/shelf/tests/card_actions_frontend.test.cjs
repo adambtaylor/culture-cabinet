@@ -171,6 +171,49 @@ test('confirmed slot chooses only the next unanswered enabled card in the same p
   assert.equal(confirmedSlotResult(submitted, receipt, [saved, wrongCategory, disabled, answered, next], new Set([ref(9)])).next, null);
   assert.equal(confirmedSlotResult(submitted, receipt, [saved]).saved, saved);
 });
+test('Like, Dislike and Favourite each keep their acknowledged card and advance to the next same-category pick', () => {
+  const { confirmedSlotResult } = require('../../../static/cabinet/card_actions.js');
+  const ref = n => '00000000-0000-4000-8000-' + String(n).padStart(12, '0');
+  for (const [offset, action] of ['like', 'dislike', 'favourite'].entries()) {
+    const profile = ref(1), publication = ref(2), target = ref(10 + offset), command = ref(20 + offset);
+    const submitted = { profile_ref: profile, publication_ref: publication, publication_revision: 3,
+      target_ref: target, command_id: command, category: 'movie', action };
+    const interestRevision = action === 'favourite' ? 0 : 4;
+    const savedRevision = action === 'favourite' ? 6 : 5;
+    const receipt = { profile_ref: profile, target_ref: target, command_id: command, requested_action: action,
+      preference_outcome: 'committed', selected_state: action, interest_revision: interestRevision, saved_revision: savedRevision };
+    const savedNode = { id: 'saved-' + action };
+    const saved = { ...submitted, selected_state: action, enabled: true,
+      interest_revision: interestRevision, saved_revision: savedRevision, command_id: ref(30 + offset), node: savedNode };
+    const otherCategory = { ...saved, target_ref: ref(40 + offset), command_id: ref(50 + offset), category: 'book', selected_state: 'none' };
+    const next = { ...saved, target_ref: ref(60 + offset), command_id: ref(70 + offset), selected_state: 'none', interest_revision: 0, saved_revision: 0 };
+    const later = { ...next, target_ref: ref(80 + offset), command_id: ref(90 + offset) };
+    const result = confirmedSlotResult(submitted, receipt, [saved, otherCategory, next, later]);
+    assert.equal(result.saved, saved, action + ' retains the acknowledged response card');
+    assert.equal(result.saved.node, savedNode, action + ' keeps the same real card node');
+    assert.equal(result.saved.selected_state, action);
+    assert.equal(result.next, next, action + ' advances only to the first later unanswered card in its category');
+    assert.throws(() => confirmedSlotResult(submitted, { ...receipt, selected_state: action === 'like' ? 'dislike' : 'like' }, [saved, next]));
+  }
+});
+test('an exhausted single-book category does not refill or substitute another category', () => {
+  const { confirmedSlotResult } = require('../../../static/cabinet/card_actions.js');
+  const ref = n => '00000000-0000-4000-8000-' + String(n).padStart(12, '0');
+  const submitted = { profile_ref: ref(1), publication_ref: ref(2), publication_revision: 1,
+    target_ref: ref(3), command_id: ref(4), category: 'book', action: 'favourite' };
+  const receipt = { profile_ref: ref(1), target_ref: ref(3), command_id: ref(4), requested_action: 'favourite',
+    preference_outcome: 'committed', selected_state: 'favourite', interest_revision: 0, saved_revision: 1 };
+  const undoForm = { action: '/cabinet/actions/undo/', method: 'post', native: true };
+  const bookNode = { id: 'the-only-book', undoForm };
+  const savedBook = { ...submitted, command_id: ref(5), selected_state: 'favourite', enabled: true,
+    interest_revision: 0, saved_revision: 1, node: bookNode };
+  const nextCategory = { ...savedBook, target_ref: ref(8), command_id: ref(9), category: 'movie', selected_state: 'none', saved_revision: 0 };
+  const result = confirmedSlotResult(submitted, receipt, [savedBook, nextCategory]);
+  assert.equal(result.saved, savedBook);
+  assert.equal(result.saved.node, bookNode, 'the server-rendered book and its native Undo form remain in place');
+  assert.equal(result.saved.node.undoForm, undoForm);
+  assert.equal(result.next, null, 'no other category fills the exhausted book slot');
+});
 test('receipt mismatch, stale revision or a consumed command never authorizes slot advancement', () => {
   const { confirmedSlotResult } = require('../../../static/cabinet/card_actions.js');
   const ref = n => '00000000-0000-4000-8000-' + String(n).padStart(12, '0');
@@ -318,6 +361,10 @@ test('slot compensation measures settled geometry before entry motion, keeping f
     entryOffset = 0; // The normal entry animation has finished; reduced motion never offset it.
     assert.equal(anchor.getBoundingClientRect().top, -110.796875, 'settled replacement retains its occupied slot');
   }
+  const fs = require('node:fs');
+  const css = fs.readFileSync(require.resolve('../../../static/cabinet/card_actions.css'), 'utf8');
+  assert.match(css, /@media\s*\(prefers-reduced-motion:\s*reduce\)\s*\{\s*\.card-slot-enter\s*\{\s*animation:\s*none\s*;\s*\}\s*\}/,
+    'the reduced-motion preference disables the slot entry animation in the served stylesheet');
 });
 test('no-successor positioning neither animates nor steals focus moved to another control', () => {
   let scrolls = 0;
@@ -397,4 +444,56 @@ test('designated current fragments reject executable nodes, event attributes, ar
   assert.throws(() => slots.currentSlotView(unavailable, 'http://localhost:4321', new Set()), error => error.refused && error.recorded);
   const duplicate = snapshot(); duplicate.doc.querySelectorAll = () => [status, deck];
   assert.throws(() => slots.currentSlotView(duplicate, 'http://localhost:4321', new Set()));
+});
+
+test('a current book readback retains only its native Undo form, then reflects the cleared state after Undo', () => {
+  const f = slotFixture(), profile = f.submitted.profile_ref, publication = f.submitted.publication_ref;
+  const cardTarget = slotRef(11), nextCommand = slotRef(12), undoCommand = slotRef(13);
+  const input = (name, value) => ({ name, value, type: 'hidden', disabled: false });
+  function view(selectedState, withUndo, receiptAction, receiptState, savedRevision, currentCommand) {
+    const marker = slots.refreshMarker({ ...f.data, requestedAction: receiptAction, selectedState: receiptState,
+      targetRef: cardTarget, commandId: undoCommand, interestRevision: '0', savedRevision: String(savedRevision) });
+    const category = { dataset: { cardCategory: 'book' } };
+    const selection = { dataset: { selectedState } };
+    const card = { closest(selector) { return selector === '[data-card-action-card]' ? this : selector === '[data-card-category]' ? category : null; },
+      querySelector(selector) { return selector === '.card-actions[data-selected-state]' ? selection : null; },
+      querySelectorAll(selector) { return selector === '.card-actions[data-selected-state]' ? [selection] : []; } };
+    const fields = [input('profile_ref', profile), input('publication_ref', publication), input('publication_revision', '1'),
+      input('target_ref', cardTarget), input('command_id', currentCommand), input('interest_revision', '0'),
+      input('saved_revision', String(savedRevision)), input('csrfmiddlewaretoken', 'A'.repeat(32))];
+    const buttons = ['like', 'dislike', 'favourite'].map(action => ({ value: action, disabled: false }));
+    function form(action, markerName) {
+      return { method: 'post', closest: selector => selector === '[data-card-action-card]' ? card : null,
+        hasAttribute: name => name === markerName, getAttribute: name => name === 'action' ? action : null,
+        querySelector(selector) { return null; },
+        querySelectorAll(selector) {
+          if (selector.startsWith('input[name="')) {
+            const name = selector.slice(12, -2); return fields.filter(field => field.name === name);
+          }
+          if (selector.startsWith('button[name="action"][value="')) {
+            const actionValue = selector.slice(29, -2); return buttons.filter(button => button.value === actionValue);
+          }
+          return [];
+        } };
+    }
+    const cardForm = form('/cabinet/actions/', 'data-card-action-form');
+    const undoForm = withUndo ? form('/cabinet/actions/undo/', 'data-card-action-undo') : null;
+    const emptyNodeQueries = selector => selector === 'form' ? [cardForm, ...(undoForm ? [undoForm] : [])] :
+      selector === '[data-card-category]' ? [category] : selector === '[data-card-action-form]' ? [cardForm] :
+      selector === '[data-card-action-card]' ? [card] : [];
+    const deck = { attributes: [], querySelector: () => null, querySelectorAll: emptyNodeQueries,
+      hasAttribute: () => false };
+    const status = { attributes: [], querySelector: () => null, querySelectorAll: () => [], hasAttribute: () => false };
+    const doc = { querySelectorAll: selector => selector === '[data-card-current-status]' ? [status] :
+      selector === '[data-card-current-deck]' ? [deck] : [] };
+    return slots.currentSlotView({ marker, doc }, 'http://localhost:4321', new Set());
+  }
+  const saved = view('favourite', true, 'favourite', 'favourite', 1, nextCommand);
+  assert.equal(saved.cards[0].category, 'book');
+  assert.equal(saved.cards[0].selected_state, 'favourite');
+  assert.equal(saved.deck.querySelectorAll('form').length, 2, 'the fresh book projection retains its separate native Undo form');
+  const undone = view('none', false, 'undo', 'none', 2, slotRef(14));
+  assert.equal(undone.cards[0].category, 'book');
+  assert.equal(undone.cards[0].selected_state, 'none', 'the fresh readback shows the Undo result instead of replaying a saved before-image');
+  assert.equal(undone.deck.querySelectorAll('form').length, 1, 'a cleared response does not keep an obsolete Undo form');
 });
