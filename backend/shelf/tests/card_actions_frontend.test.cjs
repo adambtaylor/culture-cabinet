@@ -222,6 +222,110 @@ test('normal save sends original body once, follows native acknowledgement and n
   assert.equal(calls[0][1].credentials, 'same-origin'); assert.equal(calls[0][1].cache, 'no-store');
   assert.equal(result.receipt.command_id, f.submitted.command_id);
 });
+test('actual enhanced form serializer produces native URL-encoded fields and one chosen action', async () => {
+  for (const action of ['like', 'dislike', 'favourite']) {
+    const formData = new FormData();
+    const fields = [['csrfmiddlewaretoken', 'FICTIONAL+csrf/token='], ['profile_ref', slotRef(1)],
+      ['publication_ref', slotRef(2)], ['target_ref', slotRef(3)], ['command_id', slotRef(4)],
+      ['publication_revision', '1'], ['interest_revision', '0'], ['saved_revision', '12'],
+      ['repeated', 'first'], ['repeated', 'second'], ['text', 'A & B + café']];
+    for (const entry of fields) formData.append(...entry);
+    const body = slots.encodeCardAction(formData, { name: 'action', value: action });
+    // A real Request exercises the browser-standard body encoder without any
+    // transport. A mocked fetch with a placeholder body missed this boundary.
+    const request = new Request('http://localhost:4321/cabinet/actions/', { method: 'POST', body });
+    assert.match(request.headers.get('Content-Type'), /^application\/x-www-form-urlencoded(?:;|$)/i);
+    const decoded = new URLSearchParams(await request.text());
+    assert.deepEqual([...decoded], [...fields, ['action', action]]);
+    assert.deepEqual(decoded.getAll('action'), [action]);
+    assert.deepEqual(decoded.getAll('repeated'), ['first', 'second'], 'retain multiplicity for native rejection, never silently collapse');
+    assert.equal(formData.has('action'), false, 'the original successful controls are not mutated');
+  }
+});
+test('serializer rejects an existing action, non-text entry and wrong submitter before transport', () => {
+  const submitter = { name: 'action', value: 'like' };
+  assert.throws(() => slots.encodeCardAction([['action', 'like'], ['action', 'dislike']], submitter));
+  assert.throws(() => slots.encodeCardAction([['file', { name: 'not-a-text-field' }]], submitter));
+  for (const invalid of [{ name: 'other', value: 'like' }, { name: 'action', value: 'obtain' }, null]) {
+    assert.throws(() => slots.encodeCardAction([], invalid));
+  }
+});
+test('URL-encoded ordinary actions still send once and remain unknown after a lost acknowledgement', async () => {
+  for (const action of ['like', 'dislike', 'favourite']) {
+    const f = slotFixture(); f.submitted.action = action;
+    const fields = Object.entries(f.submitted).filter(([key]) => key !== 'action');
+    const body = slots.encodeCardAction(fields.map(([key, value]) => [key, String(value)]), { name: 'action', value: action });
+    let posts = 0;
+    await assert.rejects(slots.requestCardSave({ ...f, body, fetchImpl: async (url, options) => {
+      posts++; assert.equal(options.method, 'POST');
+      const request = new Request(url, options);
+      assert.match(request.headers.get('Content-Type'), /^application\/x-www-form-urlencoded/);
+      assert.deepEqual(new URLSearchParams(await request.text()).getAll('action'), [action]);
+      throw Error('Lost after possible commit');
+    }, parse: () => { throw Error('No receipt received'); } }), error => !error.recorded && !error.refused);
+    assert.equal(posts, 1, 'no retry, native fallback or second write');
+  }
+});
+test('pending and failed response show unknown status with a single native recovery instruction', () => {
+  class Node {
+    constructor(tag = 'p') { this.tagName = tag; this.children = []; this.dataset = {}; this.hidden = false; this.attrs = {}; }
+    set textContent(text) { this.children = [text]; }
+    get textContent() { return this.children.map(child => typeof child === 'string' ? child : child.textContent).join(''); }
+    setAttribute(name, value) { this.attrs[name] = value; }
+    append(...nodes) { this.children.push(...nodes); }
+    cloneNode() { const clone = new Node(this.tagName); clone.href = this.href; clone.textContent = this.textContent; return clone; }
+  }
+  for (const recorded of [false, true]) {
+    const selected = new Node(), pending = new Node(), receipt = new Node('a');
+    selected.textContent = 'Selected: No response yet';
+    receipt.href = '/cabinet/actions/' + slotRef(4) + '/';
+    pending.append('Waiting for the native result. ', receipt, ' Nothing is retried automatically.');
+    pending.querySelector = selector => selector === 'a' ? receipt : null;
+    const root = { messages: [], querySelector() { return this.messages[0] || null; },
+      prepend(message) { this.messages.unshift(message); message.remove = () => { this.messages.splice(this.messages.indexOf(message), 1); }; } };
+    const card = { querySelector: selector => selector === '.card-selected-state' ? selected : selector === '[data-card-action-pending]' ? pending : null };
+    const document = { createElement: tag => new Node(tag) };
+    slots.showCardPending(card);
+    assert.equal(selected.textContent, 'Response status unknown'); assert.equal(pending.hidden, false);
+    const currentURL = 'http://localhost:4321/cabinet?profile_ref=' + slotRef(1);
+    const render = () => slots.renderSlotFailure(root, card, recorded, currentURL, document);
+    render(); const message = render();
+    assert.equal(pending.hidden, true, 'superseded waiting/receipt guidance is not also displayed');
+    assert.equal(root.messages.length, 1); assert.equal(message.attrs.role, 'status');
+    assert.equal(selected.textContent, recorded ? 'Response recorded; current state unknown' : 'Response status unknown');
+    assert.equal(selected.textContent.includes('No response yet'), false);
+    assert.equal((message.textContent.match(/Nothing is retried automatically/g) || []).length, 1);
+    const links = message.children.filter(child => typeof child !== 'string');
+    assert.deepEqual(links.map(link => link.href), [receipt.href, currentURL]);
+    assert.equal(links[1].textContent, 'Read the current cabinet');
+    assert.notEqual(links[0], receipt, 'native receipt target is retained without moving the hidden template link');
+    assert.equal(message.textContent.includes('Response recorded'), recorded);
+  }
+});
+test('slot compensation measures settled geometry before entry motion, keeping final position and focus', () => {
+  for (const reduced of [false, true]) {
+    let scroll = 1926, entryOffset = 0, measuredOffset = null, focus = null;
+    const steps = [], heading = { focus(options) { focus = options; steps.push('focus'); } };
+    const anchor = { style: {}, querySelector: () => heading,
+      getBoundingClientRect() { measuredOffset = entryOffset; steps.push('measure'); return { top: 1936 - scroll + entryOffset }; },
+      classList: { add(name) { assert.equal(name, 'card-slot-enter'); entryOffset = reduced ? 0 : 10; steps.push('enter'); } } };
+    const viewport = { scrollBy(options) { assert.equal(options.behavior, 'instant'); scroll += options.top; steps.push('scroll'); } };
+    slots.positionCardSlot(anchor, { top: -110.796875, height: 700, focus: true }, viewport, true);
+    assert.deepEqual(steps, ['focus', 'measure', 'scroll', 'enter']);
+    assert.equal(measuredOffset, 0, 'entry transform must never influence viewport compensation');
+    assert.equal(anchor.style.minHeight, '700px'); assert.equal(heading.tabIndex, -1);
+    assert.deepEqual(focus, { preventScroll: true });
+    entryOffset = 0; // The normal entry animation has finished; reduced motion never offset it.
+    assert.equal(anchor.getBoundingClientRect().top, -110.796875, 'settled replacement retains its occupied slot');
+  }
+});
+test('no-successor positioning neither animates nor steals focus moved to another control', () => {
+  let scrolls = 0;
+  const anchor = { style: {}, querySelector: () => ({ focus() { assert.fail('Unrelated control keeps focus'); } }),
+    getBoundingClientRect: () => ({ top: 17 }), classList: { add() { assert.fail('No incoming successor'); } } };
+  slots.positionCardSlot(anchor, { top: 17, height: 600, focus: false }, { scrollBy(options) { scrolls++; assert.equal(options.top, 0); } }, false);
+  assert.equal(scrolls, 1); assert.equal(anchor.style.minHeight, '600px');
+});
 test('contextual read retains category, connection and run barriers with redirects forbidden and no second write', async () => {
   const f = slotFixture(), calls = [];
   f.pageURL += '&connection_ref=' + slotRef(8) + '&run_ref=' + slotRef(9) + '&category=movie';

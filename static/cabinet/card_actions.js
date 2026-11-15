@@ -178,6 +178,59 @@
       return { snapshot, receipt: snapshot.marker.receipt };
     } catch (error) { throw new SlotReadError(recorded || error?.recorded === true, error?.refused === true); }
   }
+  function encodeCardAction(formData, submitter) {
+    // The native handler's closed URL-encoded contract also applies to this
+    // enhanced form. Preserve entries (including duplicates for its validator),
+    // rather than collapsing fields or relabelling a multipart body.
+    const body = new URLSearchParams();
+    for (const [name, value] of formData) {
+      if (typeof value !== 'string') throw new SlotReadError();
+      body.append(name, value);
+    }
+    if (body.has('action') || submitter?.name !== 'action' || !['like', 'dislike', 'favourite'].includes(submitter.value)) throw new SlotReadError();
+    body.append(submitter.name, submitter.value);
+    return body;
+  }
+  function showCardPending(card) {
+    // The previous projection is no longer a current response claim once a
+    // write is in flight. Only an owned receipt/current read can resolve it.
+    const selected = card.querySelector('.card-selected-state');
+    if (selected) selected.textContent = 'Response status unknown';
+    const pending = card.querySelector('[data-card-action-pending]');
+    if (pending) pending.hidden = false;
+  }
+  function renderSlotFailure(root, card, recorded, readURL, doc) {
+    const pending = card.querySelector('[data-card-action-pending]');
+    const receipt = pending?.querySelector('a');
+    const selected = card.querySelector('.card-selected-state');
+    if (selected) selected.textContent = recorded ? 'Response recorded; current state unknown' : 'Response status unknown';
+    // Keep its native receipt URL, but replace the pending guidance with one
+    // prominent instruction. A failed read never proves that nothing was saved.
+    if (pending) pending.hidden = true;
+    root.querySelector('[data-card-slot-feedback]')?.remove();
+    const message = doc.createElement('p'); message.className = 'card-slot-feedback';
+    message.dataset.cardSlotFeedback = ''; message.dataset.error = '';
+    message.setAttribute('role', 'status'); message.tabIndex = -1;
+    message.textContent = recorded ? 'Response recorded, but current picks could not refresh. ' : 'The response could not be confirmed. ';
+    if (receipt) {
+      const link = receipt.cloneNode(true); link.textContent = 'Check this action’s recorded receipt';
+      message.append(link, ' or ');
+    }
+    const read = doc.createElement('a'); read.href = readURL; read.textContent = 'Read the current cabinet';
+    message.append(read, ' before another action. Nothing is retried automatically.');
+    root.prepend(message);
+    return message;
+  }
+  function positionCardSlot(anchor, prepared, viewport, enter) {
+    anchor.style.minHeight = prepared.height + 'px';
+    const heading = anchor.querySelector('h3');
+    if (prepared.focus && heading) { heading.tabIndex = -1; heading.focus({ preventScroll: true }); }
+    // Measure the settled layout before starting the decorative transform.
+    // Compensating for an animated offset leaves a lasting scroll error after
+    // that offset disappears. Focus must not add a second scroll adjustment.
+    viewport.scrollBy({ top: anchor.getBoundingClientRect().top - prepared.top, behavior: 'instant' });
+    if (enter) anchor.classList.add('card-slot-enter');
+  }
   function one(root, selector) {
     const nodes = root.querySelectorAll(selector);
     if (nodes.length !== 1) throw new SlotReadError();
@@ -262,7 +315,7 @@
       boundNoiseInputs.add(input);
     }
   }
-  if (typeof module !== 'undefined' && module.exports) module.exports = { HoldGesture, SubmissionGate, targetAt, bindNoiseControls, confirmedSlotResult, refreshMarker, cabinetReadURL, saveRedirectURL, boundedSlotHTML, requestCardSave, parseSlotDocument, currentSlotView };
+  if (typeof module !== 'undefined' && module.exports) module.exports = { HoldGesture, SubmissionGate, targetAt, bindNoiseControls, confirmedSlotResult, refreshMarker, cabinetReadURL, saveRedirectURL, boundedSlotHTML, requestCardSave, encodeCardAction, showCardPending, renderSlotFailure, positionCardSlot, parseSlotDocument, currentSlotView };
   if (typeof document === 'undefined') return;
   // Guide/Prepare pages have no cards; the range binding must precede that exit.
   bindNoiseControls(document);
@@ -346,7 +399,7 @@
   }
   const consumedCommands = new Set();
   function slotEnabled(form) {
-    if (typeof fetch !== 'function' || typeof DOMParser !== 'function' || typeof FormData !== 'function') return false;
+    if (typeof fetch !== 'function' || typeof DOMParser !== 'function' || typeof FormData !== 'function' || typeof URLSearchParams !== 'function') return false;
     try {
       const snapshot = parseSlotDocument(document);
       currentSlotView(snapshot, location.origin, consumedCommands);
@@ -358,9 +411,7 @@
   }
   function prepareSlotSave(form, submitter) {
     const submitted = { ...cardModel(form), action: submitter.value };
-    const body = new FormData(form);
-    if (body.has('action')) throw new SlotReadError();
-    body.append(submitter.name, submitter.value);
+    const body = encodeCardAction(new FormData(form), submitter);
     const card = submitted.node;
     return { submitted, body, card, pageURL: location.href, top: card.getBoundingClientRect().top,
       height: card.getBoundingClientRect().height, focus: document.activeElement,
@@ -388,11 +439,7 @@
     }
     const root = refused ? deck?.parentElement : card;
     if (!root) return;
-    const message = slotMessage(root, recorded ? 'Response recorded, but current picks could not refresh. Check the recorded outcome before another action.' :
-      'The response could not be confirmed. Check its recorded receipt before another action; nothing is retried automatically.', true);
-    const receipt = card.querySelector('[data-card-action-pending] a');
-    if (receipt) { const link = receipt.cloneNode(true); link.textContent = 'Check this action’s recorded receipt'; message.append(' ', link); }
-    const read = document.createElement('a'); read.href = location.href; read.textContent = 'Read the current cabinet'; message.append(' ', read);
+    const message = renderSlotFailure(root, card, recorded, location.href, document);
     if (refused) message.focus({ preventScroll: true });
     announcer.textContent = message.textContent;
   }
@@ -435,7 +482,6 @@
           result.saved.node.replaceWith(placeholder);
           result.next.node.replaceWith(result.saved.node);
           placeholder.replaceWith(result.next.node); anchor = result.next.node;
-          anchor.classList.add('card-slot-enter');
         }
         slotMessage(anchor, result.next ? labels[submitted.action] + ' recorded. Next available pick in this category. Your previous response and Undo remain in the deck.' :
           labels[submitted.action] + ' recorded. No later unanswered pick is available in this category. You can review or Undo this response here.');
@@ -456,10 +502,7 @@
         try { window.CabinetObtain?.mount(status); } catch (_) { /* Native Obtain details remain available. */ }
       }
       if (anchor) {
-        anchor.style.minHeight = prepared.height + 'px';
-        const heading = anchor.querySelector('h3');
-        if (shouldFocus && heading) { heading.tabIndex = -1; heading.focus({ preventScroll: true }); }
-        window.scrollBy({ top: anchor.getBoundingClientRect().top - targetTop, behavior: 'instant' });
+        positionCardSlot(anchor, { height: prepared.height, top: targetTop, focus: shouldFocus }, window, !!result?.next);
       } else if (shouldFocus) view.status.querySelector('[data-card-slot-feedback]')?.focus({ preventScroll: true });
       announcer.textContent = result?.next ? 'Response recorded. Next pick ready in the same place.' : 'Response recorded. Current cabinet refreshed.';
     } catch (error) { showSlotFailure(card, recorded || error?.recorded === true, error?.refused === true); }
@@ -497,7 +540,8 @@
       }
       gesture.cancel('submitting'); hide(false);
       form.setAttribute('aria-busy', 'true');
-      const pending = card.querySelector('[data-card-action-pending]'); if (pending) pending.hidden = false;
+      if (prepared) showCardPending(card);
+      else { const pending = card.querySelector('[data-card-action-pending]'); if (pending) pending.hidden = false; }
       for (const button of form.querySelectorAll('button[name="action"]')) button.setAttribute('aria-disabled', 'true');
       announcer.textContent = 'Saving your action. Wait for the recorded result.';
       if (prepared) void saveInPlace(prepared);
