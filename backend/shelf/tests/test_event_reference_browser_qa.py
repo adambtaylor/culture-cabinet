@@ -32,10 +32,9 @@ RUNS = OUT / 'runs'
 ADMISSION = OUT / 'admission.json'
 METHOD = 'shelf.tests.test_event_reference_browser_qa.EventReferenceBrowserQA.test_private_browser_round'
 PASSWORD = 'FICTIONAL-only-event-QA-2026!'
-# Bind admission to the real merge below; changing these labels alone cannot
-# satisfy the second-parent and candidate-ancestry checks in the helper.
-ACTUAL_TARGET = '58aa4ea624b8101be77f74b06ad988e547749c85'
-COMPOSITION_COMMIT = '0fc40e582433c33af735567f7f13e0c19f94dbe8'
+# The candidate ancestry guard binds this pin to the actual second-parent merge.
+ACTUAL_TARGET = '859f39e9f3a7730f4d9f5f89564ece6705ef34e9'
+COMPOSITION_COMMIT = '9f3b15dee4f3f8b3d5f6edaf3acfda7f36ea9cae'
 PACKAGE_SHA = '104b85853aade4064a24d573071e98f5561195bba40a4f8586861ac33c8cecd9'
 RECEIVER = Path('/home/tang/.codex/visualizations/2026/11/01/01a194f6-72e2-7d32-b6f3-e00f7cae7bd6/PR91-E4-BROWSER/pr91-event-reference-browser.cjs')
 RECEIVER_SHA = '2b2e6e53480db9c3b66415d3fa8fbc94b45f0059b2813717fe66e214c4acd8b8'
