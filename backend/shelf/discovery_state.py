@@ -2,6 +2,7 @@
 import hashlib
 import json
 import secrets
+from contextlib import contextmanager, ExitStack
 
 from django.core import signing
 from django.db import transaction
@@ -12,6 +13,42 @@ from shelf.discovery_reducer import CHOICES, MAX_HISTORY, replay
 from shelf.feedback_scale import clean_note, weight
 from shelf.models import DiscoveryState
 from shelf.provider_views import _profile
+
+
+@contextmanager
+def reference_window(request, profile_id):
+    """Hold existing recovery authority while using optional retained links.
+
+    A missing witness hides links without destroying the existing human state.
+    No new journal or permission is created here. The caller repeats its normal
+    actor/profile checks and its existing transaction still owns all writes.
+    """
+    from shelf.event_source_registry import SOURCES
+    from shelf import recovery
+    from shelf.models import RecoveryRestriction
+    namespaces = frozenset(source.restriction_namespace for source in SOURCES.values()
+                           if source.reference_policy_ref and source.restriction_namespace)
+    if not namespaces:
+        yield namespaces
+        return
+    _profile(request, profile_id)
+    # Enter failure is an unavailable optional bookmark, not permission to
+    # display one. Once entered, keep the barrier through the caller's work;
+    # exit failures retain the existing recovery failure semantics.
+    stack = ExitStack()
+    try:
+        barrier = stack.enter_context(recovery.access_barrier())
+    except recovery.RecoveryBlocked:
+        yield namespaces
+        return
+    with stack:
+        from django.db import connection
+        barrier.verify_mirror(connection.connection)
+        denied = frozenset(RecoveryRestriction.objects.filter(
+            restriction_code='deny_source_content').values_list('subject_id', flat=True))
+        if barrier.pending_denies(profile_id, actor_id=request.user.pk):
+            denied = namespaces
+        yield denied
 
 
 class Conflict(ValueError):
@@ -53,7 +90,7 @@ def commit(request, profile_id, mode, data, cards):
     nonce = data['nonce']
     digest = hashlib.sha256(json.dumps(dict(data), sort_keys=True).encode()).hexdigest()
     from shelf.grant_authority import writer_window
-    with transaction.atomic(), writer_window(request.user, profile_id):
+    with reference_window(request, profile_id) as denied_references, transaction.atomic(), writer_window(request.user, profile_id):
         _profile(request, profile_id, 'select')
         state = owned(request, profile_id, mode)
         if state is None:
@@ -77,6 +114,13 @@ def commit(request, profile_id, mode, data, cards):
         if 'note' in data:
             event['note'] = data['note']
         if card:
+            if operation in ('respond', 'save'):
+                from shelf.event_saved_references import make_reference
+                from shelf.event_source_registry import SOURCES
+                reference = make_reference(card, mode=mode, descriptors=SOURCES,
+                                           denied_namespaces=denied_references)
+                if reference is not None:
+                    event['saved_reference'] = reference
             if operation == 'respond' and weight(choice) != 0:
                 event['card'] = {'key': card.key, 'title': card.title,
                                  'medium': 'event' if card.kind == 'event' else 'music', 'source': card.source,

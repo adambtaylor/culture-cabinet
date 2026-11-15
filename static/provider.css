@@ -60,3 +60,7 @@ textarea[name="note"] { display: block; box-sizing: border-box; width: 100%; mar
 #feedback-status:not(:empty) { padding: 1rem; border: 2px solid currentColor; }
 .enhancement { border-left: 4px solid #514734; }
 @media (prefers-reduced-motion: reduce) { html { scroll-behavior: auto; } *, *::before, *::after { animation: none !important; transition: none !important; } }
+
+/* Keep stale identity explanations readable on wide cards without narrowing native controls. */
+.event-reference-card > p,
+.event-reference-card > details > p { max-inline-size: 60ch; }
