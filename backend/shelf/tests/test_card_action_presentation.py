@@ -6,7 +6,7 @@ from django.test import SimpleTestCase, override_settings
 from django.template.loader import render_to_string
 from django.utils.safestring import mark_safe
 
-from shelf.card_action_presentation import card_action_context, local_event_display_context, render_card_action_refusal, ACTIONS
+from shelf.card_action_presentation import card_action_context, card_action_refresh_context, local_event_display_context, render_card_action_refusal, ACTIONS
 from .test_onboarding_experience_views import Document, Poison
 
 PROFILE = '00000000-0000-4000-8000-000000000001'
@@ -120,6 +120,42 @@ class LocalEventDisplayPresentationTests(SimpleTestCase):
 
 
 class CardActionPresentationTests(SimpleTestCase):
+    def test_refresh_keeps_owned_history_separate_from_current_publication_and_projects_only_primitives(self):
+        receipt = dict(command_id=COMMAND, target_ref=TARGET, requested_action='like',
+            preference_outcome='committed', selected_state='like', interest_revision=1,
+            saved_revision=0, ranking_state='feedback_pending', secret=Poison(), title=Poison())
+        current = dict(published=True, publication_ref=PUBLICATION, publication_revision=2)
+        result = card_action_refresh_context(profile_ref=PROFILE, interaction=current,
+            receipt=receipt, command_id=COMMAND)
+        self.assertEqual(result['publication_revision'],2)
+        self.assertEqual(result['read_state'],'current')
+        self.assertEqual(set(result['receipt']),{'command_id','target_ref','requested_action',
+            'preference_outcome','selected_state','interest_revision','saved_revision','ranking_state'})
+        unavailable = card_action_refresh_context(profile_ref=PROFILE, interaction=current,
+            receipt=receipt, command_id=COMMAND, read_available=False)
+        self.assertEqual(unavailable['receipt'],result['receipt'])
+        self.assertEqual(unavailable['read_state'],'unavailable')
+        self.assertIsNone(unavailable['publication_ref'])
+        self.assertIsNone(unavailable['publication_revision'])
+
+    def test_refresh_rejects_forged_command_unsafe_revisions_and_unknown_outcomes(self):
+        receipt = dict(command_id=COMMAND,target_ref=TARGET,requested_action='like',
+            preference_outcome='committed',selected_state='like',interest_revision=1,
+            saved_revision=0,ranking_state='feedback_pending')
+        current = dict(published=True,publication_ref=PUBLICATION,publication_revision=1)
+        for key,bad in (('command_id',TARGET),('target_ref','bad'),('requested_action','injected'),
+                ('preference_outcome','pending'),('selected_state','obtain'),('ranking_state','stale'),
+                ('interest_revision',True),('saved_revision',2**53)):
+            with self.subTest(key=key),self.assertRaises(ValueError):
+                card_action_refresh_context(profile_ref=PROFILE,interaction=current,
+                    receipt={**receipt,key:bad},command_id=COMMAND)
+        with self.assertRaises(ValueError):
+            card_action_refresh_context(profile_ref=PROFILE,interaction=current,command_id=COMMAND)
+        for changed in ({**current,'publication_ref':'ABCDEFAB-0000-4000-8000-000000000001'},
+                        {**current,'publication_revision':True}):
+            with self.assertRaises(ValueError):
+                card_action_refresh_context(profile_ref=PROFILE,interaction=changed)
+
     def render(self, value=None, **extra):
         context = card_action_context(value or projection())
         card = dict(title='A fictional <book>', card_actions=context, reasons=[{'label': 'Previous association', 'text': 'OLD-PERSONAL-EXPLANATION', 'evidence_count': 1}], feedback={'signals': [

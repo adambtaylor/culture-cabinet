@@ -952,14 +952,30 @@ def portable_cabinet(request):
             from .card_action_presentation import card_action_context
             card['card_actions'] = card_action_context(CardActions(request.portable_authority,service=service).project(
                 session_ref,profile_ref=profile_ref,target_ref=target))
+            # Each projection is a fresh guarded read. A publication change
+            # between reads must refuse the whole deck, not mix actionable forms.
+            if (card['card_actions']['profile_ref'] != profile_ref
+                    or any(card['card_actions'][key] != interaction.get(key)
+                           for key in ('publication_ref', 'publication_revision'))):
+                raise AuthorityFault('CONTRACT_INVALID', 422)
             context['card_actions_available'] = True
             from .portable_obtain_views import cabinet_card_obtain_context
             card.update(cabinet_card_obtain_context(request, profile_ref=profile_ref,
                 publication_revision=context.get('publication_revision'), card=card))
+    command_id = None
     if 'action_receipt' in query:
         command_id=str(_uuid(query['action_receipt']))
         context['action_receipt']=CardActions(request.portable_authority,service=service).receipt(
             session_ref,profile_ref,command_id)
+    from .card_action_presentation import card_action_refresh_context
+    # The owned receipt confirms history only. Fresh interaction data supplies
+    # the independent publication/read marker used for coherent reconciliation.
+    try:
+        context['card_action_refresh'] = card_action_refresh_context(profile_ref=profile_ref,
+            interaction=interaction, receipt=context.get('action_receipt'), command_id=command_id,
+            read_available=status == 200 and 'read_code' not in context)
+    except ValueError:
+        raise AuthorityFault('CONTRACT_INVALID', 422) from None
     from .portable_feedback_views import consume_feedback_outcome
     outcome = consume_feedback_outcome(request, profile_ref=profile_ref)
     if outcome is not None:

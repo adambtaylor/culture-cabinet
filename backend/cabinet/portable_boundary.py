@@ -177,11 +177,16 @@ class PortableSecurityMiddleware:
                     and match.func is documents[match.url_name]
                     and response.get('Content-Type', '').split(';')[0].strip().lower() == 'text/html'):
                 scripts = f'{boundary.origin}/cabinet/obtain/status.js'
+                connections = f'{boundary.origin}/cabinet/obtain/jobs/'
                 if match.func is enhancement_views.portable_cabinet:
                     scripts += f' {boundary.origin}/cabinet/actions/script.js'
+                    # Only this document can enhance the existing POST/303 flow.
+                    # CSP paths are not method or redirect authorization; native
+                    # action guards and the fixed server destination still apply.
+                    connections += f' {boundary.origin}/cabinet/actions/ {boundary.origin}/cabinet'
                 response['Content-Security-Policy'] += (
                     f"; script-src {scripts}; script-src-attr 'none'"
-                    f"; connect-src {boundary.origin}/cabinet/obtain/jobs/; worker-src 'none'")
+                    f"; connect-src {connections}; worker-src 'none'")
         if valid and request.method in {'GET','HEAD'} and response.status_code==200:
             from shelf import portable_journey_views
             match=getattr(request,'resolver_match',None)

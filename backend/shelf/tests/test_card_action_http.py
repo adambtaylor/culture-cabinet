@@ -8,6 +8,76 @@ from .test_portable_feedback_views import NativeFeedbackOutcomeTests
 
 
 class CardActionHTTPTests(NativeFeedbackOutcomeTests):
+    def test_refresh_context_uses_owned_receipt_and_fresh_cabinet_read_without_an_extra_post(self):
+        from unittest.mock import patch
+        from shelf import enhancement_views
+        fields=self.prepare();response=self.post('/cabinet/actions/',fields)
+        self.assertEqual(urlsplit(response['Location']).path,'/cabinet')
+        captured=[];original=enhancement_views._native_cabinet_html
+        def render(request,context,**kwargs):
+            captured.append(context['card_action_refresh'])
+            return original(request,context,**kwargs)
+        with patch.object(enhancement_views,'_native_cabinet_html',side_effect=render):
+            self.assertEqual(self.http.get(response['Location'],**self.headers).status_code,200)
+        marker=captured[0]
+        self.assertEqual(marker['profile_ref'],self.profile_ref)
+        self.assertEqual(marker['publication_ref'],fields['publication_ref'])
+        self.assertEqual(marker['publication_revision'],fields['publication_revision'])
+        self.assertEqual(marker['read_state'],'current')
+        self.assertEqual(marker['receipt']['command_id'],fields['command_id'])
+        self.assertEqual(marker['receipt']['target_ref'],fields['target_ref'])
+        self.assertEqual(marker['receipt']['preference_outcome'],'committed')
+        self.assertEqual(marker['receipt']['interest_revision'],1)
+        self.assertEqual(FeedbackEvent.objects.count(),1)
+
+    def test_refresh_foreign_or_mismatched_receipt_and_refused_read_cannot_render_a_current_deck(self):
+        from unittest.mock import patch
+        from shelf.card_actions import CardActions
+        from shelf import enhancement_views
+        from shelf.portable_authority import AuthorityFault
+        fields=self.prepare();response=self.post('/cabinet/actions/',fields)
+        actual=CardActions(self.authority,service=self.enhance).receipt(self.ref,self.profile_ref,fields['command_id'])
+        with patch.object(CardActions,'receipt',return_value={**actual,'command_id':str(uuid.uuid4())}), \
+             patch.object(enhancement_views,'_native_cabinet_html') as render:
+            refused=self.http.get(response['Location'],**self.headers)
+        self.assertEqual(refused.status_code,422);render.assert_not_called()
+        unknown=self.http.get('/cabinet',{'profile_ref':self.profile_ref,'action_receipt':str(uuid.uuid4())},**self.headers)
+        self.assertEqual(unknown.status_code,403)
+        captured=[];original=enhancement_views._native_cabinet_html
+        def render(request,context,**kwargs):
+            captured.append(context)
+            return original(request,context,**kwargs)
+        with patch.object(self.enhance,'current_for_interaction',side_effect=AuthorityFault('AUTHORITY_DENIED',403)), \
+             patch.object(enhancement_views,'_native_cabinet_html',side_effect=render):
+            refused=self.http.get(response['Location'],**self.headers)
+        self.assertEqual(refused.status_code,403)
+        self.assertEqual(captured[0]['categories'],[])
+        self.assertEqual(captured[0]['card_action_refresh']['read_state'],'unavailable')
+        self.assertEqual(captured[0]['card_action_refresh']['receipt']['command_id'],fields['command_id'])
+        self.assertNotIn(b'PRIVATE fixture card title',refused.content)
+        self.assertNotIn('connect-src',refused['Content-Security-Policy'])
+        self.assertEqual(FeedbackEvent.objects.count(),1)
+
+    def test_refresh_mixed_profile_or_publication_projection_refuses_the_whole_deck(self):
+        from unittest.mock import patch
+        from shelf.card_actions import CardActions
+        from shelf import enhancement_views
+        self.prepare();original=CardActions.project
+        for field,bad in (('profile_ref',str(uuid.uuid4())),('publication_ref',str(uuid.uuid4())),
+                          ('publication_revision',2)):
+            def replaced(instance,*args,**kwargs):
+                value=original(instance,*args,**kwargs)
+                value[field]=bad
+                for row in value['actions']:
+                    row['fields'][field]=bad
+                return value
+            with self.subTest(field=field),patch.object(CardActions,'project',replaced), \
+                 patch.object(enhancement_views,'_native_cabinet_html') as render:
+                refused=self.http.get('/cabinet',{'profile_ref':self.profile_ref},**self.headers)
+            self.assertEqual(refused.status_code,422);render.assert_not_called()
+            self.assertNotIn(b'PRIVATE fixture card title',refused.content)
+        self.assertEqual(FeedbackEvent.objects.count(),0)
+
     def prepare(self):
         self.consent(self.profile_ref);target=self.publish_card()
         current=self.enhance.current_for_interaction(self.ref,profile_ref=self.profile_ref)

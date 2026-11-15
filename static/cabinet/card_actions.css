@@ -27,3 +27,17 @@
 .local-event-display { margin-block: .8rem; padding-block: .8rem; border-block: 1px solid #b6bda9; overflow-wrap: anywhere; }
 .local-event-display summary { min-height: 2.8rem; padding-block: .6rem; cursor: pointer; }
 .local-event-display dt { font-weight: 600; } .local-event-display dd { margin-inline: 0; }
+
+/* Preserve the occupied slot while a confirmed native result is presented.
+   Motion is decoration after acknowledgement; pending/error cards never enter. */
+.card-slot-feedback { margin-block: .7rem; padding: .6rem .75rem; border-left: 3px solid #526748; background: #f1f3eb; }
+.card-slot-feedback[data-error] { border-color: #895317; background: #fff6e8; }
+.card-slot-feedback:focus { outline: 3px solid #895317; outline-offset: 3px; }
+.card-slot-enter { animation: card-slot-enter 200ms ease-out both; }
+@keyframes card-slot-enter {
+  from { opacity: 0; transform: translateY(10px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .card-slot-enter { animation: none; }
+}

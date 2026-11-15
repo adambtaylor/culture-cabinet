@@ -265,6 +265,11 @@
   {% else %}<p>No authorized bound cabinet is available. Existing profiles will not be adopted or recreated automatically. Review the current owner and permissions.</p>{% endif %}
 </section>
 {% else %}
+{% comment %}Only the owned primitive projection identifies an acknowledged response. Current read authority and publication are independent of that historical receipt; no prose or credential becomes client authority.{% endcomment %}
+{% if card_action_refresh %}{% with refresh=card_action_refresh %}
+<div hidden data-card-action-refresh data-schema="{{ refresh.schema }}" data-profile-ref="{{ refresh.profile_ref }}" data-publication-ref="{{ refresh.publication_ref|default_if_none:'' }}" data-publication-revision="{{ refresh.publication_revision|default_if_none:'' }}" data-read-state="{{ refresh.read_state }}" data-receipt-present="{{ refresh.receipt|yesno:'true,false' }}"{% if refresh.receipt %} data-command-id="{{ refresh.receipt.command_id }}" data-target-ref="{{ refresh.receipt.target_ref }}" data-requested-action="{{ refresh.receipt.requested_action }}" data-preference-outcome="{{ refresh.receipt.preference_outcome }}" data-selected-state="{{ refresh.receipt.selected_state }}" data-interest-revision="{{ refresh.receipt.interest_revision }}" data-saved-revision="{{ refresh.receipt.saved_revision }}" data-ranking-state="{{ refresh.receipt.ranking_state }}"{% endif %}></div>
+{% endwith %}{% endif %}
+<div data-card-current-status>
 {% if feedback_outcome_message %}
 {% comment %}The consumed receipt acknowledges a completed action only. Keep the publication refusal below independent; never imply that preferences exposes an unavailable card's response.{% endcomment %}
 <section id="cabinet-feedback-outcome" class="paper-panel" role="status" tabindex="-1" autofocus>
@@ -327,11 +332,14 @@
 </section>
 {% elif not published %}
 <section class="paper-panel"><h2>No published picks yet</h2><p>An authorized collection, inference and publication must complete before new picks appear. Opening this page does not start that work.</p></section>
-{% else %}
+{% endif %}
+</div>
+<div data-card-current-deck>
+{% if not read_code and published %}
 <details class="cabinet-publication"><summary>About this publication</summary><p>Publication revision {{ publication_revision }}. These are the currently permitted picks; source times below describe their evidence, not a new live availability check.</p></details>
 <nav class="cabinet-categories" aria-label="Cabinet categories"><a href="{{ all_url }}"{% if not active_category %} aria-current="page"{% endif %}>All categories</a>{% for category in categories %}<a href="{{ category.url }}"{% if category.category == active_category %} aria-current="page"{% endif %}>{{ category.label }}</a>{% endfor %}</nav>
 {% for category in categories %}{% if category.visible %}
-<section class="cabinet-category" aria-labelledby="category-{{ forloop.counter }}">
+<section class="cabinet-category" data-card-category="{{ category.category }}" aria-labelledby="category-{{ forloop.counter }}">
   <h2 id="category-{{ forloop.counter }}">{{ category.label }}</h2><p class="cabinet-category-status">{{ category.status }}</p>
   <div class="cabinet-cards">
   {% for card in category.cards %}
@@ -364,7 +372,7 @@
       {% if card.source_url %}<p><a href="{{ card.source_url }}" rel="noreferrer noopener">View source record</a></p>{% else %}<p>No validated source link is available.</p>{% endif %}
       {% if card.facts %}<dl class="cabinet-facts">{% for fact in card.facts %}<div><dt>{{ fact.name }}</dt><dd>{{ fact.value }}</dd></div>{% endfor %}</dl>{% endif %}
       </details>
-      {% if card.reasons and card.card_actions.ranking_state != 'feedback_pending' %}<h4>For you</h4>{% for reason in card.reasons %}<p><strong>{{ reason.label }}:</strong> {{ reason.text }} <span class="cabinet-evidence">{% if reason.evidence_count %}{{ reason.evidence_count }} evidence reference{{ reason.evidence_count|pluralize }}.{% else %}No evidence references supplied.{% endif %}</span></p>{% endfor %}{% else %}<p class="cabinet-no-reason">No current For You explanation is available.</p>{% endif %}
+      <div data-card-reasons>{% if card.reasons and card.card_actions.ranking_state != 'feedback_pending' %}<h4>For you</h4>{% for reason in card.reasons %}<p><strong>{{ reason.label }}:</strong> {{ reason.text }} <span class="cabinet-evidence">{% if reason.evidence_count %}{{ reason.evidence_count }} evidence reference{{ reason.evidence_count|pluralize }}.{% else %}No evidence references supplied.{% endif %}</span></p>{% endfor %}{% else %}<p class="cabinet-no-reason">No current For You explanation is available.</p>{% endif %}</div>
       {% if card.card_actions %}
       <section class="card-actions" aria-labelledby="card-actions-{{ card.card_actions.target_ref }}" data-selected-state="{{ card.card_actions.selected_state }}">
         <h4 id="card-actions-{{ card.card_actions.target_ref }}">Your response</h4>
@@ -473,6 +481,7 @@
 </section>
 {% endif %}{% endfor %}
 {% endif %}
+</div>
 {% if feedback_available or card_actions_available %}<p class="fine-print">Your responses and notes are saved separately from Enhance. A changed response needs a fresh request preview; no collection or inference is sent automatically.</p>{% else %}<p class="fine-print">Ratings and reactions are not connected on this native page yet. No response, Save, Obtain or provider action is inferred from viewing a card.</p>{% endif %}
 {% if not read_code %}<script src="/cabinet/obtain/status.js" defer></script>{% if card_actions_available or noise_control %}<script src="/cabinet/actions/script.js" defer></script>{% endif %}{% endif %}
 {% endif %}
