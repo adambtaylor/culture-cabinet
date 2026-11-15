@@ -6,7 +6,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 import key_box
 
@@ -162,13 +162,51 @@ class LoginKeyringTests(unittest.TestCase):
         key = key_box.Fernet.generate_key()
         with patch.object(keyring, 'secret') as secret, \
                 patch.object(key_box, 'private_read', return_value=key_box.ENCRYPTED_KEYRING_PREFIX):
-            secret.password_lookup_sync.return_value = key.decode('ascii')
+            item = Mock()
+            item.get_secret.return_value.get_text.return_value = key.decode('ascii')
+            secret.Collection.return_value.search_sync.return_value = [item]
             secret.password_store_sync.return_value = True
             keyring.write(key)
             args = secret.password_store_sync.call_args.args
             self.assertEqual(args[2], '/org/freedesktop/secrets/collection/login')
             self.assertNotIn(key.decode('ascii'), repr(args[1]))
             self.assertEqual(args[4], key.decode('ascii'))
+            self.assertEqual(secret.Collection.call_args.kwargs['g_object_path'], key_box.LOGIN_COLLECTION)
+            secret.password_lookup_sync.assert_not_called()
+
+    def test_matching_foreign_key_is_ignored_and_new_save_uses_login(self):
+        keyring = key_box.LoginKeyring()
+        foreign = key_box.Fernet.generate_key()
+        with tempfile.TemporaryDirectory() as folder, \
+                patch.object(keyring, 'secret') as secret, \
+                patch.object(key_box, 'private_read', return_value=key_box.ENCRYPTED_KEYRING_PREFIX):
+            # The old global lookup would return a session-collection match.
+            secret.password_lookup_sync.return_value = foreign.decode('ascii')
+            collection = secret.Collection.return_value
+            collection.search_sync.return_value = []
+            self.assertIsNone(keyring.read())
+            box = key_box.KeyBox(Path(folder) / 'box', keyring)
+
+            def store(_schema, _attrs, destination, _label, key, _cancel):
+                self.assertEqual(destination, key_box.LOGIN_COLLECTION)
+                self.assertNotEqual(key.encode(), foreign)
+                item = Mock()
+                item.get_secret.return_value.get_text.return_value = key
+                collection.search_sync.return_value = [item]
+                return True
+
+            secret.password_store_sync.side_effect = store
+            box.save(DUMMY)
+            secret.password_store_sync.assert_called_once()
+            secret.password_lookup_sync.assert_not_called()
+            self.assertTrue(all(call.kwargs['g_object_path'] == key_box.LOGIN_COLLECTION
+                                for call in secret.Collection.call_args_list))
+            before = box.path.read_bytes()
+            collection.search_sync.return_value = []
+            with self.assertRaises(key_box.BoxError):
+                box.save('replacement')
+            self.assertEqual(box.path.read_bytes(), before)
+            self.assertEqual(secret.password_store_sync.call_count, 1)
 
 
 if __name__ == '__main__':

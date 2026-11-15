@@ -17,6 +17,7 @@ from cryptography.fernet import Fernet, InvalidToken
 MAX_KEY_BYTES = 8192
 BOX_DIRECTORY = Path.home() / '.local/share/culture-cabinet-key-box'
 ENCRYPTED_KEYRING_PREFIX = bytes.fromhex('476e6f6d654b657972696e670a0d000a00000000')
+LOGIN_COLLECTION = '/org/freedesktop/secrets/collection/login'
 
 
 class BoxError(Exception):
@@ -67,14 +68,32 @@ class LoginKeyring:
 
     def read(self):
         self._protected()
-        value = self.secret.password_lookup_sync(self.schema, self.attributes, None)
+        # The simple password lookup searches every collection. Bind this proxy
+        # to Login so a matching session/other-keyring item cannot be adopted.
+        service = self.secret.Service.get_sync(self.secret.ServiceFlags.NONE, None)
+        collection = self.secret.Collection(service=service,
+            g_connection=service.get_connection(), g_name=service.get_name(),
+            g_object_path=LOGIN_COLLECTION, g_interface_name='org.freedesktop.Secret.Collection',
+            flags=self.secret.CollectionFlags.NONE)
+        collection.init(None)
+        items = collection.search_sync(self.schema, self.attributes,
+            self.secret.SearchFlags.ALL | self.secret.SearchFlags.UNLOCK
+            | self.secret.SearchFlags.LOAD_SECRETS, None)
+        if len(items) > 1:
+            raise BoxError('More than one box unlock key exists in the Login keyring.')
+        value = None
+        if items:
+            secret = items[0].get_secret()
+            if secret is None or secret.get_text() is None:
+                raise BoxError('Unlock the GNOME Login keyring first.')
+            value = secret.get_text()
         self._protected()
         return value.encode('ascii') if value is not None else None
 
     def write(self, key):
         self._protected()
         if not self.secret.password_store_sync(self.schema, self.attributes,
-                '/org/freedesktop/secrets/collection/login', 'Culture Cabinet box unlock key',
+                LOGIN_COLLECTION, 'Culture Cabinet box unlock key',
                 key.decode('ascii'), None):
             raise BoxError('The OS keyring did not save the unlock key.')
         self._protected()
