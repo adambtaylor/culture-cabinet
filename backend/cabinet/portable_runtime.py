@@ -260,6 +260,8 @@ def run(root, *, port=0, approved_policies=None, approved_policies_factory=None,
     stopping = False
     closing = False
     checkpoint = None
+    startup_stage = 'BOOTSTRAP'
+    ready = False
 
     def stop(signum, frame):
         nonlocal stopping
@@ -280,18 +282,24 @@ def run(root, *, port=0, approved_policies=None, approved_policies_factory=None,
         for sig in [signal.SIGTERM, signal.SIGINT, signal.SIGHUP]:
             previous[sig] = signal.signal(sig, stop)
         from cabinet.portable_boundary import BoundaryAlreadyRunning, open_boundary
+        startup_stage = 'BOUNDARY'
         try:
             boundary = open_boundary(root, port=port)
         except BoundaryAlreadyRunning:
             raise PortableAlreadyRunning() from None
+        startup_stage = 'STORE_PREPARE'
         fresh = prepare_database(boundary)
+        startup_stage = 'DJANGO_SETUP'
         configure(boundary)
         if fresh:
+            startup_stage = 'STORE_INITIALISE'
             from django.core.management import call_command
             call_command('migrate', interactive=False, verbosity=0)
             remove_fresh_fixtures()
         else:
+            startup_stage = 'STORE_VALIDATE'
             validate_existing(boundary)
+        startup_stage = 'SERVICE_IMPORTS'
         from django.conf import settings
         from django.core.wsgi import get_wsgi_application
         from shelf.portable_authority import PortableAuthority
@@ -300,16 +308,23 @@ def run(root, *, port=0, approved_policies=None, approved_policies_factory=None,
         from shelf.recovery import NativeCleanCheckpoint, native_first_start, native_clean_restart
         from shelf.saved_credentials import SavedCredentials, secret_service_request
         store_request = secret_service_request if saved_store is None else saved_store
+        startup_stage = 'RECOVERY'
         checkpoint = NativeCleanCheckpoint(boundary, store_request)
+        # Keep the label aligned with each attempted operation; this branch order
+        # is intentionally different because restart consumes recovery first.
         if fresh:
+            startup_stage = 'AUTHORITY'
             authority = PortableAuthority(boundary)
+            startup_stage = 'RECOVERY'
             lifetime.enter_context(native_first_start(boundary))
         else:
             # Consume the independent CLEAN anchor before PortableAuthority can
             # update installation generation, sessions or any other SQL row.
             lifetime.enter_context(native_clean_restart(boundary, checkpoint))
+            startup_stage = 'AUTHORITY'
             authority = PortableAuthority(boundary)
         lifetime.callback(checkpoint.seal)
+        startup_stage = 'SERVICE_COMPOSITION'
         from shelf.obtain_runtime import selected_supervisor
         # Close selected children/monitors before the original recovery witness.
         # Effects stay on this serving thread, outside every request's scopes.
@@ -328,13 +343,16 @@ def run(root, *, port=0, approved_policies=None, approved_policies_factory=None,
         settings.PORTABLE_SOURCE_POLICY = _compose_enhance(authority,
             settings.PORTABLE_CONNECTIONS, approved_policies=approved_policies,
             approved_policies_factory=approved_policies_factory)
+        startup_stage = 'SERVER_SETUP'
         server = make_server(boundary, get_wsgi_application())
         if not stopping:
+            startup_stage = 'READY_OUTPUT'
             print('Origin: ' + boundary.origin, flush=True)
             if authority._installation().owner_id is None:
                 print('Claim code (terminal only, expires in 5 minutes):', flush=True)
                 authority.issue_challenge(sys.stdout)
             print('PORTABLE_READY', flush=True)
+            ready = True
         # shutdown() from this serving thread deadlocks. The signal cancellation
         # interrupts active reads/work; timeout only bounds the idle accept wait.
         # WSGI may consume a BaseException after closing a failed response, so the
@@ -356,6 +374,10 @@ def run(root, *, port=0, approved_policies=None, approved_policies_factory=None,
         return 1
     except Exception:
         print('PORTABLE_START_OR_RUNTIME_REFUSED', file=sys.stderr, flush=True)
+        # A fixed operation-group label improves triage without exposing failure
+        # details; it cannot establish root health, key preservation or cleanup.
+        if not ready:
+            print('PORTABLE_STARTUP_STAGE=' + startup_stage, file=sys.stderr, flush=True)
         return 1
     finally:
         closing = True
