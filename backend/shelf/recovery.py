@@ -492,6 +492,26 @@ def mirror_values(frame,r):
             'external_head_id':dbid(frame['head_id'])}
 
 
+def _event_reference_namespaces():
+    # Recognition survives empty history and retired/disabled descriptors.
+    from shelf.event_source_registry import SOURCE_NAMESPACES
+    return SOURCE_NAMESPACES.values()
+
+
+def _redact_event_references(raw, namespace):
+    from shelf.event_saved_references import redact_history
+    # Retired descriptors and missing policies cannot undo a committed denial.
+    # Keep every human action/receipt; only the new optional reference is purged.
+    for state in rows(raw, 'SELECT id,history FROM shelf_discoverystate'):
+        history = json.loads(state['history'])
+        redacted = redact_history(history, source_namespaces={namespace}, descriptors={})
+        if redacted != history:
+            raw.execute('UPDATE shelf_discoverystate SET history=?,revision=revision+1 WHERE id=?',
+                        (json.dumps(redacted), state['id']))
+            # Existing current-state triggers advance the profile floors. Do not
+            # rehash old request receipts or append a fabricated human action.
+
+
 def apply_restriction(raw, frame, r, *, audit=None):
     validate_restriction({k:r[k] for k in RESTRICTION_FIELDS})
     existing = rows(raw,'SELECT * FROM shelf_recoveryrestriction WHERE sequence=?',(r['sequence'],))
@@ -537,7 +557,10 @@ def apply_restriction(raw, frame, r, *, audit=None):
     elif code == 'disable_actor': raw.execute('UPDATE auth_user SET is_active=0 WHERE id=?',(int(r['subject_id']),))
     elif code == 'deny_source_content':
         targets = [x[0] for x in raw.execute('SELECT id FROM shelf_feedbacktarget WHERE source_namespace=?',(r['subject_id'],))]
-        if not targets: raise RecoveryBlocked('Unknown source mapping.')
+        known_reference_source = r['subject_id'] in _event_reference_namespaces()
+        if not targets and not known_reference_source: raise RecoveryBlocked('Unknown source mapping.')
+        if known_reference_source:
+            _redact_event_references(raw, r['subject_id'])
         for target in targets:
             affected=rows(raw,"SELECT DISTINCT profile_id,signal,scope FROM shelf_feedbackevent WHERE target_id=? AND original_origin!='direct'",(target,))
             raw.execute("UPDATE shelf_feedbackevent SET body=NULL,source_record_id=NULL,source_metadata=NULL,source_time=NULL,attribution=NULL,original_recorded_at=NULL WHERE target_id=? AND original_origin!='direct'",(target,))
@@ -625,7 +648,7 @@ def restrict_authority(*, actor, command, recovery):
             for r in command['restrictions']:
                 if r['profile_id'] is not None and not connection.connection.execute('SELECT 1 FROM shelf_profile WHERE id=?',(r['profile_id'],)).fetchone(): raise FeedbackError()
                 if r['subject_id'] is not None and r['kind']=='revoke' and not get_user_model().objects.filter(pk=int(r['subject_id'])).exists(): raise FeedbackError()
-                if r['kind']=='source_restrict' and not connection.connection.execute('SELECT 1 FROM shelf_feedbacktarget WHERE source_namespace=?',(r['subject_id'],)).fetchone(): raise FeedbackError()
+                if r['kind']=='source_restrict' and r['subject_id'] not in _event_reference_namespaces() and not connection.connection.execute('SELECT 1 FROM shelf_feedbacktarget WHERE source_namespace=?',(r['subject_id'],)).fetchone(): raise FeedbackError()
             if not get_user_model().objects.filter(pk=actor.actor_id,is_active=True).exists(): raise Http404
         pending=barrier.prepare(command['mutation_id'],command['restrictions'])
         barrier.apply_pending(connection.connection,operator=actor)
@@ -860,7 +883,8 @@ def isolated_restore(*, backup, sandbox, recovery):
             # Only this verified isolated copy receives a local write window:
             # backup identity/hash, exact restriction prefix and live witness
             # were checked above. Policy metadata supplies no authority. Native
-            # v2 erasure/retirement guards must stay active during replay too.
+            # v2 erasure/retirement guards stay active while denial replay purges
+            # saved references and advances their profile floors.
             raw.create_function('cabinet_disclosure_write',0,lambda:1)
             raw.execute('BEGIN IMMEDIATE')
             try:

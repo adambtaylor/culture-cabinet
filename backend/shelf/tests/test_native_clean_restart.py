@@ -10,9 +10,217 @@ import subprocess
 import sys
 import tempfile
 import time
+import types
 import uuid
+from contextlib import redirect_stderr, redirect_stdout
+from io import StringIO
+from unittest.mock import patch
 
 from django.test import SimpleTestCase
+
+
+class StartupStageTests(SimpleTestCase):
+    """Synthetic run() coverage; injected failures never touch an installation."""
+
+    def run_startup(self, *, fresh=False, failure_at=None, failure=None,
+                    ready_output_failure=False, cleanup_failure=False):
+        from cabinet import portable_runtime as runtime
+
+        events = []
+        settings = types.SimpleNamespace(configured=True)
+        boundary = types.SimpleNamespace(origin='http://127.0.0.1:1', closed=False)
+        def close_boundary():
+            events.append('boundary.close')
+            boundary.closed = True
+            if cleanup_failure:
+                raise OSError('cleanup sentinel')
+        boundary.close = close_boundary
+        authority = types.SimpleNamespace(
+            _installation=lambda: types.SimpleNamespace(owner_id=1), _obtain_workers=[])
+        checkpoint = types.SimpleNamespace(seal=lambda: events.append('checkpoint.seal'), enroll=lambda *_: None)
+
+        class Server:
+            error_stream = types.SimpleNamespace(close=lambda: events.append('server.error_close'))
+
+            def __init__(self):
+                self.closed = 0
+
+            def server_close(self):
+                self.closed += 1
+                events.append('server.close')
+
+            def handle_request(self):
+                if failure_at == 'POST_READY':
+                    raise failure or RuntimeError('post-ready sentinel')
+                from cabinet.portable_runtime import PortableStop
+                raise PortableStop()
+
+        server = Server()
+
+        class RecoveryContext:
+            def __enter__(self):
+                events.append('recovery.enter')
+                return self
+
+            def __exit__(self, *_):
+                events.append('recovery.exit')
+
+        class SupervisorContext:
+            closed = True
+            failed = False
+
+            def __enter__(self):
+                events.append('supervisor.enter')
+                return self
+
+            def __exit__(self, *_):
+                events.append('supervisor.exit')
+
+        def fail_if(point):
+            events.append(point)
+            if failure_at == point:
+                raise failure or RuntimeError('API_SECRET_SENTINEL')
+
+        def module(name, **values):
+            result = types.ModuleType(name)
+            result.__dict__.update(values)
+            return result
+
+        boundary_module = module('cabinet.portable_boundary',
+            BoundaryAlreadyRunning=type('BoundaryAlreadyRunning', (Exception,), {}),
+            open_boundary=lambda *_args, **_kwargs: (events.append('boundary.open'), boundary)[1])
+        if failure_at == 'LOCK':
+            boundary_module.open_boundary = lambda *_args, **_kwargs: (_ for _ in ()).throw(
+                boundary_module.BoundaryAlreadyRunning())
+        django_modules = {
+            'django.conf': module('django.conf', settings=settings),
+            'django.core.management': module('django.core.management',
+                call_command=lambda *_args, **_kwargs: events.append('store.migrate')),
+            'django.core.wsgi': module('django.core.wsgi', get_wsgi_application=lambda: object()),
+            'django.db': module('django.db', connections=types.SimpleNamespace(
+                close_all=lambda: events.append('db.close_all'))),
+        }
+        def clean_restart(*_):
+            events.append('recovery.restart')
+            if failure_at == 'RECOVERY':
+                raise failure or RuntimeError('API_SECRET_SENTINEL')
+            return RecoveryContext()
+
+        def first_start(*_):
+            events.append('recovery.first_start')
+            return RecoveryContext()
+
+        recovery_module = module('shelf.recovery',
+            NativeCleanCheckpoint=lambda *_: (events.append('checkpoint.create'), checkpoint)[1],
+            native_first_start=first_start,
+            native_clean_restart=clean_restart)
+        credential_module = module('shelf.saved_credentials',
+            SavedCredentials=lambda *_args, **_kwargs: object(), secret_service_request=object())
+        credentials_module = module('shelf.secret_leases', MemoryCredentials=lambda *_: object())
+        connection_module = module('shelf.connection_validation', ConnectionValidation=lambda *_: (
+            types.SimpleNamespace(vault=object())))
+        def create_authority(*_):
+            events.append('authority.create')
+            return authority
+        authority_module = module('shelf.portable_authority', PortableAuthority=create_authority)
+        supervisor_module = module('shelf.obtain_runtime', selected_supervisor=lambda *_: (
+            fail_if('service.supervisor') if failure_at == 'SERVICE_COMPOSITION'
+            else SupervisorContext()))
+        disclosure_module = module('shelf.portable_disclosure', DisclosureServices=lambda *_: None)
+        fake_imports = {
+            'cabinet.portable_boundary': boundary_module,
+            'shelf.recovery': recovery_module,
+            'shelf.saved_credentials': credential_module,
+            'shelf.secret_leases': credentials_module,
+            'shelf.connection_validation': connection_module,
+            'shelf.portable_authority': authority_module,
+            'shelf.obtain_runtime': supervisor_module,
+            'shelf.portable_disclosure': disclosure_module,
+            **django_modules,
+        }
+        stdout, stderr = StringIO(), StringIO()
+        original_print = print
+
+        def controlled_print(*args, **kwargs):
+            if ready_output_failure and args == ('PORTABLE_READY',):
+                raise RuntimeError('API_SECRET_SENTINEL')
+            return original_print(*args, **kwargs)
+
+        def validate(_boundary):
+            fail_if('store.validate')
+
+        with patch.dict(sys.modules, fake_imports), \
+             patch.object(runtime, 'protect_core'), \
+             patch.object(runtime, 'prepare_database', side_effect=lambda _: fresh), \
+             patch.object(runtime, 'configure', side_effect=lambda _: events.append('django.configure')), \
+             patch.object(runtime, 'validate_existing', side_effect=validate), \
+             patch.object(runtime, 'remove_fresh_fixtures', side_effect=lambda: events.append('store.fixtures')), \
+             patch.object(runtime, '_compose_enhance', return_value=object()), \
+             patch.object(runtime, 'make_server', side_effect=lambda *_: server), \
+             patch.object(runtime.os, 'umask'), patch.object(runtime.logging, 'disable'), \
+             patch.object(runtime.signal, 'signal', side_effect=lambda *_: object()), \
+             patch('builtins.print', side_effect=controlled_print), \
+             redirect_stdout(stdout), redirect_stderr(stderr):
+            result = runtime.run('/synthetic-only')
+        return result, stdout.getvalue(), stderr.getvalue(), events, server
+
+    def test_stage_failures_are_fixed_and_do_not_print_exception_text(self):
+        for failure_at, expected in (
+                ('store.validate', 'STORE_VALIDATE'),
+                ('RECOVERY', 'RECOVERY'),
+                ('SERVICE_COMPOSITION', 'SERVICE_COMPOSITION')):
+            with self.subTest(stage=expected):
+                result, out, err, events, _server = self.run_startup(
+                    failure_at=failure_at, failure=RuntimeError('API_SECRET_SENTINEL'))
+                self.assertEqual(result, 1)
+                self.assertEqual(err.splitlines(), [
+                    'PORTABLE_START_OR_RUNTIME_REFUSED',
+                    'PORTABLE_STARTUP_STAGE=' + expected])
+                self.assertNotIn('API_SECRET_SENTINEL', out + err)
+                self.assertIn('boundary.close', events)
+                self.assertIn('db.close_all', events)
+                self.assertLess(events.index('boundary.close'), events.index('db.close_all'))
+                if expected == 'SERVICE_COMPOSITION':
+                    self.assertIn('recovery.exit', events)
+
+    def test_fresh_and_existing_branches_keep_recovery_and_authority_order(self):
+        result, _, _, fresh_events, _ = self.run_startup(fresh=True)
+        self.assertEqual(result, 0, fresh_events)
+        self.assertLess(fresh_events.index('checkpoint.create'), fresh_events.index('supervisor.enter'))
+        self.assertLess(fresh_events.index('authority.create'), fresh_events.index('recovery.first_start'))
+        self.assertLess(fresh_events.index('store.migrate'), fresh_events.index('store.fixtures'))
+
+        result, _, _, existing_events, _ = self.run_startup(fresh=False)
+        self.assertEqual(result, 0, existing_events)
+        self.assertLess(existing_events.index('store.validate'), existing_events.index('checkpoint.create'))
+        self.assertLess(existing_events.index('recovery.restart'), existing_events.index('authority.create'))
+
+    def test_lock_stop_ready_and_post_ready_keep_existing_diagnostics(self):
+        result, _, err, _events, _server = self.run_startup(failure_at='LOCK')
+        self.assertEqual(result, 1)
+        self.assertEqual(err.strip(), 'PORTABLE_ALREADY_RUNNING')
+
+        result, out, err, events, _server = self.run_startup()
+        self.assertEqual(result, 0, (out, err, events))
+        self.assertIn('PORTABLE_READY', out)
+        self.assertNotIn('PORTABLE_STARTUP_STAGE=', out + err)
+
+        result, out, err, _events, _server = self.run_startup(
+            failure_at='POST_READY', failure=RuntimeError('API_SECRET_SENTINEL'))
+        self.assertEqual(result, 1)
+        self.assertIn('PORTABLE_READY', out)
+        self.assertEqual(err.strip(), 'PORTABLE_START_OR_RUNTIME_REFUSED')
+
+    def test_ready_output_failure_gets_stage_and_cleanup_failure_propagates(self):
+        result, out, err, events, server = self.run_startup(ready_output_failure=True)
+        self.assertEqual(result, 1)
+        self.assertIn('PORTABLE_STARTUP_STAGE=READY_OUTPUT', err)
+        self.assertNotIn('API_SECRET_SENTINEL', out + err)
+        self.assertEqual(server.closed, 2)
+        self.assertLess(events.index('boundary.close'), events.index('db.close_all'))
+
+        with self.assertRaisesRegex(OSError, 'cleanup sentinel'):
+            self.run_startup(failure_at='store.validate', cleanup_failure=True)
 
 
 class PrivateStore:

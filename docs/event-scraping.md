@@ -153,6 +153,84 @@ separate narrow persistence decision: an opaque saved ID is not advertised as a
 complete source reference. No new source store, native Enhance activation,
 scheduler, source expansion, model call or private browser access is added.
 
+### Saved references (EVENT-SCRAPER-02B)
+
+The optional `event.saved_reference` contains exactly schema, source_id,
+official_url, occurrence_ref, occurrence_basis and retention_policy_ref, bounded
+to 3072 UTF-8 bytes. Only a current server-owned event on Save or Respond can
+produce it. Existing whole-request receipts, human choices and save/Undo semantics
+remain unchanged. No title, date, body, image, availability or new taste card is
+stored through this field. Legacy rows are never backfilled from old card content.
+
+Persistent bookmark permission is separate from the 900-second content cache.
+Descriptors must supply a reviewed positive `reference_policy_ref`, a fixed
+`restriction_namespace`, and an exact public `reference_url_validator`. Missing
+policy means the existing opaque identity fallback, not permission by default.
+Architecture's 02B1 disposition leaves all five production policies null:
+no inspected source record establishes durable bookmark retention. This is a
+missing basis, not a finding that private bookmarks are prohibited. The reserved
+internal production identifier `event-private-bookmark-reference/v1` grants no
+permission. Tests supply `fixture-event-private-bookmark-reference/v1` only in
+fictional descriptors; production lookup rejects those references.
+
+`SOURCE_NAMESPACES` is the immutable literal map for PBS, RRR, 303, Forum and
+Moshtix to their respective `event-source:<source_id>` identities. No prefix
+parser recognizes arbitrary source IDs. `events` is only the existing Moshtix
+operation alias, not another restriction namespace. Restrictions remain valid
+with no references or FeedbackTarget and when an active descriptor/policy is
+missing. Recovery consumes the fixed map rather than inferring from labels or
+requiring present references. The helper's optional `namespace_map` input defaults
+to this immutable map; the original `descriptors` argument stays compatible.
+
+After cache loss, a validated reference uses `ReferenceCandidate`, whose `url`
+stays empty. `_display` supplies `reference_only` and the detached optional
+`saved_reference` separately to Experience's stale-link conditional. The source
+link does not assert navigation to an exact session, current content or stock.
+Reference-only identities are excluded from fresh recommendation ranking, remain
+available for the person's existing response/save actions and cannot refill a
+reference on a later Save. Fresh source candidates take precedence by exact key.
+
+`reference_only` means expired event history, including the real null-policy
+opaque fallback. It does not mean permission to retain a link. A non-null
+`saved_reference` independently identifies the checked permitted optional link;
+null means render a stale opaque identity without a link. A current source card
+without a URL still has `reference_only=False`. Consumers must use these explicit
+fields rather than infer expiry or permission from a title or missing URL.
+
+The pure helper exports `make_reference`, `validate_reference`,
+`project_references`, `redact_history` and `referenced_namespaces`. Callers hold
+the existing source-restriction barrier through reads/rendering or mutation;
+current denied retention hides links without GET purges or source calls. Taste
+owns the separate recovery transaction/replay/restore tail consuming the frozen
+helper; Experience owns the template and actual rendered evidence. The helper's
+detached redaction removes only this new field from every affected historical
+action, including undone saves. Component handler tests do not establish that
+separate recovery/restore or browser acceptance.
+
+### Coherent producer, interface and recovery candidate
+
+The E4 composition consumes PR83's producer/opaque-history corrections, PR84's
+source controls, PR85's corrected native history forms and PR90's recovery tail.
+The authored template and recovery files are consumed unchanged. Reference-only
+response forms use a full native POST: the partial response endpoint retains its
+current-deck membership guard and refuses an expired history row.
+
+`test_event_reference_integration.py` exercises those actual rendered forms with
+CSRF checks, a mocked PBS response and both fictional positive-reference and
+ordinary production-null policies. It checks expiry, recommendation exclusion,
+response/replay, save/Undo and a fresh authenticated session. Its separate isolated
+recovery case creates the reference through normal handlers, applies an actual
+source restriction without a FeedbackTarget and restores a pre-restriction backup.
+Only the optional reference is purged; choices, saved identity, receipts and nonce
+survive, and Undo cannot restore the removed reference. It uses the accepted
+isolated migrated-memory recovery fixture pattern without changing production
+authority, recovery or SQL guards.
+
+These are mocked-source handler/recovery checks, not live acquisition, real browser
+acceptance, a new retention permission or acceptance of all 35 sources. The first
+combined run retained three old assertions for raw status labels; the checks now
+assert both the actual outcome status and the interface's authored human wording.
+
 ### Bar Open / Make It Up Club (E5)
 
 The exact official homepage was reachable but exposed a Gigs shell without dated
@@ -371,3 +449,66 @@ failure, duplicate occurrence identity, current grant revalidation and truthful
 unavailable production descriptors. Real NGV parsing/acquisition and affected
 rendered acceptance remain outstanding; this package is a complete route caller
 and transport prerequisite, not a working-source claim.
+
+### Linden current public programmes (E6)
+
+The thin Linden adapter reads only the fixed official public-programmes page's
+`s8-datarepeater1_ajaxcontainer` region. The separately identified past-events
+repeater is excluded. Each current boxed card supplies one heading, date/time
+paragraph and one consistent official `/event-rsvp/` destination; no RSVP,
+detail, archive pagination, script or image endpoint is requested.
+
+The exact robots read returned HTTP 200/77 bytes and allowed the page at the
+existing ten-second origin floor. Visible text boundaries preserve dates, clocks,
+venue/audience notices and labels such as `Ages 2+` and `Ages 8-16`. Names and age
+labels never create verified artist identities, public eligibility, prices or
+ticket availability.
+
+Explicit weekday/calendar dates are checked; missing years stay unknown. Local
+clock ranges distinguish occurrences without inventing a timezone or absolute
+instant. An overnight clock without a following date does not gain a guessed end
+day. Session-scoped cancellations reconcile before the eight-week projection;
+malformed/challenge pages are invalid and recognized out-of-window-only cards
+are unavailable. Shared limits remain 512 KiB, 48 scanned cards, nine leads and
+fifteen-minute content retention. No durable source-reference grant is supplied.
+
+Prior evidence records 29 focused parser/transport/registry/engine/normal-handler
+checks passing. One actual guarded action made one fixed HTTP 200 read and
+returned four current events with source dates, local clock ranges and audience
+notices. POST/replay and render evidence is separate from browser acceptance and
+independent working-source acceptance. Retain the initial failed inspection;
+no automatic retry or extra source read is implied.
+
+### APW event-only homepage delegation (E6)
+
+The event source calls the existing immutable `gallery_transport.read` for the
+fixed APW homepage. It shares that reader's host lock, ten-second pacing and
+one-hour refusal backoff; no second limiter/client is installed. Its nonwaiting
+public-read callback refuses a busy origin instead of sleeping or retrying;
+the enclosing normal discovery handler revalidates profile authority. Robots
+readiness is explicit and separate. The observed robots200 permitted the homepage
+with Crawl-delay10, matching the existing owner. No gallery transport, native
+authority, offer parser or aggregate gallery fetch is changed or invoked.
+
+The homepage has several promotional hero panels. The source leaf selects only
+one explicitly dated event panel and passes its exact escaped heading/opening/run
+labels to the existing pure APW field validator. Original response provenance and
+hash remain authoritative. Promotional panels do not become events. Opening and
+exhibition run produce distinct occurrence identities; title changes do not change
+those identities. The run has calendar dates, not invented daily sessions. A past
+opening with missing run dates is unavailable, not a current exhibition claim.
+
+Initial fixture failures came from missing whitespace in synthetic title markup
+and inconsistent test clocks; those runs remain recorded. The19-method component
+run retained one stale-fixture clock error (18PASS), whose focused correction then
+passed. After the actual multi-hero selector correction, all seven affected APW
+methods pass. These are qualified checks, not a claimed single green aggregate.
+
+The first actual normal action acquired200/26971 bytes but returned invalid under
+the old single-hero assumption. One necessary field inspection identified the
+multiple panels and the sole dated opening (6 November2026), without run dates.
+The corrected normal action at `a20e516` encountered SourceError before usable HTTP;
+its precise transport subtype is unverified. POST/replay302 and render200 still
+made only one source attempt and no taste history. Both failures are retained,
+with no automatic retry. No current APW acquisition, real browser, persistent
+source-reference permission or independently working-source acceptance is claimed.

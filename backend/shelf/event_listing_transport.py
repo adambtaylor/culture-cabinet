@@ -27,10 +27,11 @@ TARGETS = MappingProxyType({
     'double_j': ('https://www.abc.net.au/listen/doublej/touring', 'https://www.abc.net.au/robots.txt'),
     'my_aeon': ('https://www.myaeon.com.au/my-aeon-events', 'https://www.myaeon.com.au/robots.txt'),
     'ngv': ('https://www.ngv.vic.gov.au/whats-on/programs-events/', 'https://www.ngv.vic.gov.au/robots.txt'),
+    'linden': ('https://www.lindenarts.org/public-programs/events/', 'https://www.lindenarts.org/robots.txt'),
 })
 _DELAYS = {'venue303': 10, 'forum': 10, 'bar_open': 10, 'west_space': 10, 'moons24': 10,
            'affordable_art_fair': 10, 'improv_conspiracy': 10,
-           'triple_j': 10, 'double_j': 10, 'my_aeon': 10, 'ngv': 10}
+           'triple_j': 10, 'double_j': 10, 'my_aeon': 10, 'ngv': 10, 'linden': 10}
 _ORIGIN_GROUPS = MappingProxyType({'triple_j': 'abc', 'double_j': 'abc'})
 _RATE_DIRECTORY = '/tmp'
 # Initial bounded observations: 303 robots allowed this path; Forum returned
@@ -43,7 +44,7 @@ LISTING_ACCESS = MappingProxyType({'venue303': True, 'forum': False, 'bar_open':
                                  'west_space': True,
                                  'moons24': True, 'affordable_art_fair': False,
                                  'improv_conspiracy': True, 'triple_j': False,
-                                 'double_j': False, 'my_aeon': True})
+                                 'double_j': False, 'my_aeon': True, 'linden': True})
 # Exact retained NGV robots200 allowed both paths, with the existing10s floor.
 # Enable the first assigned programs slice; exhibitions stays separately closed
 # until its format/outcome path is ready. This grants no retained-content rights.
@@ -173,6 +174,10 @@ def my_aeon():
 def ngv(event_route=''):
     # Both fixed pages and robots reserve the unchanged single 'ngv' receipt.
     return _read('ngv', event_route=event_route)
+
+
+def linden():
+    return _read('linden')
 
 
 def _robots_rules(source_id, code, raw):

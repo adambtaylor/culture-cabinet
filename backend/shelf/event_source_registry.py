@@ -10,6 +10,17 @@ from urllib.parse import urlsplit
 
 from shelf.discovery_sources import SourceError
 
+# Restriction identities outlive acquisition and bookmark-policy readiness.
+# Keep the map closed to reviewed grants: Linden's adapter is available, but its
+# source evidence supplies no durable-reference grant, so Linden stays opaque.
+# This is not permission or an event-source:* prefix parser.
+SOURCE_NAMESPACES = MappingProxyType({
+    'pbs': 'event-source:pbs', 'rrr': 'event-source:rrr',
+    'venue303': 'event-source:venue303', 'forum': 'event-source:forum',
+    'moshtix': 'event-source:moshtix',
+})
+REFERENCE_POLICY = 'event-private-bookmark-reference/v1'
+
 
 @dataclass(frozen=True)
 class EventSourceDescriptor:
@@ -24,6 +35,11 @@ class EventSourceDescriptor:
     max_bytes: int = 524288
     retention_seconds: int = 0
     policy_scope: str = 'Source access and retention remain unverified.'
+    # Content-cache retention does not confer persistent bookmark permission.
+    # Positive reviewed policies are supplied separately; absent means opaque.
+    reference_policy_ref: str | None = None
+    restriction_namespace: str = ''
+    reference_url_validator: Callable | None = None
 
     @property
     def implemented(self):
@@ -76,9 +92,19 @@ def _moons24(now):
     return moons24()
 
 
+def _apw(now):
+    from shelf.apw_events import acquire
+    return acquire(now)
+
+
 def _my_aeon(now):
     from shelf.event_listing_transport import my_aeon
     return my_aeon()
+
+
+def _linden(now):
+    from shelf.event_listing_transport import linden
+    return linden()
 
 
 def _parse_rrr(raw, *, now, retrieved_at):
@@ -121,8 +147,18 @@ def _parse_moons24(raw, *, now, retrieved_at):
     return parse_listing(raw, retrieved_at=retrieved_at)
 
 
+def _parse_apw(raw, *, now, retrieved_at):
+    from shelf.apw_events import parse_listing
+    return parse_listing(raw, retrieved_at=retrieved_at)
+
+
 def _parse_my_aeon(raw, *, now, retrieved_at):
     from shelf.my_aeon_events import parse_listing
+    return parse_listing(raw, retrieved_at=retrieved_at)
+
+
+def _parse_linden(raw, *, now, retrieved_at):
+    from shelf.linden_events import parse_listing
     return parse_listing(raw, retrieved_at=retrieved_at)
 
 
@@ -170,7 +206,8 @@ def _descriptor(row):
     source_id, label, targets, boundary = row
     label = {'rrr': 'Triple R events', 'pbs': 'PBS Events',
              'venue303': '303 gigs and events', 'forum': 'Forum Melbourne shows'}.get(source_id, label)
-    common = dict(source_id=source_id, label=label, targets=targets)
+    common = dict(source_id=source_id, label=label, targets=targets,
+                  restriction_namespace=SOURCE_NAMESPACES.get(source_id, ''))
     active = {
         'rrr': (_rrr, _parse_rrr, 131072,
                 'Partial coverage: up to nine cards from one Triple R listing page. '
@@ -197,10 +234,18 @@ def _descriptor(row):
                 'Partial 24 Moons coverage: current-week plus later programme, up to nine leads '
                 'within eight weeks. Unknown dates remain unverified; source links open the '
                 'programme, not an exact session or a checked seller.'),
+        'apw': (_apw, _parse_apw, 524288,
+                'Partial APW coverage: the fixed homepage only; separately identified opening '
+                'and exhibition run when explicitly dated. No artwork offers, complete programme '
+                'or current attendance/availability is established.'),
         'my_aeon': (_my_aeon, _parse_my_aeon, 524288,
                 'Partial My Aeon coverage: one official listing, up to nine leads; known dates limited '
                 'to eight weeks. Date-only labels are not show times; unknown dates and ticket '
                 'availability remain unverified.'),
+        'linden': (_linden, _parse_linden, 524288,
+                'Partial Linden coverage: up to nine current-region leads within eight weeks. '
+                'Local clocks have no verified timezone; audience notices remain source statements. '
+                'Confirm attendance and current conditions with Linden.'),
     }
     if source_id in active:
         acquire, parse, limit, coverage = active[source_id]
@@ -212,6 +257,10 @@ def _descriptor(row):
                 'Check the official source for the current programme.'),
             'west_space': ('No supported current or next-eight-week programme run was established '
                 'on this page; this is not proof of no events.'),
+            'linden': ('No eligible current Linden programme was established in this bounded read; '
+                'this is not proof of no events.'),
+            'apw': ('The homepage establishes no current or next-eight-week opening '
+                'or bounded exhibition run. A past opening with unknown run dates is not current coverage.'),
         }
         return EventSourceDescriptor(**common, acquire=acquire, parse=parse, coverage=coverage,
             access_state='access-unverified' if source_id == 'forum' else 'implemented-unproved',

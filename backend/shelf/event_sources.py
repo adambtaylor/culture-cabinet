@@ -58,6 +58,8 @@ SOURCES = MappingProxyType({
         'venue', 'music', 'bounded-public-html'),
     'west_space': EventSource('West Space', 'https://westspace.org.au/whats-on/',
         'venue', 'gallery', 'bounded-public-html'),
+    'linden': EventSource('Linden New Art', 'https://www.lindenarts.org/public-programs/events/',
+        'venue', 'gallery', 'bounded-public-html'),
     'darebin': EventSource('Darebin Arts',
         'https://arts.darebin.vic.gov.au/Whats-on/Event-calendar', 'council_arts', 'community'),
     'thornbury': EventSource('Thornbury Theatre',
