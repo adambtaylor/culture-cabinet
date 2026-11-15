@@ -62,7 +62,7 @@ class EventSourceUITests(TestCase):
             self.assertNotContains(page,'SYNTHETIC music event')
             self.assertContains(page,'SYNTHETIC event')
             self.assertNotContains(page,'CANARY')
-            self.assertContains(page,'timeout')
+            self.assertContains(page,'Read timed out')
             self.assertEqual(len(page.context['public_results']),2)
 
     def test_current_profile_csrf_and_revocation_still_guard_generic_acquisition(self):
