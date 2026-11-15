@@ -1,6 +1,6 @@
-from shelf import portable_taste_history_views as taste_history
 """Separate portable URLconf; legacy entrypoints keep their original routes."""
 from django.urls import path
+from shelf import portable_taste_history_views as taste_history
 from shelf import portable_setup_views as views
 from shelf import portable_connection_views as connections
 from shelf import onboarding_experience_views as experience

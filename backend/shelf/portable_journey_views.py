@@ -6,7 +6,7 @@ from django.http import HttpResponse
 from django.middleware.csrf import get_token
 from django.views.decorators.csrf import csrf_protect
 from django.views.decorators.debug import sensitive_post_parameters, sensitive_variables
-from django.views.decorators.http import require_GET, require_POST
+from django.views.decorators.http import require_GET, require_POST, require_http_methods
 
 from . import grant_authority as ga
 from .card_action_views import fields
@@ -65,7 +65,7 @@ def _redirect(profile_ref):
         {'profile_ref': profile_ref}), 'Cache-Control': 'no-store'})
 
 
-@require_GET
+@require_http_methods(['GET','HEAD'])
 @_errors
 def page(request):
     ga._require(set(request.GET) <= {'profile_ref'} and all(
@@ -176,8 +176,12 @@ def location(request):
 @csrf_protect
 @_errors
 def prepare(request):
-    result = PortableJourney(request.portable_authority).prepare(request.session.get('portable_session'),
-        **_values(request, COMMON | {'connection_ref', 'client_key', 'refresh_nonce'}))
+    value=_values(request, COMMON | {'connection_ref','client_key','refresh_nonce'} |
+        ({'noise'} if 'noise' in request.POST else set()))
+    if 'noise' in value:
+        from .enhance_selection import parse_noise
+        value['noise']=parse_noise(value['noise'])
+    result=PortableJourney(request.portable_authority).prepare(request.session.get('portable_session'),**value)
     return HttpResponse(status=303, headers={'Location': '/enhance?' + urlencode({
         key: result[key] for key in ('profile_ref', 'connection_ref', 'run_ref')}),
         'Cache-Control': 'no-store'})

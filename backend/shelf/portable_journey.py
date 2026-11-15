@@ -46,7 +46,7 @@ def favourite_slot(*, profile_ref, journey_ref, expected_revision, category, slo
 
 def journey_projection(*, profile_ref, profile_label, journey_ref, revision, step, steps,
                        providers, favourite_categories, categories, preparation, completion_receipts, actions,
-                       location=None):
+                       location=None,next_noise=None):
     ga._require(step in STEPS and type(profile_label) is str and len(profile_label) <= 80,
                 'CONTRACT_INVALID', 422)
     # This detached primitive-only shape is the shared UI port. Authority and
@@ -56,6 +56,7 @@ def journey_projection(*, profile_ref, profile_label, journey_ref, revision, ste
         journey_ref=journey_ref, revision=revision, step=step, steps=steps, providers=providers,
         favourite_categories=favourite_categories, categories=categories, preparation=preparation,
         completion_receipts=completion_receipts, actions=actions, location=location)
+    if next_noise is not None:value['next_noise']=next_noise
     return read_json(canonical_bytes(value))
 
 
@@ -406,7 +407,7 @@ class PortableJourney:
             return result
 
     def prepare(self, session_ref, *, profile_ref, journey_ref, expected_revision,
-                command_id, connection_ref, client_key, refresh_nonce):
+                command_id, connection_ref, client_key, refresh_nonce,noise=None):
         from django.db import transaction
         from .models import PortableJourneyCommand,SynthesisRun
         from .enhance_contract import EnhanceFault
@@ -415,6 +416,9 @@ class PortableJourney:
         for value in (command_id,connection_ref,client_key,refresh_nonce):ga._uuid(value)
         descriptor=dict(profile_ref=profile_ref,journey_ref=journey_ref,expected_revision=expected_revision,
             connection_ref=connection_ref,client_key=client_key,refresh_nonce=refresh_nonce)
+        if noise is not None:
+            from .enhance_selection import RunSelectionPolicy
+            RunSelectionPolicy(noise);descriptor['noise']=noise
         with ga.current_writer(self.authority,session_ref,profile_ref) as cabinet:
             _,journey=self._state(session_ref,profile_ref,journey_ref,sensitive=True,expected_revision=expected_revision)
             prior=self._prior(cabinet,command_id,'journey.prepare',descriptor)
@@ -432,7 +436,8 @@ class PortableJourney:
             # this form nor a replay confirms source access or personal inference.
             try:
                 outcome=get_service(self.authority).start(session_ref,profile_ref=profile_ref,
-                    connection_ref=connection_ref,client_key=client_key,refresh_nonce=refresh_nonce)
+                    connection_ref=connection_ref,client_key=client_key,refresh_nonce=refresh_nonce,
+                    **({'noise':noise} if noise is not None else {}))
             except (ga.AuthorityFault,EnhanceFault,DisclosureError) as fault:
                 # Start only plans. A known refusal with no admitted owned run
                 # is a completed no-effect command. An admitted child or unknown
@@ -578,6 +583,8 @@ class PortableJourney:
                 actions['prepare']['fields']['connection_ref']=model['connection_refs'][0]
                 actions['prepare']['enabled']=recent
                 actions['prepare']['disabled_reason']='' if recent else 'REAUTHENTICATION_REQUIRED'
+            next_noise=journey.next_noise if journey is not None else 25
+            actions['prepare']['fields']['noise']=next_noise
             return journey_projection(profile_ref=profile_ref,profile_label=cabinet.profile.label,
                 journey_ref=journey_ref,revision=rev,step=step,
                 steps=[dict(step=key,label=key.title(),state='current' if key==step else
@@ -585,7 +592,7 @@ class PortableJourney:
                     'skipped' if journey and key in journey.skipped else 'pending') for key in STEPS],
                 providers=providers,favourite_categories=favourites,categories=categories,
                 preparation=preparation,completion_receipts=[],actions=actions,
-                location=location_projection(cabinet,journey_ref=journey_ref,expected_revision=rev,enabled=recent))
+                location=location_projection(cabinet,journey_ref=journey_ref,expected_revision=rev,enabled=recent),next_noise=next_noise)
 
 
 PROVIDER_ADAPTERS = {'openai':('openai_responses',),'tmdb':('tmdb_movie','tmdb_tv'),

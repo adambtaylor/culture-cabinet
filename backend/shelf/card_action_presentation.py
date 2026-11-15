@@ -8,6 +8,28 @@ FIELDS = ('profile_ref', 'publication_ref', 'publication_revision', 'target_ref'
           'interest_revision', 'saved_revision', 'command_id', 'action')
 
 
+def render_card_action_refusal(*, operation, code, status):
+    """Render only the native adapter's closed, primitive refusal facts."""
+    from django.http import HttpResponse
+    from django.template.loader import render_to_string
+    from .enhance_contract import SAFE_CODES
+
+    if (type(operation) is not str or operation not in ('response', 'undo')
+            or type(code) is not str or code not in SAFE_CODES
+            or type(status) is not int or not 400 <= status <= 599):
+        raise ValueError('Invalid card refusal presentation')
+    # A shared error code/status cannot prove whether an earlier effect exists.
+    # Do not infer "not saved", an auth subtype, or a safe replay from this page.
+    # No request means no request context or context processors enter rendering.
+    html = render_to_string('cabinet/card_action_refusal.html', {
+        'undo': operation == 'undo',
+    })
+    response = HttpResponse(html, status=status)
+    response['Cache-Control'] = 'no-store'
+    response['X-Content-Type-Options'] = 'nosniff'
+    return response
+
+
 def _text(value, maximum=240):
     if type(value) is not str or len(value) > maximum:
         raise ValueError('Invalid card presentation text')
@@ -24,6 +46,46 @@ def _revision(value, *, minimum=0):
     if type(value) is not int or not minimum <= value <= 9007199254740991:
         raise ValueError('Invalid card presentation revision')
     return value
+
+
+def card_action_refresh_context(*, profile_ref, interaction, receipt=None,
+                                command_id=None, read_available=True):
+    """Separate an owned historical outcome from the fresh deck's authority.
+
+    Callers obtain the receipt through CardActions.receipt for this profile.
+    A recorded response can survive an unavailable deck; its history must never
+    supply a publication or authorize animation of stale cards.
+    """
+    result = dict(schema='card-action-refresh/v1', profile_ref=_uuid(profile_ref),
+                  publication_ref=None, publication_revision=None,
+                  read_state='unavailable', receipt=None)
+    if type(interaction) is not dict or type(read_available) is not bool:
+        raise ValueError('Invalid current card read')
+    if read_available and interaction.get('published') is True:
+        result.update(publication_ref=_uuid(interaction.get('publication_ref')),
+                      publication_revision=_revision(interaction.get('publication_revision'), minimum=1),
+                      read_state='current')
+    if receipt is None:
+        if command_id is not None:
+            raise ValueError('Missing owned card receipt')
+        return result
+    if type(receipt) is not dict or command_id is None:
+        raise ValueError('Invalid owned card receipt')
+    projected = {key: _uuid(receipt.get(key)) for key in ('command_id', 'target_ref')}
+    if projected['command_id'] != _uuid(command_id):
+        raise ValueError('Card receipt command differs')
+    enums = {'requested_action': ('like', 'dislike', 'favourite', 'obtain', 'undo'),
+             'preference_outcome': ('committed', 'unchanged'),
+             'selected_state': ('none', 'like', 'dislike', 'favourite'),
+             'ranking_state': ('none', 'fresh', 'feedback_pending')}
+    for key, choices in enums.items():
+        value = receipt.get(key)
+        if type(value) is not str or value not in choices:
+            raise ValueError('Invalid card receipt outcome')
+        projected[key] = value
+    projected.update({key: _revision(receipt.get(key)) for key in ('interest_revision', 'saved_revision')})
+    result['receipt'] = projected
+    return result
 
 
 def card_action_context(projection):

@@ -412,16 +412,21 @@ class EnhanceService:
         stage = ('unknown' if row.state == 'unknown' else 'stale') if redacted else row.portable_stage or 'authorized'
         event = StageEvent(str(row.pk), stage, code, outcomes, revision)
         value = event.public()
+        # A tombstone policy verifies lineage only. Do not render it as an
+        # available round or reconstruct retired reports from stale RAM.
+        if not redacted:
+            value['selection_policy']=row.evidence.get('selection_policy',{'version':'legacy-ranked/v1','noise':None})
+            if 'selection_report' in row.evidence:value['selection_report']=row.evidence['selection_report']
         memory = self._memory.get(str(row.pk))
         actions = ['status']
-        if row.state == 'queued' and not row.cancel_requested:
+        if not redacted and row.state == 'queued' and not row.cancel_requested:
             actions.append('cancel')
             if memory and session_ref is not None and memory['session_digest'] == digest(session_ref.encode()) and self.authority.now() < memory['expires_at']:
                 if not memory.get('busy') and memory.get('phase') != 'source_sealed':
                     actions.extend(['preview', 'confirm'])
             else:
                 value.update(state='stale', stage='stale', code='PREVIEW_STALE', terminal=True)
-        elif row.state in ('running', 'unknown'):
+        elif row.state in ('running','unknown') or (row.state=='queued' and not row.cancel_requested):
             actions.append('cancel')
         if row.portable_stage == 'published' and not redacted:
             actions.append('current')
@@ -452,13 +457,20 @@ class EnhanceService:
                 'reason': 'ready' if run_ready else 'source_only' if available else 'enhance_unavailable'}
 
     @sensitive_variables()
-    def start(self, session_ref, *, profile_ref, connection_ref, client_key, refresh_nonce):
+    def start(self, session_ref, *, profile_ref, connection_ref, client_key, refresh_nonce,noise=None):
+        from .enhance_selection import RunSelectionPolicy
+        from .models import PortableJourneyState
+        require(noise is None or type(noise) is int and 0<=noise<=100,'CONTRACT_INVALID',422)
         client, refresh = ga._uuid(client_key), ga._uuid(refresh_nonce)
         store = self._store(session_ref, profile_ref, connection_ref)
         with store.scope(sensitive=True) as cabinet:
+            saved_noise=PortableJourneyState.objects.filter(cabinet=cabinet).values_list('next_noise',flat=True).first()
+            policy=RunSelectionPolicy(noise if noise is not None else saved_noise if saved_noise is not None else 25)
             prior = SynthesisRun.objects.filter(installation=cabinet.installation, actor=cabinet.actor,
                 profile=cabinet.profile, contract_version='enhance/v1', client_key=client).first()
             if prior is not None:
+                require(prior.evidence.get('selection_policy')==policy.material() or
+                    (noise is None and 'selection_policy' not in prior.evidence),'IDEMPOTENCY_CONFLICT',409)
                 require(prior.refresh_nonce == refresh and str(prior.portable_connection_id) == store.connection_ref,
                         'IDEMPOTENCY_CONFLICT', 409)
                 if self._available():
@@ -485,7 +497,7 @@ class EnhanceService:
         planned = coordinator.plan(query_view, current.registry, run_ref=run_ref,
             client_key=str(client), refresh_nonce=str(refresh), **arguments)
         require(type(planned) is PlannedEnhance)
-        row = store.admit(planned.intent,local_context=current.local_context)
+        row = store.admit(planned.intent,local_context=current.local_context,selection_policy=policy)
         if str(row.pk) != run_ref:
             return self._public(row, session_ref)
         self._install_preview(store, row, 'catalogue', planned, planned.plan.body,
@@ -727,6 +739,13 @@ class EnhanceService:
                 from .enhance_selection import GroundedSelector
                 arguments = {'snapshot': profile_snapshot.capture(work.inference_view),
                     'local_context':store.current().local_context} if type(self.selector) is GroundedSelector else {}
+                report=None
+                if type(self.selector) is GroundedSelector:
+                    policy,seed=store.freeze_selection(run_ref)
+                    if policy is not None:
+                        rows=[]
+                        arguments.update(selection_policy=policy,selection_seed=seed,selection_report=rows)
+                        report=dict(schema='selection-report/v1',policy_digest=policy.digest,seed=seed,categories=rows)
                 manifest = self.selector.build(completed.output, submitted,
                     self._settled_outcomes(memory, work.collected.seal.outcomes), **arguments)
                 expected_revision = completed.evidence['expected_publication_revision']
@@ -734,7 +753,7 @@ class EnhanceService:
                     coordinator._host_check(work.collected.planned.intent, work.collected.planned.plan,
                                             work.collected.seal, memory['body'])
                     store.publish(run_ref, manifest=manifest, expected_publication_revision=expected_revision,
-                                  allowed_candidates=submitted['candidates'])
+                                  allowed_candidates=submitted['candidates'],selection_report=report)
             self._memory.pop(str(row.pk), None)
             return self.status(session_ref, run_ref=run_ref)
         except (AuthorityFault, EnhanceFault, DisclosureError) as error:
@@ -814,6 +833,8 @@ class EnhanceService:
                 'publication_ref': str(publication.pk), 'publication_revision': publication.publication_revision,
                 'reaction_targets': {card['key']: target_ref(str(profile_ref), card['key'])
                     for group in manifest['categories'] for card in group['cards']},
+                'selection_policy':publication.run.evidence.get('selection_policy',{'version':'legacy-ranked/v1','noise':None}),
+                'selection_report':publication.run.evidence.get('selection_report'),
                 'manifest': manifest,'local_event_display':overlays,
                 'ranking_state': 'feedback_pending' if classification == 'feedback_only' else 'fresh',
                 'code': 'OK'}
