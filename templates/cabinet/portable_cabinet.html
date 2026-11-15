@@ -1,6 +1,6 @@
 {% extends enhancement_base %}
 {% block content %}
-{% if card_actions_available and not read_code %}<link rel="stylesheet" href="/cabinet/actions/style.css">{% endif %}
+{% if not read_code %}{% if card_actions_available or noise_control %}<link rel="stylesheet" href="/cabinet/actions/style.css">{% endif %}{% endif %}
 {% if taste_input %}
 <section class="paper-panel cabinet-taste" aria-labelledby="taste-heading">
   <p class="eyebrow">Preferences · {{ profile_label }}</p>
@@ -280,14 +280,27 @@
       {% if round_blocks_start %}
         {% if round_url %}<p><a class="cabinet-action" href="{{ round_url }}">Continue the recorded round</a></p>{% endif %}
         <p>An unfinished or uncertain attempt must not be replaced by a new round. Review its recorded status before any further action.</p>
+      {% elif portable_commands.start == '/enhance/start' and profile_ref and connection_ref and client_key and refresh_nonce and noise_control %}
+        {% include 'cabinet/portable_enhance_start.html' with start_label='Enhance' noise_id='cabinet-enhance-noise' %}
       {% elif enhance_url %}
-        <p><a class="cabinet-action" href="{{ enhance_url }}">Enhance this cabinet</a></p>
+        <p><a class="cabinet-action" href="{{ enhance_url }}">Review Enhance setup and requests</a></p>
         <p>Collect API candidates first, then review inference. Every enabled category participates, whichever tab you view.</p>
       {% else %}<p><a href="/setup/cabinet?profile_ref={{ profile_ref|urlencode }}">Choose a model connection</a> before considering Enhance. Sources, consent and working inference must also be available.</p>{% endif %}
     </div>
   </div>
   {% if profile_ref %}<p><a href="/setup/journey?profile_ref={{ profile_ref|urlencode }}#events-location">Events and Art location settings</a></p>{% endif %}
+  {% if noise_run %}
+  {% comment %}This summary belongs to the backend's linked published run. Never read its frozen value from the editable next-round control or invent25 for a legacy run.{% endcomment %}
+  <section aria-labelledby="cabinet-noise-run-heading" data-noise-run>
+    <h2 id="cabinet-noise-run-heading">This round’s selection</h2>
+    {% if noise_run.legacy %}<p>This older round has no recorded Noise setting. Its original ranking is retained.</p>
+    {% else %}<p>Noise {{ noise_run.value }} · frozen for this round. Editing the next-round control does not change this round.</p>
+    {% for category in noise_run.categories %}<p>{{ category.label }}: {{ category.used }} of {{ category.requested }} requested exploratory slots used. {{ category.reason }}</p>{% endfor %}
+    <p>Exploratory picks use available source evidence; they are not newly learned preferences.</p>{% endif %}
+  </section>
+  {% endif %}
   <p><a class="cabinet-action" href="/cabinet/obtain/tv/{% if profile_ref %}?profile_ref={{ profile_ref|urlencode }}{% endif %}">Obtain a TV episode</a></p>
+  {% if taste_history_available and profile_ref %}<p><a href="/cabinet/taste/history?profile_ref={{ profile_ref|urlencode }}">Taste history</a> · Inspect and compare your recorded choices.</p>{% endif %}
   {% if feedback_available %}<p><a class="cabinet-preferences-link" href="{{ feedback_url }}">Preferences and notes</a> · Add or change your responses before another Enhance round.</p>{% endif %}
   {% if round_url and not round_blocks_start %}<p class="cabinet-round-status" role="status"><a href="{{ round_url }}">Review this round’s recorded status</a>{% if round_pending %}. Pending, failed or uncertain work does not replace the publication shown below.{% endif %}</p>{% endif %}
   <details class="cabinet-options"><summary>Cabinet options and permissions</summary>
@@ -340,6 +353,8 @@
         </details>
       </section>
       {% endwith %}{% endif %}
+      {% comment %}Only the actual linked-run boolean marks an exploratory slot; truthy text/numbers are not selection evidence and the label creates no feedback.{% endcomment %}
+      {% if card.selection_exploratory is True %}<p class="fine-print" data-selection-exploratory>An exploratory pick from available source evidence.</p>{% endif %}
       <details class="cabinet-source"><summary>Source and freshness</summary>
       <dl class="cabinet-provenance">
         {% if card.provider %}<div><dt>Source</dt><dd>{{ card.provider }}</dd></div>{% endif %}
@@ -459,6 +474,6 @@
 {% endif %}{% endfor %}
 {% endif %}
 {% if feedback_available or card_actions_available %}<p class="fine-print">Your responses and notes are saved separately from Enhance. A changed response needs a fresh request preview; no collection or inference is sent automatically.</p>{% else %}<p class="fine-print">Ratings and reactions are not connected on this native page yet. No response, Save, Obtain or provider action is inferred from viewing a card.</p>{% endif %}
-{% if not read_code %}<script src="/cabinet/obtain/status.js" defer></script>{% if card_actions_available %}<script src="/cabinet/actions/script.js" defer></script>{% endif %}{% endif %}
+{% if not read_code %}<script src="/cabinet/obtain/status.js" defer></script>{% if card_actions_available or noise_control %}<script src="/cabinet/actions/script.js" defer></script>{% endif %}{% endif %}
 {% endif %}
 {% endblock %}
