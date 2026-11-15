@@ -28,9 +28,12 @@ TARGETS = MappingProxyType({
     'my_aeon': ('https://www.myaeon.com.au/my-aeon-events', 'https://www.myaeon.com.au/robots.txt'),
     'ngv': ('https://www.ngv.vic.gov.au/whats-on/programs-events/', 'https://www.ngv.vic.gov.au/robots.txt'),
     'linden': ('https://www.lindenarts.org/public-programs/events/', 'https://www.lindenarts.org/robots.txt'),
+    'butterfly_club': ('https://thebutterflyclub.com/', 'https://thebutterflyclub.com/robots.txt'),
+    'impro_melbourne': ('https://www.impromelbourne.com.au/shows/2026-season/', 'https://www.impromelbourne.com.au/robots.txt'),
 })
 _DELAYS = {'venue303': 10, 'forum': 10, 'bar_open': 10, 'west_space': 10, 'moons24': 10,
            'affordable_art_fair': 10, 'improv_conspiracy': 10,
+           'butterfly_club': 10, 'impro_melbourne': 10,
            'triple_j': 10, 'double_j': 10, 'my_aeon': 10, 'ngv': 10, 'linden': 10}
 _ORIGIN_GROUPS = MappingProxyType({'triple_j': 'abc', 'double_j': 'abc'})
 _RATE_DIRECTORY = '/tmp'
@@ -44,7 +47,8 @@ LISTING_ACCESS = MappingProxyType({'venue303': True, 'forum': False, 'bar_open':
                                  'west_space': True,
                                  'moons24': True, 'affordable_art_fair': False,
                                  'improv_conspiracy': True, 'triple_j': False,
-                                 'double_j': False, 'my_aeon': True, 'linden': True})
+                                 'double_j': False, 'my_aeon': True, 'linden': True,
+                                 'butterfly_club': False, 'impro_melbourne': True})
 # Exact retained NGV robots200 allowed both paths, with the existing10s floor.
 # Enable the first assigned programs slice; exhibitions stays separately closed
 # until its format/outcome path is ready. This grants no retained-content rights.
@@ -149,6 +153,14 @@ def west_space():
 
 def moons24():
     return _read('moons24')
+
+
+def butterfly_club():
+    return _read('butterfly_club')
+
+
+def impro_melbourne():
+    return _read('impro_melbourne')
 
 
 def affordable_art_fair():
