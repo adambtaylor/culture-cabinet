@@ -288,6 +288,16 @@
       {% else %}<p><a href="/setup/cabinet?profile_ref={{ profile_ref|urlencode }}">Choose a model connection</a> before considering Enhance. Sources, consent and working inference must also be available.</p>{% endif %}
     </div>
   </div>
+  {% if noise_run %}
+  {% comment %}This summary belongs to the backend's linked published run. Never read its frozen value from the editable next-round control or invent25 for a legacy run.{% endcomment %}
+  <section aria-labelledby="cabinet-noise-run-heading" data-noise-run>
+    <h2 id="cabinet-noise-run-heading">This round’s selection</h2>
+    {% if noise_run.legacy %}<p>This older round has no recorded Noise setting. Its original ranking is retained.</p>
+    {% else %}<p>Noise {{ noise_run.value }} · frozen for this round. Editing the next-round control does not change this round.</p>
+    {% for category in noise_run.categories %}<p>{{ category.label }}: {{ category.used }} of {{ category.requested }} requested exploratory slots used. {{ category.reason }}</p>{% endfor %}
+    <p>Exploratory picks use available source evidence; they are not newly learned preferences.</p>{% endif %}
+  </section>
+  {% endif %}
   <p><a class="cabinet-action" href="/cabinet/obtain/tv/{% if profile_ref %}?profile_ref={{ profile_ref|urlencode }}{% endif %}">Obtain a TV episode</a></p>
   {% if taste_history_available and profile_ref %}<p><a href="/cabinet/taste/history?profile_ref={{ profile_ref|urlencode }}">Taste history</a> · Inspect and compare your recorded choices.</p>{% endif %}
   {% if feedback_available %}<p><a class="cabinet-preferences-link" href="{{ feedback_url }}">Preferences and notes</a> · Add or change your responses before another Enhance round.</p>{% endif %}
@@ -326,6 +336,8 @@
   {% for card in category.cards %}
     <article class="paper-panel cabinet-card"{% if card.card_actions %} data-card-action-card{% endif %}>
       <h3>{{ card.title }}</h3>{% if card.medium %}<p>{{ card.medium }}</p>{% endif %}
+      {% comment %}Only the actual linked-run boolean marks an exploratory slot; truthy text/numbers are not selection evidence and the label creates no feedback.{% endcomment %}
+      {% if card.selection_exploratory is True %}<p class="fine-print" data-selection-exploratory>An exploratory pick from available source evidence.</p>{% endif %}
       <details class="cabinet-source"><summary>Source and freshness</summary>
       <dl class="cabinet-provenance">
         {% if card.provider %}<div><dt>Source</dt><dd>{{ card.provider }}</dd></div>{% endif %}

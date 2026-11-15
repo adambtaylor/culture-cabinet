@@ -158,3 +158,62 @@ class TasteHistoryPresentationTests(SimpleTestCase):
         with self.assertRaises(ValueError):
             noise_run_context(policy_version='selection-policy/v1', noise=25,
                 categories=[dict(label='Books', requested=2, used=0, reason='')])
+
+
+class CabinetNoiseResultPresentationTests(SimpleTestCase):
+    def render(self, *, run=None, exploratory=None):
+        from .test_card_action_presentation import template_settings
+        card = dict(title='Fictional source-grounded book', medium='book', candidate_key='fictional:book:1',
+                    selection_exploratory=exploratory)
+        with override_settings(TEMPLATES=template_settings()):
+            return render_to_string('cabinet/portable_cabinet.html', dict(enhancement_base='test_card_base.html',
+                published=True, profile_label='Fictional cabinet', profile_ref=ref(1), csrf_token='s'*64,
+                connection_ref=ref(2), client_key=ref(3), refresh_nonce=ref(4),
+                portable_commands={'start': '/enhance/start'}, noise_control=noise_control_context(25),
+                noise_run=run, categories=[dict(category='book', label='Books', visible=True, cards=[card])]))
+
+    def test_actual_run_report_is_frozen_separately_from_next_round_slider_default(self):
+        run = noise_run_context(policy_version='selection-policy/v1', noise=100,
+            categories=[dict(label='Books', requested=2, used=1, reason='No additional variety was available.')])
+        before = deepcopy(run)
+        html = self.render(run=run)
+        self.assertIn('Noise 100 · frozen for this round', html)
+        self.assertIn('Books: 1 of 2 requested exploratory slots used.', html)
+        self.assertIn('No additional variety was available.', html)
+        self.assertIn('Editing the next-round control does not change this round', html)
+        self.assertIn('Starting default: 25.', html)
+        self.assertIn('not newly learned preferences', html)
+        doc = Document(html)
+        self.assertEqual([i['value'] for i in doc.inputs if i.get('name') == 'noise'], ['25'])
+        self.assertEqual(run, before)
+
+    def test_legacy_and_missing_report_do_not_invent_recorded_noise_from_default_25(self):
+        legacy = noise_run_context(policy_version='legacy-ranked/v1', noise=None, categories=[])
+        html = self.render(run=legacy)
+        self.assertIn('This older round has no recorded Noise setting', html)
+        self.assertNotIn('Noise 25 · frozen', html)
+        self.assertNotIn('Noise None', html)
+        self.assertIn('Starting default: 25.', html)
+        self.assertNotIn('data-noise-run', self.render())
+
+    def test_exploratory_label_requires_actual_true_boolean_and_adds_no_form_or_taste_signal(self):
+        baseline = self.render(exploratory=False)
+        baseline_forms = sum(tag == 'form' for tag, attrs in Document(baseline).tags)
+        html = self.render(exploratory=True)
+        self.assertIn('data-selection-exploratory', html)
+        self.assertIn('An exploratory pick from available source evidence.', html)
+        self.assertEqual(sum(tag == 'form' for tag, attrs in Document(html).tags), baseline_forms)
+        self.assertNotIn('name="score"', html)
+        self.assertNotIn('name="selection_exploratory"', html)
+        for value in (False, None, 1, 'true', {}, []):
+            with self.subTest(value=value):
+                self.assertNotIn('data-selection-exploratory', self.render(exploratory=value))
+
+    def test_report_source_text_is_escaped_and_zero_used_does_not_mark_a_card(self):
+        run = noise_run_context(policy_version='selection-policy/v1', noise=100,
+            categories=[dict(label='Books <fixture>', requested=2, used=0, reason='No <additional> variety & no automatic retry.')])
+        html = self.render(run=run, exploratory=False)
+        self.assertIn('Books &lt;fixture&gt;: 0 of 2', html)
+        self.assertIn('No &lt;additional&gt; variety &amp; no automatic retry.', html)
+        self.assertNotIn('<additional>', html)
+        self.assertNotIn('data-selection-exploratory', html)
