@@ -65,7 +65,9 @@ class CurrentProfile(StateProvider):
             import json
             source_revision = digest(json.dumps(material, sort_keys=True, separators=(',', ':'),
                 ensure_ascii=False, allow_nan=False, default=ga._local_default).encode())
-            return CurrentState(view, bindings, self.registry, source_revision, min(ends), tuple(source_views))
+            from .local_event_preferences import current_context
+            return CurrentState(view, bindings, self.registry, source_revision, min(ends), tuple(source_views),
+                                current_context(state))
 
     def _operation_digest(self, identity):
         from .discovery_transport import MOSHTIX_QUERY

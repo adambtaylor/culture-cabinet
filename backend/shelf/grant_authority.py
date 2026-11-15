@@ -188,9 +188,11 @@ def _bound(authority, session_ref, profile_ref, *, sensitive=False):
     return state, session
 
 
-def create_owner_profile(authority, session_ref, *, expected_owner_revision):
+def create_owner_profile(authority, session_ref, *, expected_owner_revision, label='Your cabinet'):
     """Explicit, repeatable fresh-owner binding; existing profiles are never adopted."""
     _revision(expected_owner_revision)
+    _require(type(label) is str and 1 <= len(label) <= 80 and bool(label.strip())
+        and not any(ord(c) < 32 or ord(c) == 127 for c in label), 'CONTRACT_INVALID', 422)
     _require(type(authority) is PortableAuthority)
     with recovery_guard(authority, session_ref) as checkpoint, authority._lock, _checked_transaction(checkpoint):
         installation, session = _owner(authority, session_ref, sensitive=True)
@@ -202,7 +204,7 @@ def create_owner_profile(authority, session_ref, *, expected_owner_revision):
         _require(not Profile.objects.exists() and not ProfileCabinetState.objects.exists())
         checkpoint.check()
         with _write_window():
-            profile = Profile.objects.create(kind='owner', label='Your cabinet', active=True)
+            profile = Profile.objects.create(kind='owner', label=label, active=True)
             Grant.objects.create(user_id=session.owner_id, profile=profile,
                                  can_view=True, can_select=True, can_mutate=True, can_export=True)
             # Only genuinely new cabinets start in the native feedback schema;
@@ -284,7 +286,8 @@ def _connection(authority, session_ref, connection_ref, *, purpose=None):
     candidate = PortableConnection.objects.filter(pk=_uuid(connection_ref),
         installation_id=authority.boundary.installation_id, removed=False).first()
     if candidate is not None and candidate.adapter in ('moshtix_public', 'tmdb_movie', 'tmdb_tv', 'hardcover',
-                                                      'musicbrainz_recording', 'musicbrainz_artist', 'apple_podcast'):
+                                                      'musicbrainz_recording', 'musicbrainz_artist', 'apple_podcast',
+                                                      'apw','gertrude'):
         # Public source consent never borrows a processor key or its validation.
         # The source issuer separately checks current rights and exact operation.
         _require(purpose == 'catalogue_lookup')
@@ -396,7 +399,7 @@ def _synthesis_guards():
     prior = import_module('shelf.migrations.0021_portable_disclosure_authority').TRIGGERS
     broker = import_module('shelf.migrations.0022_portable_enhance_state').TRIGGERS
     normalize = lambda sql: sql.strip().removesuffix(';').rstrip()
-    current = import_module('shelf.migrations.0025_obtain_native_origin')
+    current = import_module('shelf.migrations.0030_run_selection_retention')
     try:
         definitions = current.effective_inventory(connection.connection)
     except RuntimeError:
@@ -441,7 +444,10 @@ def _broker_history_row(row, state):
     require(PortableConnection.objects.filter(pk=row['portable_connection_id'],
                                              installation_id=state.installation_id).exists())
     record = row['portable_bindings']
-    require(type(record) is dict and set(record) == {'bindings', 'categories', 'source_revision'})
+    require(type(record) is dict and set(record) in (
+        {'bindings','categories','source_revision'},
+        {'bindings','categories','source_revision','local_selection_digest'}))
+    if 'local_selection_digest' in record:require(sha(record['local_selection_digest']))
     binding = record['bindings']
     require(type(binding) is dict and set(binding) == set(EnhanceBindings.__dataclass_fields__))
     bound = EnhanceBindings(**binding)
@@ -457,9 +463,14 @@ def _broker_history_row(row, state):
     require(type(record['source_revision']) is str and 0 < len(record['source_revision']) <= 300)
     # Reuse the broker's existing intent definition and canonical codec. Mutable
     # stage/attempt/receipt fields are deliberately absent from this fingerprint.
-    expected = digest(canonical_bytes({'schema': VERSION, 'bindings': vars(bound),
-                                      'refresh_nonce': str(row['refresh_nonce'])}))
-    require(sha(row['input_digest']) and row['input_digest'] == expected)
+    from .enhance_selection import validate_selection_history
+    evidence=row['evidence']
+    try:
+        projected=validate_selection_history(record,evidence,input_digest=row['input_digest'],
+            refresh_nonce=row['refresh_nonce'],run_ref=row['id'],collection_digest=row['collection_digest'],
+            redacted=row['content_redacted_at'] is not None)
+    except (ValueError,TypeError,KeyError):
+        require(False)
     require(type(row['revision']) is int and row['revision'] >= 0
             and type(row['attempts']) is int and row['attempts'] in (0, 1)
             and type(row['cancel_requested']) is bool)
@@ -470,7 +481,7 @@ def _broker_history_row(row, state):
         # Only the effective one-way guards can create this grammar. Deleted
         # receipt content is no longer required, and can never become evidence.
         require(type(row['content_redacted_at']) is datetime and sha(row['content_digest'])
-                and row['output'] == row['evidence'] == {})
+                and row['output']=={} and row['evidence']==projected)
         require((row['attempts'] == 0 and row['transport_request_id'] is None and row['state'] in ('queued', 'failed'))
                 or (row['attempts'] == 1 and isinstance(row['transport_request_id'], UUID)
                     and row['state'] in ('running', 'unknown', 'completed', 'failed')))
@@ -480,7 +491,8 @@ def _broker_history_row(row, state):
     require(type(evidence) is dict and {'code', 'outcomes', 'phase', 'expected_publication_revision'} <= set(evidence))
     require(set(evidence) <= {'code', 'outcomes', 'phase', 'expected_publication_revision',
                             'preview_ref', 'preview_digest', 'session_digest', 'submitted_refs',
-                            'publication_revision', 'publication_ref', 'source_use'})
+                            'publication_revision', 'publication_ref', 'source_use',
+                            'selection_policy','selection_policy_digest','selection_seed','selection_report'})
     require(evidence['code'] in SAFE_CODES and evidence['phase'] in
             ('catalogue', 'inference', 'source_model_context_unavailable'))
     if 'source_use' in evidence:
@@ -601,7 +613,7 @@ def synthesis_history(state):
     return legacy
 
 
-def _history_revisions(state):
+def _history_revisions(state, *, event_ids=None, feedback_subject_present=None):
     # This is a LOCAL complete revision hash, not another outbound serializer.
     # No notes or this hash are sent. Include all committed row fields so denied
     # note edits, retractions, archives and source-only changes stale a preview.
@@ -620,9 +632,33 @@ def _history_revisions(state):
         'social': SocialDiscoveryState.objects.filter(profile_id=state.profile_id),
         'favourites': SavedItem.objects.filter(profile_id=state.profile_id, list_kind='favorites'),
     }
+    if event_ids is not None:
+        # Reconstruct a committed card-action boundary from actual immutable
+        # feedback history, rather than trusting a receipt's claimed digest.
+        # All other writers remain in the revision and therefore break a chain.
+        from .feedback import reduce_events
+        events = list(FeedbackEvent.objects.filter(profile_id=state.profile_id, pk__in=event_ids)
+                      .order_by('revision', 'id'))
+        groups = {}
+        for event in events:
+            groups.setdefault((event.target_id, event.signal, event.scope), []).append(event)
+        reconstructed = []
+        for key, history in groups.items():
+            row = FeedbackProjection.objects.filter(profile_id=state.profile_id,
+                target_id=key[0], signal=key[1], scope=key[2]).values().first()
+            _require(row is not None, 'PREVIEW_STALE', 409)
+            effective, value, erased = reduce_events(history)
+            reconstructed.append({**row, 'revision': history[-1].revision,
+                                  'effective_event_id': effective, 'value': value, 'erased': erased})
+        queries['feedback_events'] = FeedbackEvent.objects.filter(profile_id=state.profile_id, pk__in=event_ids)
+        queries['feedback_targets'] = FeedbackTarget.objects.filter(pk__in={e.target_id for e in events})
+        queries['feedback_projections'] = sorted(reconstructed, key=lambda row: row['id'])
+        if feedback_subject_present is False:
+            queries['feedback_subjects'] = []
     versions = {}
     for name, queryset in queries.items():
-        rows = synthesis_history(state) if name == 'derived_history' else list(queryset.order_by('pk').values())
+        rows = (synthesis_history(state) if name == 'derived_history' else
+                queryset if type(queryset) is list else list(queryset.order_by('pk').values()))
         try:
             raw = json.dumps(rows, sort_keys=True, separators=(',', ':'), ensure_ascii=False,
                              allow_nan=False, default=_local_default).encode()

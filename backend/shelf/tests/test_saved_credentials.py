@@ -17,6 +17,7 @@ class StoreDouble:
         self.record = self.revision = None
         self.operations, self.calls = {}, []
         self.locked = self.lose_ack = False
+        self.refuse_put = None
 
     def request(self, value):
         self.calls.append(deepcopy(value))
@@ -29,6 +30,8 @@ class StoreDouble:
             return {**reply, 'status': 'AVAILABLE' if self.record else 'MISSING'}
         if operation == 'reconcile':
             return deepcopy(self.operations.get(value['operation_id'], {**reply, 'status': 'UNKNOWN'}))
+        if operation == 'put' and self.refuse_put:
+            return {**reply, 'status': self.refuse_put}
         if value['expected_revision'] != self.revision:
             return {**reply, 'status': 'CONFLICT'}
         if operation == 'read':
@@ -72,6 +75,22 @@ class SavedCredentialTests(NativeFeedbackCase):
         self.assertNotIn(self.dummy, str(status))
         self.assertNotIn(self.dummy, str(list(SavedCredentialBinding.objects.values())))
         self.assertEqual(self.store.record['schema'], 'cabinet-credential/v1')
+
+    def test_persistent_form_reports_store_refusal_without_secret_or_provider_use(self):
+        self.store.refuse_put = 'CORRUPT'
+        with patch('socket.socket.connect', side_effect=AssertionError('No provider calls')):
+            response = self.post('/setup/form/credential', dict(connection_ref=str(self.config.pk),
+                revision='1', secret=self.dummy, storage='persistent'))
+        self.assertEqual(response.status_code, 503)
+        self.assertIn(b'Setup could not finish', response.content)
+        self.assertIn(b'Encrypted key store unavailable', response.content)
+        self.assertNotIn(self.dummy.encode(), response.content)
+        self.assertNotIn('KEY_SAVED', self.http.session.get('_portable_notice', ''))
+        self.assertIsNone(self.store.record)
+        self.assertEqual([call['operation'] for call in self.store.calls], ['put'])
+        self.assertEqual(SavedCredentialBinding.objects.get().state, 'PENDING_WRITE')
+        metadata = str(list(SavedCredentialBinding.objects.values()))
+        self.assertNotIn(self.dummy, metadata)
 
     def test_passive_status_never_decrypts_but_explicit_consumer_hydrates(self):
         self.save()
@@ -325,3 +344,29 @@ class SavedCredentialTests(NativeFeedbackCase):
             HTTP_X_CSRFTOKEN=self.csrf(),**self.headers)
         self.assertEqual(response.status_code,422)
         self.assertEqual(len(self.store.calls),before)
+
+    def test_normal_persistent_source_save_replace_remove_retains_zero_validation_generation(self):
+        from shelf.source_authority import configure_source,_connection_metadata
+        from shelf.models import PortableConnection
+        connection=configure_source(self.authority,self.ref,confirmed=True,adapter='tmdb_movie')
+        row=PortableConnection.objects.get(pk=connection)
+        fields=dict(profile_ref=self.profile_ref,connection_ref=connection,revision='1',
+                    secret=self.dummy,storage='persistent')
+        self.assertEqual(self.post('/cabinet/source/tmdb/movie/credential',fields).status_code,303)
+        row.refresh_from_db();self.assertEqual((row.credential_generation,row.validation_generation),(1,0))
+        _connection_metadata(self.authority,self.ref,connection)
+        self.assertEqual(self.post('/cabinet/source/tmdb/movie/credential',{**fields,'secret':self.dummy+'2'}).status_code,303)
+        row.refresh_from_db();self.assertEqual((row.credential_generation,row.validation_generation),(2,0))
+        self.assertEqual(self.service.vault.resolve(self.ref,row.pk,1),(self.dummy+'2').encode())
+        self.service.vault.remove(self.ref,row.pk,1)
+        row.refresh_from_db();self.assertEqual((row.credential_generation,row.validation_generation),(3,0))
+        self.assertTrue(SavedCredentialBinding.objects.get(pk=row.pk).removed)
+        self.assertEqual(self.fake.calls,1)  # Only preexisting neutral fixture.
+
+    def test_model_saved_replacement_still_invalidates_model_validation_generation(self):
+        self.config.refresh_from_db()
+        before=self.config.validation_generation
+        self.save();self.config.refresh_from_db()
+        self.assertEqual(self.config.validation_generation,before+1)
+        self.service.vault.remove(self.ref,self.config.pk,1);self.config.refresh_from_db()
+        self.assertEqual(self.config.validation_generation,before+2)

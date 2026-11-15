@@ -402,9 +402,23 @@ def _lineage(nodes, permissions, purpose):
 
 def _profile(nodes, allowed, parents):
     signals, notes, traits, omitted = [], [], [], set()
+    import hashlib
+    native_identities={node['key'].removeprefix('candidate-key-sha256:')
+        for key,node in nodes.items() if allowed(key) and node.get('basis')=='typed_feedback'
+        and node.get('source_ref','').startswith('card-action:')
+        and node.get('key','').startswith('candidate-key-sha256:')
+        and node['value']['signal'] in ('interest','saved')}
     for key, node in nodes.items():
-        if (node.get('basis') == 'typed_feedback' and node['value']['signal'] == 'note'
-                and node['value']['value'] is None):
+        if (allowed(key) and node.get('basis') in ('favourite','interest','anticipated_reaction')
+            and node.get('identity_status')=='confirmed'
+            and hashlib.sha256(node['key'].encode()).hexdigest() in native_identities):
+            # Current, permitted native intent supersedes the same confirmed
+            # identity's older overlapping preference. Notes/enjoyment/history
+            # retain their meanings; denied nodes cannot affect this grouping.
+            continue
+        if (node.get('basis') == 'typed_feedback' and
+                (node['value']['value'] is None or node['value']['signal'] == 'saved'
+                 and node['value']['value'] == {'value': False})):
             # A real null clear keeps its local event/revision/Undo lineage,
             # but asserts no current text. Authored empty text is still a note.
             continue
@@ -663,14 +677,23 @@ def catalogue_input(snapshot, grants, context, categories, *, now, owner_intent=
     prepared = prepare(snapshot, grants, context, [], {}, {}, now=now)
     _require(prepared.ok, prepared.code)
     profile = read_json(prepared.profile_bytes)['profile']
-    terms = sorted({signal['title'] for signal in profile['signals'] if signal['title']})
+    def positive(signal):
+        value = signal.get('value')
+        if signal.get('basis') == 'typed_feedback' and type(value) is dict:
+            if value['signal'] == 'interest':
+                return value['value'] == {'value': 'yes', 'basis': 'anticipated'}
+            if value['signal'] == 'saved':
+                return value['value'] == {'value': True}
+        return True
+    positive_signals = [signal for signal in profile['signals'] if positive(signal)]
     # Recording search accepts an artist name, not an arbitrary music title.
     # Derive it only after consent/lineage filtering, never from raw notes.
-    artists = sorted({signal['title'] for signal in profile['signals']
+    artists = sorted({signal['title'] for signal in positive_signals
                       if signal.get('medium') == 'artist' and signal['title']})
     value = {'schema': 'catalogue-query/v1', 'categories': list(categories), 'profile': profile,
              'queries': [{'category': category, 'terms': list(artists if
                 context.get('adapter_id') in ('musicbrainz_recording', 'musicbrainz_artist')
-                and category in ('recording', 'artist') else terms)}
+                and category in ('recording', 'artist') else sorted({signal['title'] for signal in positive_signals
+                    if signal['title'] and signal.get('medium') == category}))}
                 for category in categories]}
     return canonical_bytes(value), prepared.omitted_classes

@@ -155,7 +155,10 @@ def _resolve(access, *, publication_revision, candidate_digest, scope, now):
         state, session = ga._bound(access.authority, access.session_ref, access.profile_ref)
         service = get_service(access.authority)
         ga._require(type(service) is EnhanceService and service.authority is access.authority)
-        current = service.current(access.session_ref, profile_ref=access.profile_ref)
+        # Card feedback may keep the original deck usable through its proven
+        # continuity chain. Source rights and the original expiry are still
+        # checked below; this reader grants no preview or inference permission.
+        current = service.current_for_interaction(access.session_ref, profile_ref=access.profile_ref)
         ga._require(current['published'] and current['publication_revision'] == publication_revision,
                     'PREVIEW_STALE', 409)
         cards = [card for group in current['manifest']['categories'] for card in group['cards']

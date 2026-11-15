@@ -32,6 +32,41 @@ def read_exact(fd, size):
     return result
 
 
+
+def seed_selection_history(authority,ref,profile,connection):
+    """Fictional old rows test restart retirement, not inference readiness."""
+    from datetime import datetime,timezone
+    from django.db import transaction
+    from shelf import grant_authority as ga
+    from shelf.models import SynthesisRun,_content_digest
+    from shelf.enhance_contract import EnhanceBindings
+    from shelf.enhance_selection import admission_fingerprint
+    from shelf.category_registry import registry_view
+    expected=[]
+    with ga.current_writer(authority,ref,profile) as state,transaction.atomic(),ga._write_window():
+        registry=registry_view()
+        record=dict(bindings=vars(EnhanceBindings(str(state.installation_id),str(state.actor_ref),profile,
+            'a'*64,state.policy_epoch,str(state.restriction_watermark),registry.revision,connection.config_revision,
+            'b'*64,'c'*64)),categories=list(registry.categories),source_revision='fictional-restart-history')
+        for noise in (None,75):
+            refresh=uuid.uuid4()
+            evidence=dict(code='OK',outcomes=[],phase='catalogue',expected_publication_revision=state.publication_revision)
+            if noise is not None:evidence['selection_policy']={'version':'selection-policy/v1','noise':noise}
+            run=SynthesisRun.objects.create(actor_id=state.actor_id,profile_id=state.profile_id,mode='portable',
+                installation_id=state.installation_id,portable_connection=connection,contract_version='enhance/v1',
+                client_key=uuid.uuid4(),refresh_nonce=refresh,input_snapshot={},
+                input_digest=admission_fingerprint(record,refresh,evidence),portable_bindings=record,
+                portable_stage='authorized',portable_expires_at=datetime(2026,1,1,tzinfo=timezone.utc),evidence=evidence)
+            if noise is not None:
+                SynthesisRun.objects.filter(pk=run.pk).update(revision=1,attempts=1,state='running',
+                    portable_stage='sending',transport_request_id=uuid.uuid4(),collection_digest='c'*64,body_digest='d'*64)
+                run.refresh_from_db()
+            expected.append(dict(id=str(run.pk),policy=noise,input_digest=run.input_digest,
+                content_digest=_content_digest(json.dumps(run.output),json.dumps(run.evidence)),
+                attempts=run.attempts,request=str(run.transport_request_id) if run.transport_request_id else None))
+    return expected
+
+
 def main(root, phase, request_fd, response_fd):
     original = runtime.make_server
     observed = {}
@@ -54,7 +89,7 @@ def main(root, phase, request_fd, response_fd):
         try:
             from django.conf import settings
             from django.test import Client
-            from shelf.models import ProfileCabinetState, PortableConnection, FeedbackEvent
+            from shelf.models import ProfileCabinetState, PortableConnection, FeedbackEvent, SavedCredentialBinding
             settings.PASSWORD_HASHERS = ['django.contrib.auth.hashers.MD5PasswordHasher']
             client = Client(enforce_csrf_checks=True)
             headers = {'HTTP_HOST': boundary.origin.removeprefix('http://'), 'HTTP_ORIGIN': boundary.origin}
@@ -81,8 +116,9 @@ def main(root, phase, request_fd, response_fd):
                 assert post('/setup/form/configure', {'adapter':'openai_responses',
                     'model':'gpt-6-astra', 'reasoning':'high'}).status_code == 303
                 row = PortableConnection.objects.get(adapter='openai_responses')
-                assert post('/setup/form/credential', {'connection_ref':str(row.pk), 'revision':'1',
-                    'storage':'persistent', 'secret':DUMMY}).status_code == 303
+                if phase != 'first-no-credential':
+                    assert post('/setup/form/credential', {'connection_ref':str(row.pk), 'revision':'1',
+                        'storage':'persistent', 'secret':DUMMY}).status_code == 303
                 fields = {'profile_ref':profile, 'entry_ref':str(uuid.uuid4()), 'mutation_id':str(uuid.uuid4()),
                     'base_revision':'0','operation':'set','signal':'interest','entry_kind':'item',
                     'category':'book','title':'Dummy preference retained across native restart','value':'yes'}
@@ -95,6 +131,7 @@ def main(root, phase, request_fd, response_fd):
                     'profile_ref':profile, 'connection_ref':str(row.pk),
                     'events':[(str(r.pk),hashlib.sha256(json.dumps(r.body,sort_keys=True).encode()).hexdigest())
                               for r in FeedbackEvent.objects.order_by('id')]}
+                if phase=='first-selection':refs['selection_runs']=seed_selection_history(settings.PORTABLE_AUTHORITY,ref,profile,row)
                 refs_path.write_text(json.dumps(refs))
             else:
                 refs = json.loads(refs_path.read_text())
@@ -103,13 +140,30 @@ def main(root, phase, request_fd, response_fd):
                 assert post('/setup/form/login', {'passphrase':PASSWORD}).status_code == 303
                 ref = client.session['portable_session']
                 row = PortableConnection.objects.get(pk=refs['connection_ref'])
-                value = settings.PORTABLE_CONNECTIONS.vault.resolve(ref,row.pk,row.config_revision)
-                assert value == DUMMY.encode()
+                if phase == 'second-no-credential':
+                    assert not SavedCredentialBinding.objects.filter(connection_id=row.pk).exists()
+                else:
+                    value = settings.PORTABLE_CONNECTIONS.vault.resolve(ref,row.pk,row.config_revision)
+                    assert value == DUMMY.encode()
                 assert not settings.PORTABLE_CONNECTIONS.status(ref,row.pk,row.config_revision)['connection_ready']
                 assert str(ProfileCabinetState.objects.get().profile_ref) == refs['profile_ref']
                 events = [(str(r.pk),hashlib.sha256(json.dumps(r.body,sort_keys=True).encode()).hexdigest())
                           for r in FeedbackEvent.objects.order_by('id')]
                 assert [list(r) for r in events] == refs['events']
+            if phase=='second-selection':
+                from shelf.models import SynthesisRun
+                from shelf.recovery import semantic_check
+                from django.db import connection
+                for expected in refs['selection_runs']:
+                    run=SynthesisRun.objects.get(pk=expected['id'])
+                    assert run.evidence==({} if expected['policy'] is None else
+                        {'selection_policy':{'version':'selection-policy/v1','noise':expected['policy']}})
+                    assert run.output=={} and run.input_digest==expected['input_digest'] and run.content_digest==expected['content_digest']
+                    assert run.attempts==expected['attempts']
+                    assert (str(run.transport_request_id) if run.transport_request_id else None)==expected['request']
+                    if run.attempts:assert run.state=='unknown'
+                semantic_check(connection.connection)
+                observed['selection_retention']='EXACT_POLICY_OR_LEGACY_EMPTY'
             observed.update(installation=str(boundary.installation_id), generation=str(boundary.process_generation),
                 profile=str(ProfileCabinetState.objects.get().profile_ref), events=FeedbackEvent.objects.count())
             if phase=='first-pending':
@@ -133,7 +187,7 @@ def main(root, phase, request_fd, response_fd):
     with patch.object(runtime,'make_server',make):
         result = runtime.run(root,saved_store=store)
     print(json.dumps({'state':'NATIVE_DUMMY_LIFECYCLE_CLOSED','phase':phase,'exit':result,
-        'pid':os.getpid(),'observed':observed,'providerCalls':0,'keyReentry':phase!='second'}),flush=True)
+        'pid':os.getpid(),'observed':observed,'providerCalls':0,'keyReentry':phase.startswith('first')}),flush=True)
     return result
 
 

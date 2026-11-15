@@ -23,6 +23,10 @@ class BoundaryFailure(Exception):
         super().__init__('CAPABILITY_UNAVAILABLE')
 
 
+class BoundaryAlreadyRunning(BoundaryFailure):
+    """Fixed refusal for another process holding this installation's lock."""
+
+
 @dataclass(repr=False)
 class BoundRoot:
     installation_id: uuid.UUID
@@ -92,7 +96,10 @@ def open_boundary(root, *, port=0):
             raise BoundaryFailure()
         lock = os.open(root / '.portable-lock', os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600)
         _private_file(lock)
-        fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        try:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            raise BoundaryAlreadyRunning() from None
         marker = root / '.portable-installation.json'
         if not marker.exists():
             if {p.name for p in root.iterdir()} != {'.portable-lock'}:
@@ -121,6 +128,8 @@ def open_boundary(root, *, port=0):
         boundary = BoundRoot(installation_id, root, identity, uuid.uuid4(), origin, lock, sock)
         transferred = True
         return boundary
+    except BoundaryAlreadyRunning:
+        raise
     except (OSError, ValueError, TypeError, BoundaryFailure):
         raise BoundaryFailure() from None
     finally:
@@ -176,7 +185,24 @@ class PortableSecurityMiddleware:
             if (getattr(match, 'url_name', None) in documents
                     and match.func is documents[match.url_name]
                     and response.get('Content-Type', '').split(';')[0].strip().lower() == 'text/html'):
+                scripts = f'{boundary.origin}/cabinet/obtain/status.js'
+                connections = f'{boundary.origin}/cabinet/obtain/jobs/'
+                if match.func is enhancement_views.portable_cabinet:
+                    scripts += f' {boundary.origin}/cabinet/actions/script.js'
+                    # Only this document can enhance the existing POST/303 flow.
+                    # CSP paths are not method or redirect authorization; native
+                    # action guards and the fixed server destination still apply.
+                    connections += f' {boundary.origin}/cabinet/actions/ {boundary.origin}/cabinet'
                 response['Content-Security-Policy'] += (
-                    f"; script-src {boundary.origin}/cabinet/obtain/status.js; script-src-attr 'none'"
-                    f"; connect-src {boundary.origin}/cabinet/obtain/jobs/; worker-src 'none'")
+                    f"; script-src {scripts}; script-src-attr 'none'"
+                    f"; connect-src {connections}; worker-src 'none'")
+        if valid and request.method in {'GET','HEAD'} and response.status_code==200:
+            from shelf import portable_journey_views
+            match=getattr(request,'resolver_match',None)
+            if (getattr(match,'url_name',None)=='portable_journey' and match.func is portable_journey_views.page
+                and response.get('Content-Type','').split(';')[0].strip().lower()=='text/html'):
+                # Only the packaged deferred guide asset; no source/model or
+                # Obtain connect permission follows from this document handler.
+                response['Content-Security-Policy']+=(
+                    f"; script-src {boundary.origin}/cabinet/actions/script.js; script-src-attr 'none'")
         return response

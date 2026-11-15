@@ -149,21 +149,26 @@ def source_consent(request, *, adapter=MUSICBRAINZ):
 @sensitive_variables()
 def source_credential(request, *, adapter):
     ga._require(adapter in MEDIA and adapter in NATIVE_SETUP, 'CONTRACT_INVALID', 422)
-    value = _form(request, {'profile_ref', 'connection_ref', 'revision', 'secret'})
+    value = _form(request, {'profile_ref', 'connection_ref', 'revision', 'secret'}
+        | ({'storage'} if 'storage' in request.POST else set()))
+    ga._require(value.get('storage') in (None, 'persistent'), 'CONTRACT_INVALID', 422)
     profile_ref = str(ga._uuid(value['profile_ref']))
     authority, ref = request.portable_authority, request.session.get('portable_session')
     transferred = vault = row = None
     complete = False
     try:
-        with ga.recovery_guard(authority, ref, profile_ref=profile_ref) as checkpoint, authority._lock, ga._checked_transaction(checkpoint):
+        with ga.recovery_guard(authority, ref, profile_ref=profile_ref) as checkpoint, authority._lock:
             ga._bound(authority, ref, profile_ref, sensitive=True)
             row, _, _ = _connection_metadata(authority, ref, value['connection_ref'])
             ga._require(row.adapter == adapter, 'AUTHORITY_DENIED', 403)
             ga._require(row.config_revision == _revision(value['revision']), 'REVISION_CONFLICT', 409)
-            # Reuse the authority-owned RAM vault; storing a token neither
-            # validates it against the provider nor grants source or model use.
+            # K2 commits its intent before OS work. Keep the recovery guard,
+            # but never enclose a durable key-store effect in outer SQL rollback.
+            # Neither storage mode validates a provider or grants source use.
             vault = authority._source_vault
-            vault.replace(ref, row.pk, row.config_revision, value['secret'].encode('utf-8'))
+            vault.replace(ref, row.pk, row.config_revision, value['secret'].encode('utf-8'),
+                          storage=value.get('storage'))
+            checkpoint.check()
             transferred = vault._leases.get(row.pk)
         complete = True
         return _redirect(profile_ref, source_adapter=adapter)
