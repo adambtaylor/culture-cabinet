@@ -92,6 +92,11 @@ def _moons24(now):
     return moons24()
 
 
+def _apw(now):
+    from shelf.apw_events import acquire
+    return acquire(now)
+
+
 def _my_aeon(now):
     from shelf.event_listing_transport import my_aeon
     return my_aeon()
@@ -139,6 +144,11 @@ def _parse_west_space(raw, *, now, retrieved_at):
 
 def _parse_moons24(raw, *, now, retrieved_at):
     from shelf.moons24_events import parse_listing
+    return parse_listing(raw, retrieved_at=retrieved_at)
+
+
+def _parse_apw(raw, *, now, retrieved_at):
+    from shelf.apw_events import parse_listing
     return parse_listing(raw, retrieved_at=retrieved_at)
 
 
@@ -224,6 +234,10 @@ def _descriptor(row):
                 'Partial 24 Moons coverage: current-week plus later programme, up to nine leads '
                 'within eight weeks. Unknown dates remain unverified; source links open the '
                 'programme, not an exact session or a checked seller.'),
+        'apw': (_apw, _parse_apw, 524288,
+                'Partial APW coverage: the fixed homepage only; separately identified opening '
+                'and exhibition run when explicitly dated. No artwork offers, complete programme '
+                'or current attendance/availability is established.'),
         'my_aeon': (_my_aeon, _parse_my_aeon, 524288,
                 'Partial My Aeon coverage: one official listing, up to nine leads; known dates limited '
                 'to eight weeks. Date-only labels are not show times; unknown dates and ticket '
@@ -245,6 +259,8 @@ def _descriptor(row):
                 'on this page; this is not proof of no events.'),
             'linden': ('No eligible current Linden programme was established in this bounded read; '
                 'this is not proof of no events.'),
+            'apw': ('The homepage establishes no current or next-eight-week opening '
+                'or bounded exhibition run. A past opening with unknown run dates is not current coverage.'),
         }
         return EventSourceDescriptor(**common, acquire=acquire, parse=parse, coverage=coverage,
             access_state='access-unverified' if source_id == 'forum' else 'implemented-unproved',
