@@ -280,53 +280,72 @@ def validate_command(command):
         raise FeedbackError()
 
 
-def mutate(*, actor, profile_id, command):
-    from shelf.grant_authority import writer_window
-    from shelf.recovery import access_barrier
+def mutate_in_transaction(*, actor, profile_id, command, barrier):
+    """Join a checked outer IMMEDIATE writer; batch callers commit one receipt.
+
+    Validation, authority and reducer semantics are shared with ordinary mutate.
+    This port never opens/commits a transaction or accepts a supplied before-image.
+    """
+    if not connection.in_atomic_block or not connection.connection.in_transaction:
+        raise FeedbackError('An owning transaction is required.')
     validate_command(command)
     payload = asdict(command); payload.pop('mutation_id')
     family = 'feedback.' + command.operation
     digest = envelope_hash(family, profile_id, payload)
+    profile, grant = authorize(actor, profile_id, 'mutate')
+    old = prior_receipt(actor, command.mutation_id, profile_id, family, digest)
+    if old: return receipt_result(old)
+    target = FeedbackTarget.objects.filter(pk=command.target_id, deleted=False).first()
+    if not target or target.kind != command.target_type: raise Http404
+    if target.kind == 'session' and (not target.parent_id or target.parent.kind != 'item'): raise FeedbackError()
+    key = dict(profile_id=profile.pk, target_id=target.pk, signal=command.signal, scope=command.scope)
+    events = FeedbackEvent.objects.filter(**key).order_by('revision')
+    last = events.last()
+    if (last.revision if last else 0) != command.base_revision or (str(last.pk) if last else None) != command.context_event_id:
+        raise Conflict('This signal changed. Refresh before editing.')
+    projection = FeedbackProjection.objects.filter(**key).first()
+    if projection and projection.erased: raise Gone('This feedback scope is erased.')
+    barrier.assert_scope_open(profile.pk, target.pk, command.signal, command.scope)
+    if command.corrects_id and (not projection or str(projection.effective_event_id) != command.corrects_id):
+        raise Conflict('Refresh the current statement before correcting it.')
+    if command.operation == 'reverse':
+        original = events.filter(pk=command.reverses_id, operation='set', erased=False).first()
+        if not original or events.filter(reverses_id=original.pk).exists():
+            raise Conflict('This statement cannot be undone again.')
+    from shelf.models import ProfileCabinetState
+    cabinet = ProfileCabinetState.objects.filter(profile=profile, data_schema_version=2).first()
+    subject, _ = FeedbackSubject.objects.get_or_create(profile=profile,
+        defaults={'subject_id': cabinet.subject_ref if cabinet else uuid.uuid4()})
+    now = timezone.now()
+    event = FeedbackEvent.objects.create(id=uuid.uuid4(), **key, revision=command.base_revision+1,
+        operation=command.operation, actor_id=actor.pk, authority_grant_id=grant.pk,
+        recorded_at=now, origin='direct', original_origin='direct',
+        attribution={'subject_id': str(subject.subject_id)}, original_recorded_at=now,
+        body=command.value, reverses_id=command.reverses_id, corrects_id=command.corrects_id)
+    recompute(key)
+    receipt = MutationReceipt.objects.create(actor_id=actor.pk, mutation_id=command.mutation_id,
+        profile_id=profile.pk, operation_family=family, target_id=target.pk,
+        payload_sha256=digest, event_id=event.pk, accepted_revision=event.revision, created_at=now)
+    authorize(actor, profile.pk, 'mutate')
+    return receipt_result(receipt)
+
+
+def mutate(*, actor, profile_id, command):
+    from shelf.grant_authority import writer_window
+    from shelf.recovery import access_barrier
+    validate_command(command)
     with access_barrier() as barrier:
         for attempt in range(3):
             try:
                 with immediate(), writer_window(actor, profile_id):
-                    profile, grant = authorize(actor, profile_id, 'mutate')
-                    old = prior_receipt(actor, command.mutation_id, profile_id, family, digest)
-                    if old: return receipt_result(old)
-                    target = FeedbackTarget.objects.filter(pk=command.target_id, deleted=False).first()
-                    if not target or target.kind != command.target_type: raise Http404
-                    if target.kind == 'session' and (not target.parent_id or target.parent.kind != 'item'): raise FeedbackError()
-                    key = dict(profile_id=profile.pk, target_id=target.pk, signal=command.signal, scope=command.scope)
-                    events = FeedbackEvent.objects.filter(**key).order_by('revision')
-                    last = events.last()
-                    if (last.revision if last else 0) != command.base_revision or (str(last.pk) if last else None) != command.context_event_id:
-                        raise Conflict('This signal changed. Refresh before editing.')
-                    projection = FeedbackProjection.objects.filter(**key).first()
-                    if projection and projection.erased: raise Gone('This feedback scope is erased.')
-                    barrier.assert_scope_open(profile.pk, target.pk, command.signal, command.scope)
-                    if command.corrects_id and (not projection or str(projection.effective_event_id) != command.corrects_id):
-                        raise Conflict('Refresh the current statement before correcting it.')
-                    if command.operation == 'reverse':
-                        original = events.filter(pk=command.reverses_id, operation='set', erased=False).first()
-                        if not original or events.filter(reverses_id=original.pk).exists():
-                            raise Conflict('This statement cannot be undone again.')
-                    from shelf.models import ProfileCabinetState
-                    cabinet = ProfileCabinetState.objects.filter(profile=profile, data_schema_version=2).first()
-                    subject, _ = FeedbackSubject.objects.get_or_create(profile=profile,
-                        defaults={'subject_id': cabinet.subject_ref if cabinet else uuid.uuid4()})
-                    now = timezone.now()
-                    event = FeedbackEvent.objects.create(id=uuid.uuid4(), **key, revision=command.base_revision+1,
-                        operation=command.operation, actor_id=actor.pk, authority_grant_id=grant.pk,
-                        recorded_at=now, origin='direct', original_origin='direct',
-                        attribution={'subject_id': str(subject.subject_id)}, original_recorded_at=now,
-                        body=command.value, reverses_id=command.reverses_id, corrects_id=command.corrects_id)
-                    recompute(key)
-                    receipt = MutationReceipt.objects.create(actor_id=actor.pk, mutation_id=command.mutation_id,
-                        profile_id=profile.pk, operation_family=family, target_id=target.pk,
-                        payload_sha256=digest, event_id=event.pk, accepted_revision=event.revision, created_at=now)
-                    authorize(actor, profile.pk, 'mutate')
-                    result = receipt_result(receipt)
+                    recorded=MutationReceipt.objects.filter(actor=actor,mutation_id=command.mutation_id).exists()
+                    result = mutate_in_transaction(actor=actor, profile_id=profile_id,
+                        command=command, barrier=barrier)
+                # A receipt replay cannot invent a point lost in the original
+                # post-commit crash gap or attribute later choices to this input.
+                if not recorded:
+                    from shelf.portable_taste_history import capture_native_mutation
+                    capture_native_mutation(actor,profile_id,command)
                 return result
             except Exception as error:
                 if not is_busy(error): raise

@@ -106,8 +106,13 @@ class SavedCredentials:
 
     def _invalidate(self, row):
         row.credential_generation += 1
-        row.validation_generation += 1
-        row.save(update_fields=['credential_generation', 'validation_generation'])
+        fields = ['credential_generation']
+        # Source checks have their own typed proof. They never acquire the
+        # inference-only validation generation by saving/replacing a bearer.
+        if row.adapter == 'openai_responses':
+            row.validation_generation += 1
+            fields.append('validation_generation')
+        row.save(update_fields=fields)
         self.vault._revoke_connection(row.pk)
 
     def _removal_row(self, connection_id, revision):
