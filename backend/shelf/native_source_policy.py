@@ -22,7 +22,7 @@ class _NativeSourcePolicy(SourcePolicyProvider):
         require(type(approved_policies) is dict)
         entries = {}
         for adapter, rights in approved_policies.items():
-            require(type(adapter) is str and adapter in (ADAPTER, APPLE_PODCAST, *MUSICBRAINZ_SOURCES, *MEDIA))
+            require(type(adapter) is str and adapter in (ADAPTER, APPLE_PODCAST, *MUSICBRAINZ_SOURCES, *MEDIA, 'apw', 'gertrude'))
             require(type(rights) is SourceRights and type(rights.policy) is FieldPolicy)
             require(rights.source == ('moshtix' if adapter == ADAPTER else adapter),
                     'AUTHORITY_DENIED')

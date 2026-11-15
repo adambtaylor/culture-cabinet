@@ -10,6 +10,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 import re
 from threading import RLock
+import time
 from urllib.parse import urlsplit
 
 from .disclosure import canonical_bytes, read_json
@@ -288,6 +289,10 @@ def _normalize(spec, request, reply, *, now):
     require(reply.status == 200 and len(reply.body) <= spec.response_bytes)
     if spec.parser == 'moshtix':
         return _moshtix_facts(request, reply, now=now)
+    if spec.parser in ('apw', 'gertrude'):
+        from .gallery_sources import native_gallery_cards
+        return ParsedReply(native_gallery_cards(spec.key, reply.body,
+            observed_at=reply.observed_at, now=now))
     stamp = reply.observed_at.isoformat()
     cards = []
     if spec.parser in ('tmdb', 'hardcover'):
@@ -503,6 +508,9 @@ class _MoshtixContext:
     plan: object
     operation: object
     sent: bool = False
+    preparation: object = None
+    preparation_attempted: bool = False
+    response_bytes: int = 0
 
 
 class MoshtixBackend(SourceBackend):
@@ -697,3 +705,163 @@ class MediaBackend(SourceBackend):
             raise EnhanceFault('RATE_LIMITED') from None
         except SourceError:
             raise EnhanceFault('SOURCE_UNAVAILABLE') from None
+
+
+@dataclass(frozen=True)
+class GalleryPreparationReceipt:
+    source: str
+    request_digest: str
+    operation_digest: str
+    config_revision: int
+    policy_ref: str
+    policy_revision: int
+    robots_url: str
+    listing_url: str
+    observed_at: datetime
+    valid_until: datetime
+    body_sha256: str
+    decision: str
+    actual_sends: int
+    actual_response_bytes: int
+    host_not_before: datetime
+
+
+class GallerySourceBackend(SourceBackend):
+    """Existing gallery reader under issuer-owned native policy and permits.
+
+    Robots preparation is separate; a missing receipt is unavailable, never an
+    implicit second request. Source text cannot choose URLs, rights or queries.
+    """
+    def __init__(self, source, issuer, *, clock):
+        require(type(source) is str and source in ('apw', 'gertrude')
+                and isinstance(issuer, SourceAuthorityIssuer)
+                and callable(getattr(clock, 'now', None)), 'CAPABILITY_UNAVAILABLE')
+        self.source, self.issuer, self.clock = source, issuer, clock
+        self._contexts, self._lock = {}, RLock()
+
+    def authorize(self, request, plan, *, now):
+        from .gallery_transport import GalleryOperation
+        require(type(request) is SourceRequest and request.source == self.source
+                and request.category == 'gallery' and request.operation == self.source
+                and not request.terms and not request.ids, 'AUTHORITY_DENIED')
+        operation = self.issuer.operation_for(request, plan, now=now)
+        require(type(operation) is GalleryOperation and operation == GalleryOperation(self.source), 'PREVIEW_STALE')
+        permit = self.issuer.authorize(request, plan, operation, now=now)
+        require(type(permit) is SourcePermit and (permit.credential_generation is None
+            or type(permit.credential_generation) is int and permit.credential_generation == 0), 'AUTHORITY_DENIED')
+        permit.verify(request, plan, now)
+        with self._lock:
+            self._contexts = {key: value for key, value in self._contexts.items()
+                              if utc(now) < value.permit.expires_at}
+            require(len(self._contexts) < 128, 'CAPABILITY_UNAVAILABLE')
+            self._contexts[id(permit)] = _MoshtixContext(permit, request, plan, operation)
+        self.policy(permit, now=now)
+        return permit
+
+    def _context(self, permit):
+        context = self._contexts.get(id(permit))
+        require(context is not None and context.permit is permit, 'AUTHORITY_DENIED')
+        return context
+
+    def revalidate(self, permit, request, plan, *, now):
+        context = self._context(permit)
+        require(context.request == request and context.plan == plan, 'AUTHORITY_DENIED')
+        permit.verify(request, plan, now)
+        current = self.issuer.revalidate(permit, request, plan, context.operation, now=now) is True
+        if current and context.preparation is not None and context.preparation.decision == 'ready':
+            return self.revalidate_preparation(context.preparation, request, permit, plan, now=now)
+        return current
+
+    def policy(self, permit, *, now):
+        context = self._context(permit)
+        require(self.revalidate(permit, context.request, context.plan, now=now), 'PREVIEW_STALE')
+        policy, model_current = self.issuer.policy_context(permit, context.operation, now=now)
+        require(type(policy) is FieldPolicy and policy.current(now)
+                and policy.ref == permit.policy_ref and policy.revision == permit.policy_revision
+                and policy.allows('*', 'fetch'), 'AUTHORITY_DENIED')
+        require(not any('model_context' in uses for _, uses in policy.permissions) or model_current is True,
+                'AUTHORITY_DENIED')
+        return policy
+
+    def prepare_robots(self, request, permit, *, response_bytes, request_seconds, parent_seconds):
+        from .gallery_transport import prepare_robots
+        deadline = time.monotonic() + parent_seconds
+        context = self._context(permit)
+        require(context.request == request, 'AUTHORITY_DENIED')
+        with self._lock:
+            require(not context.preparation_attempted and not context.sent, 'AUTHORITY_DENIED')
+            context.preparation_attempted = True
+        def current():
+            self.policy(permit, now=utc(self.clock.now()))
+            return True
+        current()
+        phase = prepare_robots(context.operation, revalidate=current, response_bytes=response_bytes,
+            request_seconds=request_seconds, parent_seconds=parent_seconds, deadline=deadline)
+        rights = self.policy(permit, now=utc(self.clock.now()))
+        receipt = GalleryPreparationReceipt(self.source, request.request_digest,
+            context.operation.operation_digest, permit.source_config_revision,
+            permit.policy_ref, permit.policy_revision, context.operation.robots_url,
+            context.operation.url, phase.observed_at,
+            min(phase.valid_until, permit.expires_at, rights.expires_at, context.plan.expires_at),
+            phase.body_sha256, phase.decision, phase.actual_sends,
+            phase.actual_response_bytes, phase.host_not_before)
+        context.preparation = receipt
+        return receipt
+
+    def revalidate_preparation(self, receipt, request, permit, plan, *, now):
+        from .gallery_transport import preparation_current
+        context = self._context(permit)
+        require(type(receipt) is GalleryPreparationReceipt and context.preparation is receipt
+            and context.request == request and context.plan == plan
+            and receipt.decision == 'ready' and receipt.source == self.source
+            and receipt.request_digest == request.request_digest
+            and receipt.operation_digest == context.operation.operation_digest
+            and receipt.config_revision == permit.source_config_revision
+            and receipt.policy_ref == permit.policy_ref and receipt.policy_revision == permit.policy_revision
+            and utc(now) < receipt.valid_until, 'SOURCE_UNAVAILABLE')
+        require(self.issuer.revalidate(permit, request, plan, context.operation, now=now) is True,
+                'PREVIEW_STALE')
+        rights, _ = self.issuer.policy_context(permit, context.operation, now=now)
+        require(type(rights) is FieldPolicy and rights.current(now)
+                and rights.ref == receipt.policy_ref and rights.revision == receipt.policy_revision,
+                'SOURCE_UNAVAILABLE')
+        try:
+            require(preparation_current(context.operation, receipt.body_sha256), 'SOURCE_UNAVAILABLE')
+        except (OSError, ValueError, UnicodeError):
+            raise EnhanceFault('SOURCE_UNAVAILABLE') from None
+        return True
+
+    def request(self, request, permit, *, response_bytes, request_seconds, parent_seconds):
+        from .gallery_transport import gallery_authorized, GalleryRateLimited
+        deadline = time.monotonic() + parent_seconds
+        from .discovery_sources import SourceError
+        context = self._context(permit)
+        require(context.request == request, 'AUTHORITY_DENIED')
+        self.revalidate_preparation(context.preparation, request, permit, context.plan, now=utc(self.clock.now()))
+        with self._lock:
+            require(not context.sent, 'AUTHORITY_DENIED')
+            context.sent = True
+        def current():
+            self.policy(permit, now=utc(self.clock.now()))
+            return True
+        observation = {}
+        try:
+            current()
+            status, body, headers = gallery_authorized(context.operation, revalidate=current,
+                response_bytes=response_bytes, request_seconds=min(5, request_seconds),
+                parent_seconds=min(6, parent_seconds), observation=observation, deadline=deadline)
+            current()
+            return SourceReply(request.request_digest, status, body, utc(self.clock.now()), headers)
+        except GalleryRateLimited:
+            raise EnhanceFault('RATE_LIMITED') from None
+        except SourceError:
+            raise EnhanceFault('SOURCE_UNAVAILABLE') from None
+        finally:
+            context.response_bytes = observation.get('actual_response_bytes', 0)
+
+    def failed_response_bytes(self, permit):
+        return self._context(permit).response_bytes
+
+
+# Compatibility for the early A1 producer name; there is one implementation.
+GalleryBackend = GallerySourceBackend

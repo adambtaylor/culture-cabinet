@@ -17,7 +17,7 @@ from .disclosure import DisclosureError, SCALARS, _sources, canonical_bytes, rea
 from .enhance_contract import (CataloguePlan, CategoryOutcome, CollectionBudget,
     CollectionSeal, EnhanceFault, RegistryView, digest, require, utc)
 from .source_adapters import (SourceBackend, SourcePermit, SourceReply, SourceRequest,
-    initial_source_request, normalize, registered_source)
+    GallerySourceBackend, GalleryPreparationReceipt, initial_source_request, normalize, registered_source)
 from .source_evidence import EvidenceBatch, FieldPolicy, build_evidence, cached_evidence
 
 
@@ -53,7 +53,7 @@ class _Result:
 
 class SourceCollection:
     def __init__(self, configured=(), backends=None, *, clock=None, state=None,
-                 isolated_fixture=False):
+                 isolated_fixture=False, progress=None):
         require(type(configured) is tuple and type(isolated_fixture) is bool)
         require(backends is None or type(backends) is dict)
         selected = {}
@@ -72,6 +72,8 @@ class SourceCollection:
             registered_source(name)
             require(isinstance(backend, SourceBackend))
             require(not backend.isolated_fixture or isolated_fixture, 'AUTHORITY_DENIED')
+        require(progress is None or callable(progress))
+        self.progress = progress
         self.configured = MappingProxyType(selected)
         self.backends = MappingProxyType(supplied)
         self.clock = clock or CollectionClock()
@@ -136,18 +138,35 @@ class SourceCollection:
             allocations[category] = tuple(requests)
         # Reserve worst-case enrichment capacity for ALL categories before any
         # read. A useful early category must not consume a hidden category's slot.
-        cost = sum(2 if req.operation == 'book_search' else 1
-                   for requests in allocations.values() for req in requests)
-        if cost > budget.initial_sends:
+        non_gallery_cost = sum(2 if req.operation == 'book_search' else 1
+            for requests in allocations.values() for req in requests if req.source not in ('apw', 'gertrude'))
+        omitted = []
+        if non_gallery_cost > budget.initial_sends:
             outcomes = tuple(CategoryOutcome(category, 'unavailable', 0,
                 'LIMIT_EXCEEDED' if allocations[category] else 'CAPABILITY_UNAVAILABLE')
                 for category in registry.categories)
             return self._seal(plan, registry, outcomes, (), {}, plan.expires_at, budget)
+        remaining = budget.initial_sends - non_gallery_cost
+        cost = non_gallery_cost
+        for category, requests in allocations.items():
+            admitted = [req for req in requests if req.source not in ('apw', 'gertrude')]
+            galleries = sorted((req for req in requests if req.source in ('apw', 'gertrude')),
+                               key=lambda req: req.source != 'apw')
+            for request in galleries:
+                # Reserve both declared phases even on a potential cache hit.
+                # Gallery addition must not crowd out existing API allocations.
+                if remaining >= 2:
+                    admitted.append(request); remaining -= 2; cost += 2
+                else:
+                    allocation_failures[category].append('LIMIT_EXCEEDED')
+                    omitted.append({'category': category, 'source': request.source, 'code': 'LIMIT_EXCEEDED'})
+            allocations[category] = tuple(admitted)
         with self.state.lock:
             start = self.clock.monotonic()
             usage = {'sends': 0, 'bytes': 0}
             batches, revisions, outcomes, retained, attempts = [], {}, [], [], []
             seen, total = set(), 0
+            attempts.extend(omitted)
             for query in queries:
                 category = query['category']
                 records, category_batches, failures = [], [], list(allocation_failures[category])
@@ -216,7 +235,8 @@ class SourceCollection:
             revisions['_collection'] = {'sends': usage['sends'], 'response_bytes': usage['bytes'],
                 'initial_sends_reserved': cost, 'extension_sends': 0, 'retry_sends': 0,
                 'source_outcomes': attempts,
-                'configured_sources': {key: list(value) for key, value in self.configured.items()}}
+                'configured_sources': {key: list(value) for key, value in self.configured.items()},
+                'gallery_preparations': usage.get('gallery_preparations', {})}
             revisions['_source_plans'] = self._plan_material(source_plans)
             end = min((batch.expires_at for batch in batches), default=plan.expires_at)
             return self._seal(plan, registry, tuple(outcomes), tuple(batches), revisions, end, budget,
@@ -269,9 +289,13 @@ class SourceCollection:
                 'checked_at': policy.checked_at.isoformat(), 'expires_at': policy.expires_at.isoformat()},
             'credential_generation': permit.credential_generation,
             'parents': list(permit.parent_ids), 'fixture': self.isolated_fixture}))
+        preparation = None
+        if request.source in ('apw', 'gertrude'):
+            preparation = self._prepare_gallery(backend, spec, request, permit, plan, policy,
+                                                budget, usage, start)
         # Hardcover permits the separate short-lived ID checkpoint below, not
         # reuse of completed title/detail evidence. Skip even old cache entries.
-        cached = None if request.source == 'hardcover' else self.state.cache.get(key)
+        cached = None if request.source in ('hardcover', 'apw', 'gertrude') else self.state.cache.get(key)
         if cached and now < cached.batch.expires_at:
             retained.append((backend, permit, request, policy, plan))
             return _Result(cached_evidence(cached.batch), canonical_bytes({
@@ -328,7 +352,7 @@ class SourceCollection:
                 require(value.isdigit() and len(value) <= 10)
                 ttl = min(ttl, int(value))
         source_end = reply.observed_at + timedelta(seconds=ttl)
-        if request.source in ('moshtix', 'apple_podcast'):
+        if request.source in ('moshtix', 'apple_podcast', 'apw', 'gertrude'):
             # Apple's upstream cache age shortens the same bounded HTTP clock
             # as Moshtix. Keep received observation time and headers intact;
             # neither a future Date nor an app reload can renew old evidence.
@@ -356,11 +380,12 @@ class SourceCollection:
             'policy_ref': policy.ref, 'policy_revision': policy.revision,
             'credential_generation': permit.credential_generation, 'cache_hit': False,
             'response_chain': response_chain, 'observation_digest_kind': 'canonical_response_chain',
-            'evidence_kind': 'fixture_not_live' if backend.isolated_fixture else 'live_lookup'}))
+            'evidence_kind': 'fixture_not_live' if backend.isolated_fixture else 'live_lookup',
+            **({'gallery_preparation': self._preparation_material(preparation)} if preparation is not None else {})}))
         # No Moshtix facts are kept in this collector's lazy-eviction cache.
         # A later host cache needs an admitted physical expiry/removal lifecycle;
         # rejecting stale reads alone would not bound idle data retention.
-        if (request.source not in ('moshtix', 'hardcover') and batch.cacheable
+        if (request.source not in ('moshtix', 'hardcover', 'apw', 'gertrude') and batch.cacheable
                 and 'no-store' not in cache_control and 'no-cache' not in cache_control):
             for stale in [k for k, value in self.state.cache.items() if now >= value.batch.expires_at]:
                 del self.state.cache[stale]
@@ -369,13 +394,57 @@ class SourceCollection:
             self.state.cache[key] = result
         return result
 
+    @staticmethod
+    def _preparation_material(receipt):
+        return {key: value.isoformat() if isinstance(value, datetime) else value
+                for key, value in vars(receipt).items()}
+
+    def _prepare_gallery(self, backend, spec, request, permit, plan, policy, budget, usage, start):
+        require(type(backend) is GallerySourceBackend, 'CAPABILITY_UNAVAILABLE')
+        require(usage['sends'] < budget.initial_sends, 'LIMIT_EXCEEDED')
+        parent = min(6, budget.parent_seconds)
+        require(0 <= self.clock.monotonic()-start <= budget.collection_seconds-parent, 'LIMIT_EXCEEDED')
+        self._current(backend, permit, request, plan, policy)
+        cap = min(spec.response_bytes, budget.response_bytes, budget.aggregate_bytes-usage['bytes'])
+        require(cap > 0, 'LIMIT_EXCEEDED')
+        if self.progress is not None:
+            self.progress({'category': request.category, 'source': request.source, 'phase': 'preparing_gallery_access'})
+        sent = self.clock.monotonic()
+        usage['sends'] += 1  # Reserved failed/unknown attempts are never retried.
+        receipt = backend.prepare_robots(request, permit, response_bytes=cap,
+            request_seconds=min(5, budget.request_seconds), parent_seconds=parent)
+        require(type(receipt) is GalleryPreparationReceipt
+                and type(receipt.actual_sends) is int and receipt.actual_sends in (0, 1)
+                and type(receipt.actual_response_bytes) is int and 0 <= receipt.actual_response_bytes <= cap+8,
+                'CONTRACT_INVALID')
+        usage['sends'] -= 1-receipt.actual_sends
+        usage['bytes'] += receipt.actual_response_bytes
+        usage.setdefault('gallery_preparations', {})[request.source] = self._preparation_material(receipt)
+        require(receipt.actual_response_bytes <= cap and usage['bytes'] <= budget.aggregate_bytes, 'LIMIT_EXCEEDED')
+        require(0 <= self.clock.monotonic()-sent <= parent
+                and self.clock.monotonic()-start <= budget.collection_seconds, 'LIMIT_EXCEEDED')
+        if receipt.decision != 'ready':
+            code = {'refused': 'AUTHORITY_DENIED', 'rate_limited': 'RATE_LIMITED'}.get(
+                receipt.decision, 'SOURCE_UNAVAILABLE')
+            raise EnhanceFault(code)
+        require(backend.revalidate_preparation(receipt, request, permit, plan, now=utc(self.clock.now())),
+                'SOURCE_UNAVAILABLE')
+        require(usage['bytes'] < budget.aggregate_bytes, 'LIMIT_EXCEEDED')
+        wait = max(0, (receipt.host_not_before-utc(self.clock.now())).total_seconds())
+        self.state.not_before[spec.origin] = max(self.state.not_before.get(spec.origin, 0),
+                                                self.clock.monotonic()+wait)
+        return receipt
+
     def _send(self, backend, spec, request, permit, plan, policy, budget, usage, start):
         require(usage['sends'] < budget.initial_sends, 'LIMIT_EXCEEDED')
         elapsed = self.clock.monotonic() - start
         wait = max(0, self.state.not_before.get(spec.origin, 0) - self.clock.monotonic())
-        require(elapsed >= 0 and elapsed + wait + budget.parent_seconds <= budget.collection_seconds,
+        planned_parent = min(6, budget.parent_seconds) if request.source in ('apw', 'gertrude') else budget.parent_seconds
+        require(elapsed >= 0 and elapsed + wait + planned_parent <= budget.collection_seconds,
                 'RATE_LIMITED' if wait else 'LIMIT_EXCEEDED')
         if wait:
+            if request.source in ('apw', 'gertrude') and self.progress is not None:
+                self.progress({'category': request.category, 'source': request.source, 'phase': 'waiting_for_source_interval'})
             self.clock.sleep(wait)
         self._current(backend, permit, request, plan, policy)
         self.state.not_before[spec.origin] = self.clock.monotonic() + spec.interval_seconds
@@ -387,8 +456,19 @@ class SourceCollection:
         sent_at = utc(self.clock.now())
         request_limit = min(budget.request_seconds, 5 if not spec.search else 8)
         parent_limit = min(budget.parent_seconds, 6 if not spec.search else 9)
-        reply = backend.request(request, permit, response_bytes=cap,
-            request_seconds=request_limit, parent_seconds=parent_limit)
+        if request.source in ('apw', 'gertrude') and self.progress is not None:
+            self.progress({'category': request.category, 'source': request.source, 'phase': 'reading_gallery_listings'})
+        try:
+            reply = backend.request(request, permit, response_bytes=cap,
+                request_seconds=request_limit, parent_seconds=parent_limit)
+        except Exception:
+            # A gallery response can become unusable at the post-I/O guard.
+            # Still charge observed bytes before settling that source; do not
+            # manufacture free aggregate capacity after refusal or timeout.
+            if type(backend) is GallerySourceBackend:
+                usage['bytes'] += backend.failed_response_bytes(permit)
+                require(usage['bytes'] <= budget.aggregate_bytes, 'LIMIT_EXCEEDED')
+            raise
         require(0 <= self.clock.monotonic() - sent <= parent_limit
                 and self.clock.monotonic() - start <= budget.collection_seconds, 'LIMIT_EXCEEDED')
         require(type(reply) is SourceReply and reply.request_digest == request.request_digest)

@@ -17,6 +17,7 @@ class StoreDouble:
         self.record = self.revision = None
         self.operations, self.calls = {}, []
         self.locked = self.lose_ack = False
+        self.refuse_put = None
 
     def request(self, value):
         self.calls.append(deepcopy(value))
@@ -29,6 +30,8 @@ class StoreDouble:
             return {**reply, 'status': 'AVAILABLE' if self.record else 'MISSING'}
         if operation == 'reconcile':
             return deepcopy(self.operations.get(value['operation_id'], {**reply, 'status': 'UNKNOWN'}))
+        if operation == 'put' and self.refuse_put:
+            return {**reply, 'status': self.refuse_put}
         if value['expected_revision'] != self.revision:
             return {**reply, 'status': 'CONFLICT'}
         if operation == 'read':
@@ -72,6 +75,22 @@ class SavedCredentialTests(NativeFeedbackCase):
         self.assertNotIn(self.dummy, str(status))
         self.assertNotIn(self.dummy, str(list(SavedCredentialBinding.objects.values())))
         self.assertEqual(self.store.record['schema'], 'cabinet-credential/v1')
+
+    def test_persistent_form_reports_store_refusal_without_secret_or_provider_use(self):
+        self.store.refuse_put = 'CORRUPT'
+        with patch('socket.socket.connect', side_effect=AssertionError('No provider calls')):
+            response = self.post('/setup/form/credential', dict(connection_ref=str(self.config.pk),
+                revision='1', secret=self.dummy, storage='persistent'))
+        self.assertEqual(response.status_code, 503)
+        self.assertIn(b'Setup could not finish', response.content)
+        self.assertIn(b'Encrypted key store unavailable', response.content)
+        self.assertNotIn(self.dummy.encode(), response.content)
+        self.assertNotIn('KEY_SAVED', self.http.session.get('_portable_notice', ''))
+        self.assertIsNone(self.store.record)
+        self.assertEqual([call['operation'] for call in self.store.calls], ['put'])
+        self.assertEqual(SavedCredentialBinding.objects.get().state, 'PENDING_WRITE')
+        metadata = str(list(SavedCredentialBinding.objects.values()))
+        self.assertNotIn(self.dummy, metadata)
 
     def test_passive_status_never_decrypts_but_explicit_consumer_hydrates(self):
         self.save()

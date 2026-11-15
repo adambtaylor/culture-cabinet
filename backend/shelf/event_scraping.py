@@ -9,53 +9,35 @@ from shelf.discovery_sources import Outcome, SourceError
 from shelf.discovery_transport import PBSIntervalPending
 from shelf.event_listing_transport import ListingIntervalPending, ListingPolicyUnavailable
 
-IMPLEMENTED_SOURCES = frozenset({'rrr', 'pbs', 'venue303', 'forum'})
+from shelf.event_source_registry import SOURCES, get_source, source_route
+
+IMPLEMENTED_SOURCES = frozenset(key for key, source in SOURCES.items() if source.implemented)
 
 
-def collect(source_id, *, now):
-    """Return attributed leads or a safe failure; never retry a failed read.
+class ProgrammeUnavailable(SourceError):
+    """Recognized source shell/archive cannot establish a current programme.
 
-    ``now`` is the caller's aware observation clock, sampled for this action.
-    It describes retrieval, not the publisher's update time or a show date.
+    Parsers never supply display text here: the closed descriptor owns the
+    explanation. This is distinct from malformed/challenge HTML and empty data.
+    """
+
+
+def collect(source_id, *, now, event_route=''):
+    """One fixed acquisition or a truthful unavailable outcome; no retries.
+
+    ``now`` is the caller's aware observation clock, never a source show date.
+    The closed descriptor owns format/coverage policy; clients cannot replace it.
     """
     try:
-        if (type(source_id) is not str or source_id not in IMPLEMENTED_SOURCES
-                or not isinstance(now, datetime) or now.utcoffset() is None):
-            raise SourceError('Unsupported source or observation clock.')
-
-        # Resolve existing fixed seams at call time: tests can replace transport
-        # without adding an arbitrary URL/credential interface to production.
-        from shelf import discovery_transport
-        if source_id == 'rrr':
-            from shelf.rrr_events import parse_listing
-            read = discovery_transport.rrr
-            message = ('Partial coverage: up to nine cards from one Triple R listing page. '
-                       'Source dates omit the year; upcoming status and ticket availability unverified.')
-        elif source_id == 'forum':
-            from shelf.forum_events import parse_listing as venue_parser
-            from shelf.event_listing_transport import forum
-            read = forum
-            parse_listing = lambda raw, *, retrieved_at: venue_parser(
-                raw, retrieved_at=retrieved_at, provenance='live-automated')
-            message = ('Partial Forum coverage: one listing, up to nine source observations; '
-                       'dates and source notices are not verified ticket availability.')
-        elif source_id == 'venue303':
-            from shelf.venue303_events import parse_listing as venue_parser
-            from shelf.event_listing_transport import venue303
-            read = venue303
-            parse_listing = lambda raw, *, retrieved_at: venue_parser(
-                raw, retrieved_at=retrieved_at, provenance='live-automated')
-            message = ('Partial 303 coverage: one listing, up to nine source observations within eight weeks; '
-                       'unknown dates/session identity and ticket availability remain unverified.')
-        else:
-            from shelf.pbs_events import parse_listing
-            # pbs() owns the shared host reservation. Bypassing it here would
-            # permit another source action/process to violate the crawl delay.
-            read = discovery_transport.pbs
-            message = ('Partial PBS coverage: up to nine upcoming-section leads within eight weeks; '
-                       'unknown dates are labelled. Exact sessions and ticket availability unverified.')
-
-        status, raw = read()
+        if not isinstance(now, datetime) or now.utcoffset() is None:
+            raise SourceError('An aware observation clock is required.')
+        source = get_source(source_id)
+        route = source_route(source_id, event_route)
+        if not source.implemented:
+            status = 'permission-required' if source.access_state == 'permission-required' else 'unavailable'
+            return Outcome(status, message=source.unavailable_message)
+        route_options = {'event_route': route} if route else {}
+        status, raw = source.acquire(now, **route_options)
         if status == 429:
             return Outcome('rate-limited', message='Source rate limited; no retry attempted.')
         if status in (401, 403):
@@ -65,11 +47,15 @@ def collect(source_id, *, now):
 
         # Do not apply upcoming_events here. RRR omits years; PBS alone owns
         # its visible-year/window filtering. Both can retain unknown-date leads.
-        cards = parse_listing(raw, retrieved_at=now.isoformat())
-        if source_id in ('pbs', 'venue303', 'forum') and not cards:
+        if type(raw) is not bytes or len(raw) > source.max_bytes:
+            raise SourceError('Bounded source response required.')
+        cards = source.parse(raw, now=now, retrieved_at=now.isoformat(), **route_options)
+        if not cards:
             return Outcome('empty', cards,
                 'No eligible leads in this bounded page; this does not establish no events or tickets.')
-        return Outcome('ready', cards, message)
+        return Outcome('ready', tuple(cards), source.coverage)
+    except ProgrammeUnavailable:
+        return Outcome('unavailable', message=source.unavailable_message)
     except ListingPolicyUnavailable:
         return Outcome('permission-required', message='Source access policy is unverified; no listing request sent.')
     except ListingIntervalPending:
