@@ -78,6 +78,48 @@ class CardActionPresentationTests(SimpleTestCase):
         self.assertNotIn('weight', context)
         self.assertNotIn('score', context)
 
+    def test_native_cabinet_enhance_places_one_noise_control_in_current_post_form(self):
+        from shelf.taste_history_presentation import noise_control_context
+        for value in (0, 25, 100):
+            html, doc, _ = self.render(portable_commands={'start': '/enhance/start'},
+                connection_ref=TARGET, client_key=COMMAND, refresh_nonce=PUBLICATION,
+                enhance_url='/enhance?profile_ref='+PROFILE, noise_control=noise_control_context(value))
+            native = [a for t, a in doc.tags if t == 'form' and 'data-native-enhance-start' in a]
+            self.assertEqual(len(native), 1)
+            self.assertEqual(native[0]['action'], '/enhance/start')
+            self.assertEqual(native[0]['method'], 'post')
+            start = html.index('<form method="post" action="/enhance/start"')
+            end = html.index('</form>', start)
+            form_html = html[start:end]
+            form_doc = Document(form_html)
+            self.assertEqual(len([i for i in form_doc.inputs if i.get('name') == 'noise']), 1)
+            fields = {i.get('name'): i.get('value') for i in form_doc.inputs}
+            self.assertEqual(fields, dict(csrfmiddlewaretoken=TOKEN, profile_ref=PROFILE,
+                connection_ref=TARGET, client_key=COMMAND, refresh_nonce=PUBLICATION, noise=str(value)))
+            self.assertNotIn('<form', form_html[len('<form'):])
+            self.assertIn('<button type="submit">Enhance</button>\n  <fieldset', form_html)
+            self.assertIn('Precise', form_html)
+            self.assertIn('Experimental', form_html)
+            self.assertNotIn('Enhance this cabinet</a>', html)
+            self.assertEqual(html.count('src="/cabinet/actions/script.js"'), 1)
+
+    def test_cabinet_start_never_overrides_resume_missing_context_or_fixed_action(self):
+        from shelf.taste_history_presentation import noise_control_context
+        ready = dict(portable_commands={'start': '/enhance/start'}, connection_ref=TARGET,
+            client_key=COMMAND, refresh_nonce=PUBLICATION, enhance_url='/enhance?profile_ref='+PROFILE,
+            noise_control=noise_control_context(25))
+        for change in ('unresolved', 'missing', 'foreign_action', 'no_default'):
+            context = deepcopy(ready)
+            if change == 'unresolved': context.update(round_blocks_start=True, round_url='/enhance?run_ref='+COMMAND)
+            elif change == 'missing': context.pop('client_key')
+            elif change == 'foreign_action': context['portable_commands']['start'] = 'https://fictional.invalid/start'
+            else: context.pop('noise_control')
+            html, doc, _ = self.render(**context)
+            self.assertFalse(any(t == 'form' and 'data-native-enhance-start' in a for t, a in doc.tags))
+            self.assertNotIn('name="noise"', html)
+            if change == 'unresolved': self.assertIn('Continue the recorded round', html)
+            else: self.assertIn('Review Enhance setup and requests', html)
+
     def test_tampered_direction_route_identity_or_command_shape_is_refused(self):
         for change in ('direction', 'route', 'profile', 'command', 'revision', 'fields'):
             value = projection(); row = value['actions'][1]

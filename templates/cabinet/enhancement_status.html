@@ -174,12 +174,15 @@
     <p><a href="/setup">Open owner setup or Your model</a>. After changing setup or confirming your session, return here and explicitly retry the intended action; nothing is resubmitted for you.</p>
     {% if portable_return_url %}<p><a href="{{ portable_return_url }}">Review this round again after restoring access</a>. Start with its recorded status; no request is repeated by this link.</p>{% endif %}
     {% if portable_commands.start %}
+    {% if noise_control %}
+      {% include 'cabinet/portable_enhance_start.html' with start_label='Start a round and review API requests' noise_id='enhance-noise' %}
+    {% else %}
     <form method="post" action="{{ portable_commands.start }}">{% csrf_token %}
       <input type="hidden" name="profile_ref" value="{{ profile_ref }}"><input type="hidden" name="connection_ref" value="{{ connection_ref }}">
       <input type="hidden" name="client_key" value="{{ client_key }}"><input type="hidden" name="refresh_nonce" value="{{ refresh_nonce }}">
       <button type="submit">Start a round and review API requests</button>
-      {% if noise_control %}<fieldset class="noise-control" data-noise-control><legend>Noise</legend><label for="enhance-noise">Next round: <output for="enhance-noise" data-noise-output>{{ noise_control.value }}</output> · applies to the next round</label><p class="help">Starting default: {{ noise_control.value }}. Without scripting, the numeric readout remains this initial default; the native slider still submits your choice for review.</p><input id="enhance-noise" name="noise" type="range" min="0" max="100" step="1" value="{{ noise_control.value }}" aria-describedby="enhance-noise-help"><div class="noise-endpoints"><span>Precise</span><span>Experimental</span></div><p id="enhance-noise-help" class="help">More variety from the same source-grounded candidates. Moving this control sends nothing. Your choice is saved only when a new round is admitted; an unsubmitted edit is lost on reload and does not change an active round.</p></fieldset>{% endif %}
     </form>
+    {% endif %}
     {% endif %}
     {% if portable_commands.preview %}<form method="post" action="{{ portable_commands.preview }}">{% csrf_token %}<button type="submit">Review the next request</button></form>{% endif %}
     {% if disclosure %}
