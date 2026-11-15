@@ -109,5 +109,7 @@ class APWEventUITests(DjangoCase):
                 opening='Opening 6pm. Friday 6 November 2026',run=''))):
             self.client.post(self.action,self.form('event_source',source_id='apw'))
             page=self.client.get(self.url)
-            self.assertEqual(page.context['public_results'][0]['outcome'].status,'unavailable')
+            outcome=page.context['public_results'][0]['outcome']
+            self.assertEqual(outcome.status,'unavailable')
+            self.assertIn('no current or next-eight-week opening',outcome.message)
         self.assertEqual(DiscoveryState.objects.get().history,[])
