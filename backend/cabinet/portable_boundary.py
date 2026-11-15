@@ -23,6 +23,10 @@ class BoundaryFailure(Exception):
         super().__init__('CAPABILITY_UNAVAILABLE')
 
 
+class BoundaryAlreadyRunning(BoundaryFailure):
+    """Fixed refusal for another process holding this installation's lock."""
+
+
 @dataclass(repr=False)
 class BoundRoot:
     installation_id: uuid.UUID
@@ -92,7 +96,10 @@ def open_boundary(root, *, port=0):
             raise BoundaryFailure()
         lock = os.open(root / '.portable-lock', os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600)
         _private_file(lock)
-        fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        try:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            raise BoundaryAlreadyRunning() from None
         marker = root / '.portable-installation.json'
         if not marker.exists():
             if {p.name for p in root.iterdir()} != {'.portable-lock'}:
@@ -121,6 +128,8 @@ def open_boundary(root, *, port=0):
         boundary = BoundRoot(installation_id, root, identity, uuid.uuid4(), origin, lock, sock)
         transferred = True
         return boundary
+    except BoundaryAlreadyRunning:
+        raise
     except (OSError, ValueError, TypeError, BoundaryFailure):
         raise BoundaryFailure() from None
     finally:

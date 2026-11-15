@@ -384,6 +384,293 @@ raw=json.dumps(reply).encode();os.write(write_fd,struct.pack('!I',len(raw))+raw)
         self.assertEqual((result['status'], result['revision'], result['record']), ('UNKNOWN', None, None))
 
 
+class CorruptionDiagnosticTests(unittest.TestCase):
+    """Public fixtures only: diagnostic attribution never opens an OS store."""
+    CANARY = 'sk-PUBLIC-NONSECRET-CANARY-MUST-NOT-LEAVE-DIAGNOSTIC'
+
+    def anchor(self):
+        binding=dict(os_uid=1000,installation_id='10000000-0000-4000-8000-000000000001',
+            store_id='20000000-0000-4000-8000-000000000002',root_identity='1'*64)
+        record=dict(schema='cabinet-clean-restart/v1',**{k:binding[k] for k in
+            ('installation_id','store_id','root_identity')},database_identity='2'*64,
+            checkpoint_id='40000000-0000-4000-8000-000000000004',database_digest='3'*64,
+            journal_path='/'+self.CANARY,journal_length=0,journal_digest='4'*64,journal_head='5'*64,state='ACTIVE')
+        return dict(version=store.VERSION,operation='put',record_kind='clean_restart_anchor',
+            binding=binding,expected_revision=None,operation_id='30000000-0000-4000-8000-000000000003',record_if_put=record)
+
+    def observe(self, action):
+        observed=store._CorruptionDiagnostic();token=store._CORRUPTION_DIAGNOSTIC.set(observed)
+        try:result=action()
+        finally:store._CORRUPTION_DIAGNOSTIC.reset(token)
+        raw=store.canonical(observed.projection())
+        self.assertLessEqual(len(raw),256);self.assertNotIn(self.CANARY.encode(),raw)
+        return result,observed.projection()
+
+    def test_anchor_success_and_default_off_semantic_equivalence(self):
+        first,second=DummyCollection(),DummyCollection()
+        value=self.anchor()
+        with patch.object(store.uuid,'uuid4',return_value='50000000-0000-4000-8000-000000000005'):
+            ordinary=store.Store(first).execute(value)
+            diagnostic,projection=self.observe(lambda:store.Store(second).execute(value))
+        self.assertEqual(ordinary,diagnostic)
+        self.assertEqual((first.loads,first.sets,first.deletes),(second.loads,second.sets,second.deletes))
+        self.assertEqual(projection,dict(schema=store.DIAGNOSTIC_SCHEMA,reason='NONE',slot='none',phase='not_observed'))
+
+    def test_master_and_encrypted_slot_corruption_fixed_attribution(self):
+        backend=DummyCollection();backend.key=b'PUBLIC-BAD-MASTER'
+        reply,diag=self.observe(lambda:store.Store(backend).execute(self.anchor()))
+        self.assertEqual((reply['status'],diag['reason'],diag['slot']),('CORRUPT','MASTER_FORMAT','master'))
+        self.assertEqual(backend.sets,0)
+        for slot in ('receipt','record'):
+            for reason,value in (('SLOT_SIZE_TYPE',object()),('SLOT_DECRYPT',b'PUBLIC-BAD-TOKEN'),('SLOT_DECODE',None)):
+                with self.subTest(slot=slot,reason=reason):
+                    backend=DummyCollection();request=self.anchor()
+                    digest=hashlib.sha256(store.canonical(request['binding'])).hexdigest()
+                    backend.items[(request['record_kind'],digest,slot)]=(Fernet(backend.key).encrypt(b'PUBLIC-NOT-JSON') if value is None else value)
+                    reply,diag=self.observe(lambda:store.Store(backend).execute(request))
+                    self.assertEqual((reply['status'],diag['reason'],diag['slot'],diag['phase']),('CORRUPT',reason,slot,'before_mutation'))
+                    self.assertEqual(backend.sets,0)
+
+    def test_lookup_and_secret_encoding_each_affected_slot(self):
+        for slot in ('master','receipt','record'):
+            attrs=store._SecretBackend._attrs('clean_restart_anchor','1'*64,slot)
+            good=SimpleNamespace(get_attributes=lambda:attrs,get_locked=lambda:False)
+            bad=SimpleNamespace(get_attributes=lambda:{**attrs,'foreign':self.CANARY},get_locked=lambda:False)
+            for reason,items in (('LOOKUP_DUPLICATE',[good,good]),('ATTRIBUTES_MISMATCH',[bad])):
+                backend=object.__new__(store._SecretBackend);backend._unlocked=lambda:None
+                backend.Secret=SimpleNamespace(SearchFlags=SimpleNamespace(ALL=1));backend.collection=object()
+                backend.async_=SimpleNamespace(call=lambda *args:items)
+                def action():
+                    try:backend._item('clean_restart_anchor','1'*64,slot)
+                    except store.Refused as error:return dict(status=error.status)
+                reply,diag=self.observe(action)
+                self.assertEqual((reply['status'],diag['reason'],diag['slot']),('CORRUPT',reason,slot))
+            for text in (b'PUBLIC-NOT-STR','nonascii-\u2603'):
+                backend=object.__new__(store._SecretBackend);backend._unlocked=lambda:None
+                backend._item=lambda *args:SimpleNamespace(get_secret=lambda:SimpleNamespace(get_text=lambda:text))
+                backend.async_=SimpleNamespace(call=lambda *args:None)
+                def action():
+                    try:backend.get('clean_restart_anchor','1'*64,slot)
+                    except store.Refused as error:return dict(status=error.status)
+                reply,diag=self.observe(action)
+                self.assertEqual((reply['status'],diag['reason'],diag['slot']),('CORRUPT','SECRET_ENCODING',slot))
+
+    def test_existing_invariants_and_receipt_link_keep_corrupt_mapping(self):
+        for reason,slot,changes in (('RECORD_INVARIANT','record',dict(kind='credential')),
+                ('RECEIPT_INVARIANT','receipt',dict(kind='credential')),
+                ('RECEIPT_RECORD_LINK','receipt',dict(revision='60000000-0000-4000-8000-000000000006'))):
+            backend=DummyCollection();request=self.anchor();engine=store.Store(backend)
+            saved=engine.execute(request);digest=hashlib.sha256(store.canonical(request['binding'])).hexdigest()
+            key=(request['record_kind'],digest,slot);cipher=Fernet(backend.key)
+            decoded=store.strict_json(cipher.decrypt(backend.items[key]));decoded.update(changes)
+            backend.items[key]=cipher.encrypt(store.canonical(decoded));writes=backend.sets
+            reply,diag=self.observe(lambda:engine.execute(request))
+            self.assertEqual((reply['status'],diag['reason']),('CORRUPT',reason))
+            self.assertEqual(diag['slot'],'receipt_record_pair' if reason=='RECEIPT_RECORD_LINK' else slot)
+            self.assertEqual(backend.sets,writes)
+
+    def test_first_post_intent_corruption_remains_unknown(self):
+        backend=DummyCollection()
+        def fail(*args):
+            store._corrupt_require(False,'ATTRIBUTES_MISMATCH','receipt')
+        backend.set=fail
+        reply,diag=self.observe(lambda:store.Store(backend).execute(self.anchor()))
+        self.assertEqual((reply['status'],diag['reason'],diag['phase']),('UNKNOWN','ATTRIBUTES_MISMATCH','mutation_started'))
+        self.assertEqual(store._validate_diagnostic(store.canonical(diag),'UNKNOWN'),diag)
+        def first():
+            store._note_corrupt('MASTER_FORMAT','master');store._note_corrupt('SLOT_DECODE','record')
+        _,diag=self.observe(first)
+        self.assertEqual((diag['reason'],diag['slot']),('MASTER_FORMAT','master'))
+
+
+class DiagnosticPipeTests(unittest.TestCase):
+    """A fabricated child writes public frames; packaged OS worker is never run."""
+    def setUp(self):PrivateClientTests.setUp(self)
+    def fake_child(self,suffix):return PrivateClientTests.fake_child(self,suffix)
+    def child(self,raw,status='AVAILABLE'):
+        revision="'50000000-0000-4000-8000-000000000001'" if status=='AVAILABLE' else 'None'
+        return self.fake_child(f'''if len(sys.argv)==7:
+ diag_fd=int(sys.argv[6])
+ os.write(diag_fd,{raw!r});os.close(diag_fd)
+reply={{'version':value['version'],'operation_id':value['operation_id'],'status':{status!r},'revision':{revision},'record':None}}
+raw=json.dumps(reply).encode();os.write(write_fd,struct.pack('!I',len(raw))+raw)
+''')
+    def diagnostic(self,reason='NONE',slot='none',phase='not_observed'):
+        return store.canonical(dict(schema=store.DIAGNOSTIC_SCHEMA,reason=reason,slot=slot,phase=phase))
+
+    def test_optin_one_child_unchanged_result_and_private_third_pipe(self):
+        seen=[];raw=self.diagnostic()
+        with self.child(raw):ordinary=store.invoke(request())
+        with self.child(raw):observed=store.invoke(request(),diagnostic_sink=seen.append)
+        self.assertEqual(observed,ordinary);self.assertEqual(len(self.processes),2)
+        self.assertEqual(seen,[store.strict_json(raw)])
+        default,on=self.invocations
+        self.assertEqual(len(default[0]),8);self.assertEqual(len(default[1]['pass_fds']),2)
+        self.assertEqual(len(on[0]),10);self.assertEqual(on[0][8],'--diagnostic-fd')
+        self.assertEqual(int(on[0][9]),on[1]['pass_fds'][2]);self.assertEqual(len(set(on[1]['pass_fds'])),3)
+        self.assertNotIn(DUMMY,repr(on));self.assertTrue(all(p.returncode==0 for p in self.processes))
+
+    def test_missing_malformed_oversized_and_contradictory_are_invalid_only(self):
+        cases=[b'',b'PUBLIC-NOT-JSON',b'x'*257,self.diagnostic('MASTER_FORMAT','record','before_mutation'),
+            self.diagnostic('MASTER_FORMAT','master','before_mutation'),self.diagnostic()+b'{}']
+        for raw in cases:
+            seen=[]
+            with self.subTest(length=len(raw)),self.child(raw):reply=store.invoke(request(),diagnostic_sink=seen.append)
+            self.assertEqual(reply['status'],'AVAILABLE');self.assertEqual(seen,[None])
+        seen=[]
+        with self.child(self.diagnostic(),'CORRUPT'):reply=store.invoke(request(),diagnostic_sink=seen.append)
+        self.assertEqual(reply['status'],'CORRUPT');self.assertEqual(seen,[None])
+
+    def test_sink_failure_and_all_descriptors_closed_after_valid_result(self):
+        allocated=[];pipe=os.pipe
+        def own_pipe():
+            pair=pipe();allocated.extend(pair);return pair
+        observed={}
+        def sink(value):
+            closed=[]
+            for fd in allocated:
+                try:os.fstat(fd);closed.append(False)
+                except OSError:closed.append(True)
+            observed.update(valid=value is not None,closed=closed,reaped=all(p.returncode==0 for p in self.processes))
+            raise ValueError('PUBLIC-SINK-FAILURE')
+        with self.child(self.diagnostic()),patch.object(store.os,'pipe',side_effect=own_pipe):
+            reply=store.invoke(request(),diagnostic_sink=sink)
+        self.assertEqual(reply['status'],'AVAILABLE')
+        self.assertEqual(observed,dict(valid=True,closed=[True]*len(allocated),reaped=True))
+
+    def test_observer_setup_failure_aborts_before_dispatch_and_closes_fds(self):
+        seen=[];allocated=[];pipe=os.pipe
+        def own_pipe():
+            pair=pipe();allocated.extend(pair);return pair
+        with patch.object(store.os,'pipe',side_effect=own_pipe),patch.object(store.os,'set_blocking',side_effect=OSError()),patch.object(store.subprocess,'Popen') as start:
+            reply=store.invoke(request(),diagnostic_sink=seen.append)
+        self.assertEqual(reply['status'],'UNKNOWN');self.assertEqual(seen,[None]);start.assert_not_called()
+        for fd in allocated:
+            with self.assertRaises(OSError):os.fstat(fd)
+        with patch.object(store.subprocess,'Popen') as start,self.assertRaises(store.Refused):
+            store.invoke(request(),diagnostic_sink=object())
+        start.assert_not_called()
+
+    def test_timeout_one_child_cleanup_and_no_extra_wait_for_metadata(self):
+        seen=[]
+        with self.fake_child('time.sleep(5)\n'):
+            started=time.monotonic();reply=store.invoke(request(),timeout=.1,diagnostic_sink=seen.append)
+        self.assertLess(time.monotonic()-started,2);self.assertEqual(reply['status'],'UNKNOWN');self.assertEqual(seen,[None])
+        self.assertEqual(len(self.processes),1);self.assertIsNotNone(self.processes[0].returncode)
+
+    def test_nonblocking_full_or_broken_emit_does_not_rewrite_or_wait(self):
+        read,write=os.pipe();os.set_blocking(write,False)
+        try:
+            while True:os.write(write,b'PUBLIC-FILL'*1000)
+        except BlockingIOError:pass
+        started=time.monotonic();store._emit_diagnostic(write,store._CorruptionDiagnostic())
+        self.assertLess(time.monotonic()-started,.5)
+        with self.assertRaises(OSError):os.fstat(write)
+        os.close(read)
+        read,write=os.pipe();os.close(read);os.set_blocking(write,False)
+        store._emit_diagnostic(write,store._CorruptionDiagnostic())
+        with self.assertRaises(OSError):os.fstat(write)
+
+    def test_closed_emit_descriptor_is_observer_loss_only(self):
+        read,write=os.pipe();os.close(write)
+        try:store._emit_diagnostic(write,store._CorruptionDiagnostic())
+        finally:os.close(read)
+
+    def test_cancelled_parent_reaps_one_fake_child_and_closes_observer(self):
+        seen=[];allocated=[];pipe=os.pipe
+        def own_pipe():
+            pair=pipe();allocated.extend(pair);return pair
+        with self.fake_child('time.sleep(5)\n'),patch.object(store.os,'pipe',side_effect=own_pipe), \
+             patch.object(store,'_exchange',side_effect=KeyboardInterrupt()),self.assertRaises(KeyboardInterrupt):
+            store.invoke(request(),diagnostic_sink=seen.append)
+        self.assertEqual(seen,[None]);self.assertEqual(len(self.processes),1)
+        self.assertIsNotNone(self.processes[0].returncode)
+        for fd in allocated:
+            with self.assertRaises(OSError):os.fstat(fd)
+
+    def test_worker_distinct_fd_validation_and_context_cleanup(self):
+        request_read,request_write=os.pipe();response_read,response_write=os.pipe();diag_read,diag_write=os.pipe()
+        try:
+            args=[store.HELPER,'--request-fd',str(request_read),'--response-fd',str(response_write)]
+            duplicate=os.dup(response_write)
+            try:
+                with patch.object(store,'_protect_process'),patch.object(store,'_request_main') as worker,self.assertRaises(store.Refused):
+                    store._main(args+['--diagnostic-fd',str(duplicate)])
+                worker.assert_not_called()
+            finally:os.close(duplicate)
+            def worker(argv):store._note_corrupt('MASTER_FORMAT','master')
+            with patch.object(store,'_protect_process'),patch.object(store,'_request_main',side_effect=worker):
+                store._main(args+['--diagnostic-fd',str(diag_write)])
+            self.assertIsNone(store._CORRUPTION_DIAGNOSTIC.get())
+            self.assertEqual(store._validate_diagnostic(os.read(diag_read,257),'CORRUPT')['reason'],'MASTER_FORMAT')
+            with self.assertRaises(OSError):os.fstat(diag_write)
+        finally:
+            for fd in (request_read,request_write,response_read,response_write,diag_read):os.close(fd)
+
+
+
+class GenericSchemaCompatibilityTests(unittest.TestCase):
+    def test_exact_generic_schema_allowlist_for_all_slots(self):
+        generic='org.freedesktop.Secret.Generic'
+        for slot in ('master','receipt','record'):
+            kind='master' if slot=='master' else 'clean_restart_anchor'
+            expected=store._SecretBackend._attrs(kind,'0'*64,slot)
+            accepted=(dict(expected),{**expected,'xdg:schema':generic})
+            actions=('read',) if slot=='master' else ('read','write')
+            rejected=[]
+            for key in expected:
+                for base in accepted:
+                    rejected.append({k:v for k,v in base.items() if k!=key})
+                    rejected.append({**base,key:'PUBLIC-WRONG-IDENTITY'})
+            for value in ('org.example.Other','',None,False,1,b'org.freedesktop.Secret.Generic',[],{}):
+                rejected.append({**expected,'xdg:schema':value})
+            rejected.extend(({**expected,'foreign':'PUBLIC-EXTRA'},
+                             {**expected,'xdg:schema':generic,'foreign':'PUBLIC-EXTRA'},None,{}))
+
+            def attempt(attributes,*,action='lookup',duplicate=False,locked=False):
+                counts=dict(search=0,attributes=0,locked=0,secret_loads=0,writes=0)
+                def get_attributes():counts['attributes']+=1;return attributes
+                def get_locked():counts['locked']+=1;return locked
+                item=SimpleNamespace(get_attributes=get_attributes,get_locked=get_locked)
+                backend=object.__new__(store._SecretBackend);backend._unlocked=lambda:None
+                def forbidden_value(*args):
+                    counts['writes']+=1;raise AssertionError('Rejected metadata reached write preparation')
+                backend.Secret=SimpleNamespace(SearchFlags=SimpleNamespace(ALL=1),Value=SimpleNamespace(new=forbidden_value))
+                backend.collection=object()
+                def call(*args):
+                    counts['search']+=1
+                    if counts['search']>1:
+                        counts['secret_loads']+=1;raise AssertionError('Rejected metadata reached secret load')
+                    return [item,item] if duplicate else [item]
+                backend.async_=SimpleNamespace(call=call)
+                try:
+                    if action=='read':backend.get(kind,'0'*64,slot)
+                    elif action=='write':backend.set(kind,'0'*64,slot,b'PUBLIC-DUMMY')
+                    else:self.assertIs(backend._item(kind,'0'*64,slot),item)
+                    status='AVAILABLE'
+                except store.Refused as error:status=error.status
+                return status,counts
+
+            for attributes in accepted:
+                with self.subTest(slot=slot,case='accepted'):
+                    status,counts=attempt(attributes)
+                    self.assertEqual(status,'AVAILABLE')
+                    self.assertEqual(counts,dict(search=1,attributes=1,locked=1,secret_loads=0,writes=0))
+            for number,attributes in enumerate(rejected):
+                for action in actions:
+                    with self.subTest(slot=slot,case=number,action=action):
+                        status,counts=attempt(attributes,action=action)
+                        self.assertEqual(status,'CORRUPT')
+                        self.assertEqual(counts,dict(search=1,attributes=1,locked=0,secret_loads=0,writes=0))
+            for action in actions:
+                status,counts=attempt(accepted[1],action=action,duplicate=True)
+                self.assertEqual(status,'CORRUPT')
+                self.assertEqual(counts,dict(search=1,attributes=0,locked=0,secret_loads=0,writes=0))
+                status,counts=attempt(accepted[1],action=action,locked=True)
+                self.assertEqual(status,'LOCKED')
+                self.assertEqual(counts,dict(search=1,attributes=1,locked=1,secret_loads=0,writes=0))
+
+
 class ProtectionTests(unittest.TestCase):
     def setUp(self):
         self.temporary = tempfile.TemporaryDirectory(prefix='cabinet-DUMMY-HEADER-')
@@ -2043,6 +2330,200 @@ class PasswordPairRetirementTests(unittest.TestCase):
             return raw+b' '*(32769-len(raw)) if value.get('schema')=='cabinet-abandoned-prompt/v1' else raw
         with patch.object(store,'canonical',side_effect=oversized),patch.object(store._SecretBackend,'_connect') as connect,self.assertRaises(store.Refused):self.retire()
         connect.assert_not_called();self.assert_untouched()
+
+
+# Frozen nonsecret actual receipts, embedded so tests never read operator state.
+OWNER_ENROLLMENT = b'{\n  "state": "CANCELLED_OR_UNCERTAIN_NO_RETRY",\n  "stage": "enroll",\n  "source_head": "7af0023c70f1fde66b4da94bfb2557dd5f57974c",\n  "source_tree": "bedcd9cb5e77de06772d98b22fe82108350f687d",\n  "keyring_helper_sha256": "3466ea63ed310dae59bde7ce4d55eabcdeac8bd6d6717d1596cfe2098a925697",\n  "wrapper_sha256": "4e3729d41d3ad74093b1cc5a2b258c75b9a32ddf9e67ad530c8c6f51bb6e1bc4",\n  "profile": "owner-operated-os/v1",\n  "custody_mode": "owner_os_prompt",\n  "real_key": false,\n  "provider_calls": 0,\n  "started_utc": "2026-11-11T08:48:03.972137+00:00",\n  "parent_generation": [\n    1616904,\n    135612024\n  ],\n  "provision_bound_seconds": 120,\n  "owner_os_prompt_only": true,\n  "provision_effect_pending": true,\n  "provision_result": {\n    "status": "UNAVAILABLE",\n    "collection_ref": null\n  },\n  "error_type": "RuntimeError",\n  "reason": "PROVISION_UNAVAILABLE_OR_UNCERTAIN_NO_RETRY",\n  "owned_metadata_callers_closed": [],\n  "cancelled": false,\n  "handled_signals": [],\n  "last_selection": {\n    "canary_prompt_ref": null,\n    "canary_ref": null,\n    "canary_state": "NOT_STARTED",\n    "continuation_archive": "1cc2bd37-8f62-420d-928d-ec9c28945013",\n    "creation_operation_id": "2806e95c-fcb6-4ab8-94a7-b090bc52affc",\n    "decoded_identifier": null,\n    "file_binding": null,\n    "keyring_directory": "/home/tang/.local/share/keyrings",\n    "master_phase": "NOT_STARTED",\n    "prompt_observation": {\n      "acknowledgement": "ACKNOWLEDGED",\n      "completion": "UNOBSERVED",\n      "termination": "UNOBSERVED"\n    },\n    "requested_label": "CultureCabineta915d0e1fe954b27bb810365171828e2",\n    "returned_collection_ref": null,\n    "returned_prompt_ref": "/org/freedesktop/secrets/prompt/p5",\n    "schema": "cabinet-key-store-selection/v2",\n    "service_provenance": {\n      "caller": ":1.24305",\n      "implementation": "gnome-keyring-51.1",\n      "service_owner": ":1.0",\n      "service_uid": 1000\n    },\n    "state": "PROMPT_PENDING",\n    "terminal_fact": null,\n    "verified_filename": null\n  }\n}\n'
+OWNER_BINDING = b'{\n  "state": "ACTUAL_OWNER_PROMPT_PENDING",\n  "selection_sha256": "6d962b12224290b5820c7258797462f57e714bbe7d23cb5775415c56f8f47779",\n  "selection": {\n    "canary_prompt_ref": null,\n    "canary_ref": null,\n    "canary_state": "NOT_STARTED",\n    "continuation_archive": "1cc2bd37-8f62-420d-928d-ec9c28945013",\n    "creation_operation_id": "2806e95c-fcb6-4ab8-94a7-b090bc52affc",\n    "decoded_identifier": null,\n    "file_binding": null,\n    "keyring_directory": "/home/tang/.local/share/keyrings",\n    "master_phase": "NOT_STARTED",\n    "prompt_observation": {\n      "acknowledgement": "ACKNOWLEDGED",\n      "completion": "UNOBSERVED",\n      "termination": "UNOBSERVED"\n    },\n    "requested_label": "CultureCabineta915d0e1fe954b27bb810365171828e2",\n    "returned_collection_ref": null,\n    "returned_prompt_ref": "/org/freedesktop/secrets/prompt/p5",\n    "schema": "cabinet-key-store-selection/v2",\n    "service_provenance": {\n      "caller": ":1.24305",\n      "implementation": "gnome-keyring-51.1",\n      "service_owner": ":1.0",\n      "service_uid": 1000\n    },\n    "state": "PROMPT_PENDING",\n    "terminal_fact": null,\n    "verified_filename": null\n  },\n  "no_password_read_or_input": true,\n  "owner_ready": "DIRECT_REPLY_CONFIRMED_THROUGH_ROOT",\n  "original_bound_seconds": 120\n}\n'
+OWNER_TERMINAL = b'{\n  "id": "OWNER_OS_ACTUAL_2806_TERMINAL_AND_CLEANUP_01",\n  "state": "ENDED_UNAVAILABLE_NO_REPLAY_NO_STORAGE_ACCEPTANCE",\n  "observed_utc": "2026-11-11T08:56:21.642822+00:00",\n  "accepted_packet_sha256": "090ce5d504b680a56f0e3a89572223c4737008ba24eccdea34a01ccdd9982dd6",\n  "source_head": "7af0023c70f1fde66b4da94bfb2557dd5f57974c",\n  "source_tree": "bedcd9cb5e77de06772d98b22fe82108350f687d",\n  "keyring_helper_sha256": "3466ea63ed310dae59bde7ce4d55eabcdeac8bd6d6717d1596cfe2098a925697",\n  "wrapper_sha256": "4e3729d41d3ad74093b1cc5a2b258c75b9a32ddf9e67ad530c8c6f51bb6e1bc4",\n  "retirement": {\n    "receipt": "/home/tang/.codex/visualizations/2026/11/08/01a1b94d-3181-7451-84dc-55d2d7d637f8/api-wiring-2026-11-10/owner-os-positive-v2/owner-retire-01.json",\n    "sha256": "7643482cd49c7ffc59148480f646fdde8a49433133efa677d8f3fbaaa2f5c5ec",\n    "state": "PASS",\n    "operation": "1cc2bd37-8f62-420d-928d-ec9c28945013"\n  },\n  "prompt_binding": {\n    "receipt": "/home/tang/.codex/visualizations/2026/11/08/01a1b94d-3181-7451-84dc-55d2d7d637f8/api-wiring-2026-11-10/owner-os-positive-v2/owner-actual-prompt-binding-01.json",\n    "sha256": "57a9bf752bce0cdc09fdf012a46fbc7bb0ffabcb9ebcf71c5ba21041a04e7807"\n  },\n  "enrollment": {\n    "receipt": "/home/tang/.codex/visualizations/2026/11/08/01a1b94d-3181-7451-84dc-55d2d7d637f8/api-wiring-2026-11-10/owner-os-positive-v2/owner-enroll-01.json",\n    "sha256": "0750f70efee6b6864bf665e22da8b04f2e1cb47445199efdcbb937f340bb7b62",\n    "exit_code": 1,\n    "original_bound_seconds": 120,\n    "root_observed_elapsed_ms": 120133,\n    "result": {\n      "status": "UNAVAILABLE",\n      "collection_ref": null\n    },\n    "cancelled": false,\n    "reason": "PROVISION_UNAVAILABLE_OR_UNCERTAIN_NO_RETRY"\n  },\n  "preserved_selection": {\n    "canary_prompt_ref": null,\n    "canary_ref": null,\n    "canary_state": "NOT_STARTED",\n    "continuation_archive": "1cc2bd37-8f62-420d-928d-ec9c28945013",\n    "creation_operation_id": "2806e95c-fcb6-4ab8-94a7-b090bc52affc",\n    "decoded_identifier": null,\n    "file_binding": null,\n    "keyring_directory": "/home/tang/.local/share/keyrings",\n    "master_phase": "NOT_STARTED",\n    "prompt_observation": {\n      "acknowledgement": "ACKNOWLEDGED",\n      "completion": "UNOBSERVED",\n      "termination": "UNOBSERVED"\n    },\n    "requested_label": "CultureCabineta915d0e1fe954b27bb810365171828e2",\n    "returned_collection_ref": null,\n    "returned_prompt_ref": "/org/freedesktop/secrets/prompt/p5",\n    "schema": "cabinet-key-store-selection/v2",\n    "service_provenance": {\n      "caller": ":1.24305",\n      "implementation": "gnome-keyring-51.1",\n      "service_owner": ":1.0",\n      "service_uid": 1000\n    },\n    "state": "PROMPT_PENDING",\n    "terminal_fact": null,\n    "verified_filename": null\n  },\n  "selection_sha256": "6d962b12224290b5820c7258797462f57e714bbe7d23cb5775415c56f8f47779",\n  "selection_identity": [\n    57,\n    1042776,\n    1000,\n    1000,\n    33152,\n    1,\n    830,\n    1794386884106007671,\n    1794386884108007672\n  ],\n  "cleanup": {\n    "original_parent_generation": [\n      1616904,\n      135612024\n    ],\n    "original_parent_generation_ended": true,\n    "original_caller": ":1.24305",\n    "caller_has_owner": false,\n    "gcr_windows_present": 0,\n    "accepted_provision_client_returned": true,\n    "helper_child": "Accepted source provision finally returned and wrapper exited; child reaping attributed to exact accepted client. No helper PID invented or orphan scan.",\n    "agent_password_keeper_ever_started": false,\n    "live_agent_password_custody": false,\n    "prompt_methods_after_exit": 0,\n    "collection_or_file_deletion": 0,\n    "os_collection_orphan_disposition": "UNKNOWN; no returned identity/no guessed cleanup target"\n  },\n  "actual_facts": {\n    "prompt_method_acknowledged": true,\n    "completed_result_retained": false,\n    "collection_ref": null,\n    "file_binding": null,\n    "canary": "NOT_STARTED",\n    "master": "NOT_STARTED",\n    "dummy_put": "NOT_STARTED",\n    "fresh_read": "NOT_STARTED",\n    "owner_native_handoff": "NOT_CREATED",\n    "native_proof": "NOT_STARTED",\n    "provider_calls": 0,\n    "real_key_used": false\n  },\n  "owner_observation": {\n    "source": "Direct owner messages relayed by Root",\n    "saw_expected_dialog": false,\n    "viewing": "remote desktop window on Mac",\n    "same_compositor_output_workspace_verified": false,\n    "rendered_dialog_observed_by_agent": false,\n    "password_or_widget_contents_inspected": false\n  },\n  "failure_scope": "Original owner-operated prompt did not supply retained Completed before original120s result UNAVAILABLE. ACK/expired client is not proof that no collection exists, and no exact cancellation/dismissal subtype is invented.",\n  "next": "No reenroll/replay/fresh-read. Root diagnoses actual remote-view/session match and routes exact ended2806 pointer disposition if needed. Existing hard-coded1cc2 retirement is not a generic2806 reset. Preserve raw current pointer/archive chain and all receipts."\n}\n'
+OWNER_RETIREMENT = b'{\n  "state": "PASS",\n  "stage": "retire",\n  "source_head": "7af0023c70f1fde66b4da94bfb2557dd5f57974c",\n  "source_tree": "bedcd9cb5e77de06772d98b22fe82108350f687d",\n  "keyring_helper_sha256": "3466ea63ed310dae59bde7ce4d55eabcdeac8bd6d6717d1596cfe2098a925697",\n  "wrapper_sha256": "4e3729d41d3ad74093b1cc5a2b258c75b9a32ddf9e67ad530c8c6f51bb6e1bc4",\n  "profile": "owner-operated-os/v1",\n  "custody_mode": "owner_os_prompt",\n  "real_key": false,\n  "provider_calls": 0,\n  "started_utc": "2026-11-11T08:47:58.308553+00:00",\n  "retirement_effect_pending": true,\n  "retirement_returned_operation": "1cc2bd37-8f62-420d-928d-ec9c28945013",\n  "retirement_archive_chain": [\n    {\n      "operation_id": "f6ed3437-1f93-4564-8a6d-e558e5dd6462",\n      "archive_sha256": "184e1a5ac45fe03f4bd59659c3dca3dc15d2a67b873c619c86009533a09a9dfb"\n    },\n    {\n      "operation_id": "ce102960-02f0-4697-8008-371439a02d04",\n      "archive_sha256": "fe7a79afb45e22a6ac1d7b4cc4080d4ac5c60d1abc5f494277aa19900c12cc77"\n    },\n    {\n      "operation_id": "b8cc865d-df30-46da-969a-cf7fa40c6eba",\n      "archive_sha256": "9d6ada8785c4d05c8d4c77bb56754391ebe812da8d624273a4e0fef291d4819d"\n    },\n    {\n      "operation_id": "1cc2bd37-8f62-420d-928d-ec9c28945013",\n      "archive_sha256": "96de05d1e92531b76ce8d998e7ca7a1b24798bdf7df8a75b19219ea3e6dfd89d"\n    }\n  ],\n  "owned_metadata_callers_closed": [],\n  "cancelled": false,\n  "handled_signals": []\n}\n'
+
+class OwnerPromptRetirementTests(unittest.TestCase):
+    def set_pending(self, value):
+        PendingPromptRetirementTests.set_pending(self, value)
+
+    def setUp(self):
+        PasswordPairRetirementTests.setUp(self)
+        store.retire_password_pair_dummy(PAIR_ACTUAL_FAILURE, PAIR_ACTUAL_POSITIVE,
+                                        PAIR_ACTUAL_INPUT, PAIR_ACTUAL_CALLER)
+        self.fourth = self.directory / store._pair_archive_name()
+        self.fourth_bytes = self.fourth.read_bytes()
+        digest = hashlib.sha256(self.fourth_bytes).hexdigest()
+        self.enterContext(patch.object(store, 'OWNER_PROMPT_PREDECESSOR_SHA', digest))
+        retired = json.loads(OWNER_RETIREMENT)
+        retired['retirement_archive_chain'][-1]['archive_sha256'] = digest
+        self.retirement = store.canonical(retired)
+        self.enterContext(patch.object(store, 'OWNER_PROMPT_RETIREMENT_SHA', hashlib.sha256(self.retirement).hexdigest()))
+        terminal = json.loads(OWNER_TERMINAL)
+        terminal['retirement']['sha256'] = store.OWNER_PROMPT_RETIREMENT_SHA
+        self.terminal = store.canonical(terminal)
+        self.enterContext(patch.object(store, 'OWNER_PROMPT_TERMINAL_SHA', hashlib.sha256(self.terminal).hexdigest()))
+        self.value = json.loads(OWNER_BINDING)['selection']
+        self.original = store.canonical(self.value)
+        self.assertEqual(hashlib.sha256(self.original).hexdigest(), store.OWNER_PROMPT_SELECTION_SHA)
+        self.pointer.write_bytes(self.original); self.pointer.chmod(0o600)
+        self.closed = self.enterContext(patch.object(store._SecretBackend, '_owner_prompt_caller_closed', return_value=True))
+        self.ended = self.enterContext(patch.object(store, '_owner_prompt_parent_ended', return_value=True))
+
+    def retire(self, enrollment=None, binding=None, terminal=None, retirement=None):
+        return store.retire_owner_prompt_dummy(
+            OWNER_ENROLLMENT if enrollment is None else enrollment,
+            OWNER_BINDING if binding is None else binding,
+            self.terminal if terminal is None else terminal,
+            self.retirement if retirement is None else retirement)
+
+    def untouched(self):
+        self.assertEqual(self.pointer.read_bytes(), self.original)
+        self.assertFalse((self.directory / store._owner_prompt_archive_name()).exists())
+
+    def test_five_links_archive_exact_bytes_and_reject_every_old_continuation(self):
+        ancestors = {p.name: p.read_bytes() for p in self.directory.glob('abandoned-*')}
+        self.assertEqual(self.retire(), store.OWNER_PROMPT_OPERATION)
+        archive = self.directory / store._owner_prompt_archive_name()
+        self.assertEqual(archive.stat().st_mode & 0o777, 0o400)
+        self.assertLessEqual(len(archive.read_bytes()), 32768)
+        saved = store._validate_owner_prompt_archive(archive.read_bytes())
+        for field, raw in (('original_selection',self.original), ('enrollment_receipt',OWNER_ENROLLMENT),
+                ('prompt_binding_receipt',OWNER_BINDING), ('terminal_receipt',self.terminal),
+                ('retirement_receipt',self.retirement)):
+            self.assertEqual(saved[field].encode(),raw)
+        for name, raw in ancestors.items(): self.assertEqual((self.directory/name).read_bytes(),raw)
+        self.assertFalse(self.pointer.exists())
+        store._check_continuation(store.OWNER_PROMPT_OPERATION)
+        for old in (None,store.OLD_DUMMY_OPERATION,store.PENDING_OPERATION,store.DIALOG_OPERATION,store.PAIR_OPERATION):
+            with self.subTest(old=old), self.assertRaises(store.Refused): store._check_continuation(old)
+
+    def test_changed_each_receipt_refuses_before_connection(self):
+        for name, raw in (('enrollment',OWNER_ENROLLMENT), ('binding',OWNER_BINDING),
+                          ('terminal',self.terminal), ('retirement',self.retirement)):
+            with self.subTest(name=name), patch.object(store._SecretBackend,'_connect') as connect, self.assertRaises(store.Refused):
+                self.retire(**{name:raw+b' '})
+            connect.assert_not_called();self.untouched()
+
+    def test_live_caller_or_parent_refuses(self):
+        for mock in (self.closed,self.ended):
+            mock.return_value=False
+            with self.assertRaises(store.Refused):self.retire()
+            self.untouched();mock.return_value=True
+
+    def test_changed_exact_selection_or_any_progress_refuses(self):
+        for changes in ({'creation_operation_id':store.PAIR_OPERATION},
+                {'requested_label':'CultureCabinet'+'0'*32},
+                {'returned_prompt_ref':'/org/freedesktop/secrets/prompt/other'},
+                {'service_provenance':{**self.value['service_provenance'],'caller':':1.999'}},
+                {'returned_collection_ref':store.COLLECTION_ROOT+'owned'},
+                {'canary_state':'CREATE_PENDING'}, {'master_phase':'WRITE_PENDING'},
+                {'terminal_fact':'UNCERTAIN_OR_REFUSED'}):
+            changed=store.canonical({**self.value,**changes});self.pointer.write_bytes(changed)
+            with self.subTest(changes=changes),patch.object(store,'OWNER_PROMPT_SELECTION_SHA',hashlib.sha256(changed).hexdigest()),self.assertRaises(store.Refused):self.retire()
+            self.assertFalse((self.directory/store._owner_prompt_archive_name()).exists())
+        self.pointer.write_bytes(self.original)
+
+    def test_cas_race_leaves_new_pointer_and_durable_archive(self):
+        read=store._read_private_at;seen=[]
+        def race(directory,name,*args):
+            if name=='selection.json':
+                seen.append(name)
+                if len(seen)==2:
+                    replacement=self.directory/'replacement';replacement.write_bytes(self.original)
+                    replacement.chmod(0o600);os.replace(replacement,self.pointer)
+            return read(directory,name,*args)
+        with patch.object(store,'_read_private_at',side_effect=race),self.assertRaises(store.Refused):self.retire()
+        self.assertEqual(self.pointer.read_bytes(),self.original)
+        self.assertTrue((self.directory/store._owner_prompt_archive_name()).exists())
+
+    def test_fsync_interruption_identical_archive_recovery(self):
+        with patch.object(store.os,'fsync',side_effect=OSError()),self.assertRaises(OSError):self.retire()
+        self.assertTrue(self.pointer.exists())
+        archive=self.directory/store._owner_prompt_archive_name();raw=archive.read_bytes();inode=archive.stat().st_ino
+        self.retire();self.assertEqual(archive.read_bytes(),raw);self.assertEqual(archive.stat().st_ino,inode)
+        store._check_continuation(store.OWNER_PROMPT_OPERATION)
+
+    def test_foreign_archive_or_changed_missing_predecessor_refuses(self):
+        archive=self.directory/store._owner_prompt_archive_name();archive.write_bytes(b'foreign');archive.chmod(0o400)
+        with self.assertRaises(store.Refused):self.retire()
+        self.assertEqual(archive.read_bytes(),b'foreign');self.assertTrue(self.pointer.exists())
+        archive.unlink();self.fourth.chmod(0o600);self.fourth.write_bytes(self.fourth_bytes+b' ');self.fourth.chmod(0o400)
+        with self.assertRaises(store.Refused):self.retire()
+        self.untouched();self.fourth.unlink()
+        with self.assertRaises(FileNotFoundError):self.retire()
+        self.untouched()
+
+    def test_worker_new_link_reaches_only_one_creation_and_pending_blocks_it(self):
+        from unittest.mock import Mock
+        operation='30000000-0000-4000-8000-000000000003'
+        with patch.object(store,'_Creation') as creation:
+            with self.assertRaises(store.Refused):
+                store._provision_worker(operation,time.monotonic()+10,store.OWNER_PROMPT_OPERATION)
+            creation.assert_not_called()
+        self.retire()
+        fixture=Mock();fixture.create.side_effect=store.Refused()
+        with patch.object(store._SecretBackend,'_verify_service'),patch.object(store,'_Creation',return_value=fixture) as creation:
+            with self.assertRaises(store.Refused):
+                store._provision_worker(operation,time.monotonic()+10,store.OWNER_PROMPT_OPERATION)
+        self.assertEqual(creation.call_args.args[2],store.OWNER_PROMPT_OPERATION)
+        fixture.create.assert_called_once();fixture.bind_file.assert_not_called()
+
+    def test_terminal_and_size_bounds(self):
+        with patch.object(store.os,'isatty',return_value=False),self.assertRaises(store.Refused):self.retire()
+        self.untouched()
+        canonical=store.canonical
+        def oversize(value):
+            raw=canonical(value)
+            return raw+b' '*(32769-len(raw)) if value.get('schema')=='cabinet-abandoned-owner-prompt/v1' else raw
+        with patch.object(store,'canonical',side_effect=oversize),self.assertRaises(store.Refused):self.retire()
+        self.untouched()
+
+    def test_closed_archive_schema_rejects_unknown_fields(self):
+        self.retire();archive=self.directory/store._owner_prompt_archive_name()
+        value=json.loads(archive.read_bytes());value['extra']=True
+        with self.assertRaises(store.Refused):store._validate_owner_prompt_archive(store.canonical(value))
+
+    def test_new_continuation_selection_and_explicit_parent_client(self):
+        self.retire()
+        value=store._new_selection(str(store.uuid.uuid4()),SimpleNamespace(owner=':1.0',connection=SimpleNamespace(get_unique_name=lambda:':1.555')),store.OWNER_PROMPT_OPERATION)
+        store._selection_shape(value,allow_pending=True)
+        with patch.object(store.subprocess,'Popen',side_effect=OSError('captured')) as popen:
+            store.provision(continuation_archive=store.OWNER_PROMPT_OPERATION)
+        self.assertIn(store.OWNER_PROMPT_OPERATION,popen.call_args.args[0])
+
+
+class OwnerPromptActualReceiptTests(unittest.TestCase):
+    def test_exact_actual_receipts_without_operator_state(self):
+        selection=store.canonical(json.loads(OWNER_BINDING)['selection'])
+        store._owner_prompt_receipts(selection,OWNER_ENROLLMENT,OWNER_BINDING,OWNER_TERMINAL,OWNER_RETIREMENT)
+
+    def test_child_cli_forwards_newest_link_without_os_effect(self):
+        operation='30000000-0000-4000-8000-000000000003'
+        with patch.object(store,'_protect_process'), patch.object(store,'_check_pipe'), \
+             patch.object(store,'_provision_worker') as worker, patch.object(store,'_pipe_write'), \
+             patch.object(store.os,'close'):
+            store._main([store.HELPER,'--provision','--operation-id',operation,
+                '--response-fd','99','--continuation-archive',store.OWNER_PROMPT_OPERATION])
+        self.assertEqual(worker.call_args.args[0],operation)
+        self.assertEqual(worker.call_args.args[2],store.OWNER_PROMPT_OPERATION)
+
+    def test_bus_check_is_only_pinned_metadata_and_rejects_changed_service(self):
+        backend=object.__new__(store._SecretBackend)
+        backend.owner=':1.0';backend.GLib=SimpleNamespace(Variant=lambda signature,value:(signature,value))
+        backend._verify_service=lambda:None
+        from unittest.mock import Mock
+        backend._dbus=Mock(return_value=SimpleNamespace(get_type_string=lambda:'(b)',unpack=lambda:(False,)))
+        self.assertTrue(backend._owner_prompt_caller_closed())
+        self.assertEqual(backend._dbus.call_args.args,('org.freedesktop.DBus','/org/freedesktop/DBus',
+            'org.freedesktop.DBus','NameHasOwner',('(s)',(':1.24305',))))
+        backend.owner=':1.9';backend._dbus.reset_mock()
+        with self.assertRaises(store.Refused):backend._owner_prompt_caller_closed()
+        backend._dbus.assert_not_called()
+
+    def test_parent_generation_metadata_exact_reuse_and_absence(self):
+        # Reused numeric PID is harmless; the original live generation refuses.
+        stat_line='1616904 (public name) '+ ' '.join(['0']*19+['135612024'])
+        with patch.object(Path,'stat',return_value=SimpleNamespace(st_uid=1000)),patch.object(Path,'read_text',return_value=stat_line):
+            self.assertFalse(store._owner_prompt_parent_ended())
+        with patch.object(Path,'stat',side_effect=FileNotFoundError):self.assertTrue(store._owner_prompt_parent_ended())
+        with patch.object(Path,'stat',return_value=SimpleNamespace(st_uid=1000)),patch.object(Path,'read_text',return_value=stat_line+'0'):
+            self.assertTrue(store._owner_prompt_parent_ended())
 
 
 class FileDummyCollection(DummyCollection):

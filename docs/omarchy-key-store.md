@@ -215,6 +215,29 @@ archive, then applies the same final byte/inode CAS. All four fixed archive link
 are required; older continuation references cannot bypass the newest tombstone.
 No OS outcome is inferred or cleaned up.
 
+The ended owner-operated `2806e95c-fcb6-4ab8-94a7-b090bc52affc`
+attempt has a separate terminal-only `retire_owner_prompt_dummy(enrollment_receipt,
+prompt_binding_receipt, terminal_receipt, retirement_receipt, timeout=10)` path.
+Only the compiled0750/57a9/60eb/7643 receipt bytes and6d96 selection are accepted.
+It checks the exact pre-master predicate, four immutable predecessors, the ended
+original parent generation and bus caller closure. The new closed
+`cabinet-abandoned-owner-prompt/v1` archive preserves the selection and all four
+receipt strings and their digests, plus the four-link predecessor identity.
+The existing private32768-byte,0400, exclusive-create/fsync and final byte/inode
+CAS rules apply. Interrupted identical archives may finish local bookkeeping;
+foreign archives or changed pointers refuse. Possible OS collection existence
+stays unknown. This path never queries the old prompt, discovers collections,
+deletes an OS object, opens a new prompt or handles a password.
+
+Once that fifth archive exists, every ordinary selection/provision/child caller
+requires the explicit2806 continuation and validates all five links; older
+references cannot bypass it. A later separately routed enrollment retains the
+original120-second bound and no automatic retry. The versioned producer and native
+receiver must match the accepted source/helper and five-link ancestry. Runtime
+retirement and enrollment remain unrun by this source repair. Another Create
+requires a proven match between the owner's existing TryOmarchy view and the
+same graphical session receiving GCR; compositor reachability alone is insufficient.
+
 Those two pinned receipts contain the exact recorded clock atom
 `1340075.871266088`, once under the terminal's original_bounds and once at the
 positive root. Only those exact hashes/paths/value may decode that finite float

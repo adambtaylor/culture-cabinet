@@ -17,11 +17,12 @@ from django.views.decorators.http import require_GET, require_POST
 from shelf import discovery_sources as sources, discovery_state as storage
 from shelf.discovery_reducer import CHOICE_LABELS, replay, select
 from shelf.models import DiscoveryState
+from shelf.recovery import RecoveryBlocked
 from shelf.provider_views import _profile
 from shelf.authority import SELECTION_KEY
 from shelf.feedback_scale import REACTION_LABELS, clean_note
 from shelf.event_source_registry import (SOURCES as EVENT_SOURCES, LEGACY_ALIASES,
-                                         source_cache_key, source_controls)
+                                         source_cache_key, source_controls, source_route)
 
 DECK_KEY = 'discovery_feedback_decks_v1'
 QUEUES = (('all', 'Music & events'), ('artist', 'Music (Bands)'))
@@ -35,6 +36,8 @@ class ActionForm(forms.Form):
     nonce = forms.CharField(max_length=200)
     operation = forms.ChoiceField(choices=[(v, v) for v in ('respond', 'save', 'unsave', 'undo', 'restart', 'event_source', 'radio', 'events', 'venue303', 'forum', 'rrr', 'rrr_detail', 'beat', 'beat_detail', 'pbs', 'tribe', 'soundsystems', 'gallery')])
     source_id = forms.ChoiceField(required=False, choices=[(key, value.label) for key, value in EVENT_SOURCES.items()])
+    event_route = forms.ChoiceField(required=False, choices=[('programs', 'Programs & events'),
+                                                          ('exhibitions', 'Exhibition runs')])
     key = forms.CharField(required=False, max_length=160)
     choice = forms.ChoiceField(required=False, choices=CHOICE_LABELS)
     queue = forms.ChoiceField(required=False, choices=QUEUES)
@@ -52,7 +55,7 @@ class ActionForm(forms.Form):
         if 'queue' in self.data and not data.get('queue'):
             self.add_error('queue', 'Choose an available queue.')
         # Preserve the byte-for-byte historical receipt input when absent.
-        for field in ('note', 'queue', 'source_id'):
+        for field in ('note', 'queue', 'source_id', 'event_route'):
             if field not in self.data:
                 data.pop(field, None)
         if data.get('operation') == 'event_source':
@@ -60,6 +63,8 @@ class ActionForm(forms.Form):
                 self.add_error('source_id', 'Choose an available source.')
         elif data.get('source_id'):
             self.add_error('source_id', 'Unexpected source for this action.')
+        if data.get('event_route') and (data.get('operation') != 'event_source' or data.get('source_id') != 'ngv'):
+            self.add_error('event_route', 'Unexpected event route for this action.')
         return data
 
 
@@ -67,11 +72,17 @@ def guard(view):
     @wraps(view)
     def call(request, *args, **kwargs):
         try:
-            return view(request, *args, **kwargs)
+            # The existing source restriction barrier spans rendering as well as
+            # link projection, so a restriction cannot race the emitted link.
+            profile_id = kwargs.get('profile_id', args[0] if args else None)
+            with storage.reference_window(request, profile_id):
+                return view(request, *args, **kwargs)
         except storage.Conflict:
             return _error(request, 'This response is stale. Reload before responding.', 409)
         except (OperationalError, IntegrityError):
             return _error(request, 'Local discovery storage unavailable or busy. Reload before retrying.', 503)
+        except RecoveryBlocked:
+            return _error(request, 'Saved event source policy is unavailable. Reload before retrying.', 503)
         except ValueError:
             return _error(request, 'Invalid discovery action. Reload the page.', 400)
     return call
@@ -123,15 +134,25 @@ def candidates(request, profile_id, mode, history):
     from shelf.social_discovery import reviewed_candidates
     for card in reviewed_candidates(request, profile_id, list(cards.values())):
         cards[card.key] = card
+    from shelf.event_saved_references import project_references, ReferenceCandidate
+    with storage.reference_window(request, profile_id) as denied:
+        references = project_references(history, mode=mode, descriptors=EVENT_SOURCES,
+                                        denied_namespaces=denied)
     # Retain only previously judged identity/provenance after public content expires.
     for event in history:
         key, source = event['key'], event.get('source', {})
         if key and key.split(':')[1] in ('event','artist','recording','venue') and key not in cards and source.get('provenance') in ('live-automated', 'browser-observed', 'manual-entry'):
-            cards[key] = sources.Candidate(key, 'Previously judged identity (source details expired)',
+            # Every expired EVENT identity is history-only, including the real
+            # null-policy opaque fallback. Link permission is a separate optional
+            # value; missing URLs on fresh source cards never imply expiry.
+            candidate_type = ReferenceCandidate if key.split(':')[1] == 'event' else sources.Candidate
+            extra = {'saved_reference': references[key]} if key in references else {}
+            cards[key] = candidate_type(key, 'Saved event reference — source details expired'
+                if key in references else 'Previously judged identity (source details expired)',
                 key.split(':')[1], source['name'], source['provenance'], source['rank'],
                 source['retrieved_at'], tuple(source.get('roots', [])),
                 artist_key=source.get('artist_key'), venue_key=source.get('venue_key'),
-                lineage=tuple(tuple(item) for item in source.get('lineage', [])))
+                lineage=tuple(tuple(item) for item in source.get('lineage', [])), **extra)
     return list(cards.values())
 
 
@@ -209,13 +230,21 @@ def _pool_digest(cards):
     return hashlib.sha256('\n'.join(sorted({card.key for card in cards})).encode()).hexdigest()
 
 
+def _recommendation_cards(cards):
+    from shelf.event_saved_references import ReferenceCandidate
+    # Cache loss keeps the identity/key in history, so ranking AND retained
+    # session slots must exclude the stale bookmark. Full pools still service
+    # responses, saves and Undo; a key-only deck digest cannot detect this change.
+    return [card for card in cards if not isinstance(card, ReferenceCandidate)]
+
+
 def _rank(cards, state, category):
-    return select(cards, state, category=category, unjudged_only=True)
+    return select(_recommendation_cards(cards), state, category=category, unjudged_only=True)
 
 
 def _replace_key(deck, cards, state, submitted):
     """Pin other server-owned slots; only rank the submitted slot's successor."""
-    registered = {card.key: card for card in cards}
+    registered = {card.key: card for card in _recommendation_cards(cards)}
     old = deck['keys'] + deck.get('source_keys', [])
     pinned = [key for key in old if key != submitted and key in registered and key not in state['choices']]
     origin = registered.get(submitted)
@@ -232,6 +261,7 @@ def _replace_key(deck, cards, state, submitted):
 
 
 def _display(request, profile_id, card, state, now, why=()):
+    from shelf.event_saved_references import ReferenceCandidate
     from shelf.gallery_curation import reasons
     why = tuple(why) + (reasons(card, actor_id=request.user.pk, profile_id=profile_id)
                         if card.provenance != 'fixture' else ())
@@ -239,7 +269,10 @@ def _display(request, profile_id, card, state, now, why=()):
     notice = getattr(card, 'source_notice', '')
     if notice:
         date_status += f' Source notice: {notice} (not a current seller check).'
+    reference_only = isinstance(card, ReferenceCandidate)
     return {'card': card, 'why': why, 'freshness': card.freshness(now),
+            'reference_only': reference_only,
+            'saved_reference': card.saved_reference if reference_only else None,
             'date_status': date_status, 'choice': state['choices'].get(card.key, ''),
             'note': state.get('notes', {}).get(card.key, ''), 'saved': card.key in state['saved']}
 
@@ -252,13 +285,13 @@ def _context(request, profile, mode, queue, category, stored, cards):
     pool = _pool(cards, queue)
     ranked = _rank(pool, state, category)
     deck = _deck(request, profile.pk, mode, queue)
-    registered = {card.key: card for card in pool}
+    registered = {card.key: card for card in _recommendation_cards(pool)}
     pool_digest = _pool_digest(pool)
     if not deck or deck['category'] != category or deck.get('pool_digest') != pool_digest:
         deck = {'keys': [row['card'].key for row in ranked['selection']], 'category': category, 'revision': revision}
         if mode == 'household' and queue == 'all' and category in ('all', 'gallery', 'art_fair'):
             from shelf.gallery_curation import select as gallery_selection
-            for card in gallery_selection((c for c in pool if c.key not in state['choices']
+            for card in gallery_selection((c for c in registered.values() if c.key not in state['choices']
                     and (category == 'all' or c.category == category)),
                     actor_id=request.user.pk, profile_id=profile.pk, limit=2):
                 if card.key not in deck['keys']:
@@ -401,7 +434,9 @@ def action(request, profile_id):
             seed = data['key'].split(':')[-1] if data['key'] else ''
             source_id = data.get('source_id') if data['operation'] == 'event_source' else LEGACY_ALIASES.get(data['operation'])
             if data['operation'] == 'event_source':
-                result = sources.fetch_public('event_source', seed, data['radio_mode'], timezone.now(), source_id=source_id)
+                route_input = {'event_route': data['event_route']} if 'event_route' in data else {}
+                result = sources.fetch_public('event_source', seed, data['radio_mode'], timezone.now(),
+                                              source_id=source_id, **route_input)
             else:
                 result = sources.fetch_public(data['operation'], seed, data['radio_mode'], timezone.now())
             with transaction.atomic():
@@ -409,14 +444,19 @@ def action(request, profile_id):
                 entries = public_entries(request, profile_id)
                 # Canonicalize aliases so a failed refresh through either form
                 # replaces the same source result, without erasing other sources.
-                entry_key = source_cache_key(source_id) if source_id else (data['operation'], seed, data['radio_mode'])
+                route = source_route(source_id, data.get('event_route', '')) if source_id else ''
+                entry_key = source_cache_key(source_id, route) if source_id else (data['operation'], seed, data['radio_mode'])
                 source_label = EVENT_SOURCES[source_id].label if source_id else {
                     'radio': 'ListenBrainz artist radio', 'beat': 'Beat Magazine',
                     'tribe': 'Tribe Soundsystem RSS', 'soundsystems': 'Sound Systems of Melbourne',
                     'gallery': 'Gertrude / Australian Print Workshop'}[data['operation']]
+                if route:
+                    source_label += ' · ' + {'programs': 'Programs & events', 'exhibitions': 'Exhibition runs'}[route]
                 entries[entry_key] = {
                     'outcome': result, 'at': timezone.now(),
                     'source': source_label}
+                if route:
+                    entries[entry_key]['event_route'] = route
                 PUBLIC_CACHE.set(cache_key(request, profile_id), entries, timeout=900)
     else:
         if data['radio_mode']:

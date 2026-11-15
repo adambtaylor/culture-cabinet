@@ -336,14 +336,16 @@ def parse_public_event_response(raw, *, now, retrieved_at):
     return tuple(cards)
 
 
-def fetch_public(operation, seed, mode, now, *, source_id=''):
+def fetch_public(operation, seed, mode, now, *, source_id='', event_route=''):
     """Only the explicit authenticated POST binds this runtime transport."""
     from shelf import discovery_transport as transport
     try:
+        if type(event_route) is not str:
+            raise SourceError('Invalid fixed event route.')
         if operation == 'event_source' and not seed and not mode:
             from shelf.event_scraping import collect
-            return collect(source_id, now=now)
-        if source_id:
+            return collect(source_id, now=now, **({'event_route': event_route} if event_route else {}))
+        if source_id or event_route:
             raise SourceError('Unexpected event source field.')
         if operation == 'gallery' and not seed and not mode:
             from shelf.gallery_sources import fetch

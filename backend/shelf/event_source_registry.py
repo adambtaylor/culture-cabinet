@@ -10,6 +10,17 @@ from urllib.parse import urlsplit
 
 from shelf.discovery_sources import SourceError
 
+# Restriction identities outlive acquisition and bookmark-policy readiness.
+# Keep the map closed to reviewed grants: Linden's adapter is available, but its
+# source evidence supplies no durable-reference grant, so Linden stays opaque.
+# This is not permission or an event-source:* prefix parser.
+SOURCE_NAMESPACES = MappingProxyType({
+    'pbs': 'event-source:pbs', 'rrr': 'event-source:rrr',
+    'venue303': 'event-source:venue303', 'forum': 'event-source:forum',
+    'moshtix': 'event-source:moshtix',
+})
+REFERENCE_POLICY = 'event-private-bookmark-reference/v1'
+
 
 @dataclass(frozen=True)
 class EventSourceDescriptor:
@@ -24,6 +35,11 @@ class EventSourceDescriptor:
     max_bytes: int = 524288
     retention_seconds: int = 0
     policy_scope: str = 'Source access and retention remain unverified.'
+    # Content-cache retention does not confer persistent bookmark permission.
+    # Positive reviewed policies are supplied separately; absent means opaque.
+    reference_policy_ref: str | None = None
+    restriction_namespace: str = ''
+    reference_url_validator: Callable | None = None
 
     @property
     def implemented(self):
@@ -61,9 +77,34 @@ def _moshtix(now):
     return events(now)  # Accepted one-row normal query, not the nine-row helper.
 
 
+def _bar_open(now):
+    from shelf.event_listing_transport import bar_open
+    return bar_open()
+
+
+def _west_space(now):
+    from shelf.event_listing_transport import west_space
+    return west_space()
+
+
 def _moons24(now):
     from shelf.event_listing_transport import moons24
     return moons24()
+
+
+def _apw(now):
+    from shelf.apw_events import acquire
+    return acquire(now)
+
+
+def _my_aeon(now):
+    from shelf.event_listing_transport import my_aeon
+    return my_aeon()
+
+
+def _linden(now):
+    from shelf.event_listing_transport import linden
+    return linden()
 
 
 def _impro_melbourne(now):
@@ -96,8 +137,33 @@ def _parse_moshtix(raw, *, now, retrieved_at):
     return parse_public_event_response(raw, now=now, retrieved_at=retrieved_at)
 
 
+def _parse_bar_open(raw, *, now, retrieved_at):
+    from shelf.bar_open_events import parse_listing
+    return parse_listing(raw, retrieved_at=retrieved_at)
+
+
+def _parse_west_space(raw, *, now, retrieved_at):
+    from shelf.west_space_events import parse_listing
+    return parse_listing(raw, retrieved_at=retrieved_at)
+
+
 def _parse_moons24(raw, *, now, retrieved_at):
     from shelf.moons24_events import parse_listing
+    return parse_listing(raw, retrieved_at=retrieved_at)
+
+
+def _parse_apw(raw, *, now, retrieved_at):
+    from shelf.apw_events import parse_listing
+    return parse_listing(raw, retrieved_at=retrieved_at)
+
+
+def _parse_my_aeon(raw, *, now, retrieved_at):
+    from shelf.my_aeon_events import parse_listing
+    return parse_listing(raw, retrieved_at=retrieved_at)
+
+
+def _parse_linden(raw, *, now, retrieved_at):
+    from shelf.linden_events import parse_listing
     return parse_listing(raw, retrieved_at=retrieved_at)
 
 
@@ -150,7 +216,8 @@ def _descriptor(row):
     source_id, label, targets, boundary = row
     label = {'rrr': 'Triple R events', 'pbs': 'PBS Events',
              'venue303': '303 gigs and events', 'forum': 'Forum Melbourne shows'}.get(source_id, label)
-    common = dict(source_id=source_id, label=label, targets=targets)
+    common = dict(source_id=source_id, label=label, targets=targets,
+                  restriction_namespace=SOURCE_NAMESPACES.get(source_id, ''))
     active = {
         'rrr': (_rrr, _parse_rrr, 131072,
                 'Partial coverage: up to nine cards from one Triple R listing page. '
@@ -167,10 +234,28 @@ def _descriptor(row):
         'moshtix': (_moshtix, _parse_moshtix, 131072,
                 'Partial Moshtix coverage: one public event in VIC within eight weeks; '
                 'status and ticket availability unverified.'),
+        'bar_open': (_bar_open, _parse_bar_open, 524288,
+                'Partial Bar Open coverage: the official Make It Up Club page only; '
+                'venue-wide dated inventory is unverified.'),
+        'west_space': (_west_space, _parse_west_space, 524288,
+                'Partial West Space coverage: one programme index, up to nine overlapping/current '
+                'or next-eight-week runs. A date range is not an opening, daily hours or a confirmed session.'),
         'moons24': (_moons24, _parse_moons24, 524288,
                 'Partial 24 Moons coverage: current-week plus later programme, up to nine leads '
                 'within eight weeks. Unknown dates remain unverified; source links open the '
                 'programme, not an exact session or a checked seller.'),
+        'apw': (_apw, _parse_apw, 524288,
+                'Partial APW coverage: the fixed homepage only; separately identified opening '
+                'and exhibition run when explicitly dated. No artwork offers, complete programme '
+                'or current attendance/availability is established.'),
+        'my_aeon': (_my_aeon, _parse_my_aeon, 524288,
+                'Partial My Aeon coverage: one official listing, up to nine leads; known dates limited '
+                'to eight weeks. Date-only labels are not show times; unknown dates and ticket '
+                'availability remain unverified.'),
+        'linden': (_linden, _parse_linden, 524288,
+                'Partial Linden coverage: up to nine current-region leads within eight weeks. '
+                'Local clocks have no verified timezone; audience notices remain source statements. '
+                'Confirm attendance and current conditions with Linden.'),
         'impro_melbourne': (_impro_melbourne, _parse_impro_melbourne, 524288,
                 'Partial Impro Melbourne coverage: Now Playing show runs in the explicit 2026 season, '
                 'up to nine overlapping or next-eight-week runs. Ranges are not individual '
@@ -178,17 +263,42 @@ def _descriptor(row):
     }
     if source_id in active:
         acquire, parse, limit, coverage = active[source_id]
+        missing = {
+            'bar_open': ('The official page is reachable, but this reader cannot establish a dated programme. '
+                'A weekly recurrence is not a confirmed next event. Check the official source for details.'),
+            'my_aeon': ('The official listing supplies no supported current leads in this page. '
+                'Old years are not rolled forward; this is not proof that no upcoming events exist. '
+                'Check the official source for the current programme.'),
+            'west_space': ('No supported current or next-eight-week programme run was established '
+                'on this page; this is not proof of no events.'),
+            'linden': ('No eligible current Linden programme was established in this bounded read; '
+                'this is not proof of no events.'),
+            'apw': ('The homepage establishes no current or next-eight-week opening '
+                'or bounded exhibition run. A past opening with unknown run dates is not current coverage.'),
+            'impro_melbourne': ('No eligible Now Playing run was established in this bounded 2026 season '
+                'read; this is not proof of no current shows.'),
+        }
         return EventSourceDescriptor(**common, acquire=acquire, parse=parse, coverage=coverage,
             access_state='access-unverified' if source_id == 'forum' else 'implemented-unproved',
-            unavailable_message=('No eligible Now Playing run was established in this bounded 2026 season '
-                'read; this is not proof of no current shows.') if source_id=='impro_melbourne' else
-                'This source is not connected yet.',
+            unavailable_message=missing.get(source_id,'This source is not connected yet.'),
             max_bytes=limit, retention_seconds=900,
             policy_scope='Existing bounded factual-link scope only; no model or redistribution grant.')
     blocked = {
         'butterfly_club': ('permission-required',
             'The official robots rules do not permit this reader to fetch the homepage. '
             'Current shows and venue operating status are unverified; no homepage was fetched.'),
+        'affordable_art_fair': ('permission-required',
+            'The official access-policy request was refused; no fair listing was fetched. '
+            'Current Melbourne fair dates and sessions remain unverified.'),
+        'improv_conspiracy': ('not-implemented',
+            'A current readable programme and the advertised Performance Calendar target '
+            'have not been established for this reader. No shows or sessions are confirmed.'),
+        'triple_j': ('permission-required',
+            'ABC publishes AI-agent access restrictions. A permitted acquisition route for this '
+            'session is not established; no Triple J listing was fetched.'),
+        'double_j': ('permission-required',
+            'ABC publishes AI-agent access restrictions. A permitted acquisition route for this '
+            'session is not established; no Double J listing or news page was fetched.'),
         'halftix': ('permission-required', 'Publisher permission for retrieval and storage is required; open the official link manually.'),
         'la_sirene': ('owner-action-required', 'A permitted, witnessed visual observation is needed; no public posts are available to this reader.'),
         'hamer_hall': ('access-unverified', 'The official programme reached a waiting room; no bypass or alternate route is attempted.'),
@@ -208,13 +318,26 @@ def get_source(source_id):
     return SOURCES[source_id]
 
 
-def source_cache_key(source_id):
+def source_route(source_id, event_route=''):
+    """Only NGV has two fixed event indexes; routes never contain URLs."""
+    get_source(source_id)
+    if source_id == 'ngv':
+        from shelf.ngv_events import selected_route
+        return selected_route(event_route)
+    if type(event_route) is not str or event_route:
+        raise SourceError('Unexpected event route for this source.')
+    return ''
+
+
+def source_cache_key(source_id, event_route=''):
     """Generic and legacy controls replace the same cached source result.
 
     Keeping legacy keys avoids both duplicate source cards and stale success
     surviving a failed refresh through the other control. No source I/O occurs.
     """
-    get_source(source_id)
+    route = source_route(source_id, event_route)
+    if route:
+        return source_id, route, ''
     legacy = next((alias for alias, source in LEGACY_ALIASES.items() if source == source_id), source_id)
     return legacy, '', ''
 
@@ -225,5 +348,9 @@ def source_controls():
                   'implemented': source.implemented, 'access_state': source.access_state,
                   'official_urls': source.targets, 'origin_groups': source.origin_groups,
                   'coverage': source.coverage, 'retention_seconds': source.retention_seconds,
+                  'event_routes': tuple({'event_route': route, 'label': label}
+                      for route, label in (('programs', 'Programs & events'),
+                                           ('exhibitions', 'Exhibition runs')))
+                      if source.source_id == 'ngv' else (),
                   'unavailable_message': source.unavailable_message}
                  for source in SOURCES.values())
