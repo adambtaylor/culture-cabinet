@@ -30,11 +30,17 @@ TARGETS = MappingProxyType({
     'linden': ('https://www.lindenarts.org/public-programs/events/', 'https://www.lindenarts.org/robots.txt'),
     'butterfly_club': ('https://thebutterflyclub.com/', 'https://thebutterflyclub.com/robots.txt'),
     'impro_melbourne': ('https://www.impromelbourne.com.au/shows/2026-season/', 'https://www.impromelbourne.com.au/robots.txt'),
+    'miff': ('https://miff.com.au/program', 'https://miff.com.au/robots.txt'),
+    'comedy_festival': ('https://www.comedyfestival.com.au/browse-shows/', 'https://www.comedyfestival.com.au/robots.txt'),
+    'fringe': ('https://www.melbournefringe.com.au/whats-on/events', 'https://www.melbournefringe.com.au/robots.txt'),
+    'gertrude': ('https://gertrude.org.au/exhibitions/', 'https://gertrude.org.au/robots.txt'),
+    'arts_house': ('https://www.artshouse.com.au/whats-on/', 'https://www.artshouse.com.au/robots.txt'),
 })
 _DELAYS = {'venue303': 10, 'forum': 10, 'bar_open': 10, 'west_space': 10, 'moons24': 10,
            'affordable_art_fair': 10, 'improv_conspiracy': 10,
            'butterfly_club': 10, 'impro_melbourne': 10,
-           'triple_j': 10, 'double_j': 10, 'my_aeon': 10, 'ngv': 10, 'linden': 10}
+           'triple_j': 10, 'double_j': 10, 'my_aeon': 10, 'ngv': 10, 'linden': 10,
+           'miff': 10, 'comedy_festival': 10, 'fringe': 10, 'gertrude': 10, 'arts_house': 10}
 _ORIGIN_GROUPS = MappingProxyType({'triple_j': 'abc', 'double_j': 'abc'})
 _RATE_DIRECTORY = '/tmp'
 # Initial bounded observations: 303 robots allowed this path; Forum returned
@@ -48,7 +54,9 @@ LISTING_ACCESS = MappingProxyType({'venue303': True, 'forum': False, 'bar_open':
                                  'moons24': True, 'affordable_art_fair': False,
                                  'improv_conspiracy': True, 'triple_j': False,
                                  'double_j': False, 'my_aeon': True, 'linden': True,
-                                 'butterfly_club': False, 'impro_melbourne': True})
+                                 'butterfly_club': False, 'impro_melbourne': True,
+                                 'miff': True, 'comedy_festival': True, 'fringe': True,
+                                 'gertrude': True, 'arts_house': True})
 # Exact retained NGV robots200 allowed both paths, with the existing10s floor.
 # Enable the first assigned programs slice; exhibitions stays separately closed
 # until its format/outcome path is ready. This grants no retained-content rights.
@@ -161,6 +169,26 @@ def butterfly_club():
 
 def impro_melbourne():
     return _read('impro_melbourne')
+
+
+def miff():
+    return _read('miff')
+
+
+def comedy_festival():
+    return _read('comedy_festival')
+
+
+def fringe():
+    return _read('fringe')
+
+
+def gertrude():
+    return _read('gertrude')
+
+
+def arts_house():
+    return _read('arts_house')
 
 
 def affordable_art_fair():

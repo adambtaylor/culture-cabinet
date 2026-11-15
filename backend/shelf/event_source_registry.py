@@ -112,6 +112,21 @@ def _impro_melbourne(now):
     return impro_melbourne()
 
 
+def _fringe(now):
+    from shelf.event_listing_transport import fringe
+    return fringe()
+
+
+def _gertrude(now):
+    from shelf.event_listing_transport import gertrude
+    return gertrude()
+
+
+def _arts_house(now):
+    from shelf.event_listing_transport import arts_house
+    return arts_house()
+
+
 def _parse_rrr(raw, *, now, retrieved_at):
     from shelf.rrr_events import parse_listing
     return parse_listing(raw, retrieved_at=retrieved_at)
@@ -172,6 +187,21 @@ def _parse_impro_melbourne(raw, *, now, retrieved_at):
     return parse_listing(raw, retrieved_at=retrieved_at)
 
 
+def _parse_fringe(raw, *, now, retrieved_at):
+    from shelf.fringe_events import parse_listing
+    return parse_listing(raw, retrieved_at=retrieved_at)
+
+
+def _parse_gertrude(raw, *, now, retrieved_at):
+    from shelf.gertrude_events import parse_listing
+    return parse_listing(raw, now=now, retrieved_at=retrieved_at)
+
+
+def _parse_arts_house(raw, *, now, retrieved_at):
+    from shelf.arts_house_events import parse_listing
+    return parse_listing(raw, now=now, retrieved_at=retrieved_at)
+
+
 # Finite owner/Architecture catalogue, not an expandable client-controlled list.
 # Unimplemented entries are explicit outcomes with zero acquisition, never seeds.
 _PLANNED = (
@@ -191,8 +221,8 @@ _PLANNED = (
     ('affordable_art_fair', 'Affordable Art Fair Melbourne', ('https://affordableartfair.com/fairs/Melbourne/',), 'fair/run distinct from individual events'),
     ('triple_j', 'Triple J', ('https://www.abc.net.au/triplej/touring',), 'shell, current Melbourne guide unverified'),
     ('double_j', 'Double J', ('https://www.abc.net.au/listen/doublej/touring', 'https://www.abc.net.au/listen/doublej/music-news'), 'dated articles are not a complete gig guide'),
-    ('miff', 'MIFF', ('https://miff.com.au/',), 'programme edition/session distinction'),
-    ('comedy_festival', 'Melbourne International Comedy Festival', ('https://www.comedyfestival.com.au/',), 'active programme unverified'),
+    ('miff', 'MIFF', ('https://miff.com.au/program',), 'programme edition/session distinction'),
+    ('comedy_festival', 'Melbourne International Comedy Festival', ('https://www.comedyfestival.com.au/browse-shows/',), 'active programme unverified'),
     ('fringe', 'Melbourne Fringe', ('https://www.melbournefringe.com.au/whats-on/events',), 'season/archive distinction'),
     ('butterfly_club', 'The Butterfly Club', ('https://thebutterflyclub.com/',), 'corrected identity, retained timeout'),
     ('impro_melbourne', 'Impro Melbourne', ('https://www.impromelbourne.com.au/shows/2026-season/',), 'exact dated season, no year rollover'),
@@ -260,6 +290,15 @@ def _descriptor(row):
                 'Partial Impro Melbourne coverage: Now Playing show runs in the explicit 2026 season, '
                 'up to nine overlapping or next-eight-week runs. Ranges are not individual '
                 'performance sessions, venue verification or ticket availability.'),
+        'fringe': (_fringe, _parse_fringe, 524288,
+                'Partial Fringe coverage: one fixed listing, up to nine eligible dated leads '
+                'within eight weeks; runs are not individual sessions or ticket availability.'),
+        'gertrude': (_gertrude, _parse_gertrude, 524288,
+                'Partial Gertrude coverage: current and upcoming exhibition runs from one fixed '
+                'listing page; opening sessions, admission and availability are unverified.'),
+        'arts_house': (_arts_house, _parse_arts_house, 524288,
+                'Partial Arts House coverage: up to nine eligible dated programme cards from one '
+                'fixed listing page; date ranges are programme runs, not individual sessions.'),
     }
     if source_id in active:
         acquire, parse, limit, coverage = active[source_id]
@@ -277,6 +316,10 @@ def _descriptor(row):
                 'or bounded exhibition run. A past opening with unknown run dates is not current coverage.'),
             'impro_melbourne': ('No eligible Now Playing run was established in this bounded 2026 season '
                 'read; this is not proof of no current shows.'),
+            'fringe': ('This bounded Fringe listing establishes no eligible current event; '
+                'past festival rows are not current or year-round Common Rooms coverage.'),
+            'arts_house': ('This bounded Arts House listing establishes no eligible current programme card; '
+                'date ranges are programme runs, not individual sessions.'),
         }
         return EventSourceDescriptor(**common, acquire=acquire, parse=parse, coverage=coverage,
             access_state='access-unverified' if source_id == 'forum' else 'implemented-unproved',
@@ -284,6 +327,12 @@ def _descriptor(row):
             max_bytes=limit, retention_seconds=900,
             policy_scope='Existing bounded factual-link scope only; no model or redistribution grant.')
     blocked = {
+        'miff': ('not-implemented',
+            'The fixed MIFF programme request timed out before usable content. Current screening '
+            'dates and programme edition remain unverified; no retry or archive rollover is attempted.'),
+        'comedy_festival': ('not-implemented',
+            'The fixed Comedy Festival catalogue returned no dated show cards in its HTML. '
+            'Current performance dates remain unverified; news and registrations are not sessions.'),
         'butterfly_club': ('permission-required',
             'The official robots rules do not permit this reader to fetch the homepage. '
             'Current shows and venue operating status are unverified; no homepage was fetched.'),
