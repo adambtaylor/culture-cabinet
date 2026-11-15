@@ -1,5 +1,6 @@
 """Real templates over the released occurrence port; no transport or live proof."""
 from dataclasses import replace
+from datetime import datetime, timezone as datetime_timezone
 from html.parser import HTMLParser
 
 from django.template.loader import render_to_string
@@ -186,6 +187,13 @@ class EventRegistryPresentationTests(SimpleTestCase):
         self.assertEqual(html.count('class="paper-panel" role="status"'), len(results))
         self.assertNotIn('working source', html.lower())
         self.assertIn('PBS Events', html)  # An independent failure cannot hide this result.
+
+    def test_recorded_datetime_uses_iso_value_for_machine_readers(self):
+        at = datetime(2026, 11, 15, 12, 34, 5, tzinfo=datetime_timezone.utc)
+        html = self.page(public_results=[dict(source='PBS Events', at=at,
+            outcome=dict(status='ready', message='A bounded result.'))])
+        self.assertRegex(html,
+            r'<time datetime="2026-11-15T12:34:05\+00:00">[^<]+</time>')
 
     def test_fixed_reference_metadata_and_result_notes_escape_and_remain_distinct_from_acquired_inventory(self):
         from shelf.event_source_registry import source_controls
