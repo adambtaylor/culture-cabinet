@@ -24,12 +24,43 @@
 <p>For a real-source evening proposal, read Beat below, open a listing’s details, then choose <strong>Date night · explore</strong> or the evening/transport link. Optional cycle origins stay local until you open a clearly labelled Google Maps link.</p>
 <p><a href="{% url 'event_plans' selected_profile.pk %}">Try event planning, calendar and invitations</a> · fictional rehearsal. Live event booking awaits verified sessions and seller quotes.</p>
 {% if available and mode == 'household' %}
+{% if event_sources %}
+<fieldset id="event-source-picker"><legend>Read an event source</legend>
+<p>Choose one source for an explicit public read. A reader being available does not confirm current access or a successful read. Each result below belongs to its own source; a failed read does not replace another source's results.</p>
+{% comment %}Only the closed registry ID is submitted. The backend owns the URL, access check, shared interval and cache; metadata availability is not a working-source verdict. Keep the current nonce/revision/CSRF and no event key, radio choice or permission field.{% endcomment %}
+<form method="post" action="{{ action_url }}" data-event-source-read>{% include 'cabinet/discovery_fields.html' %}
+<label for="event-source">Event source</label>
+<select id="event-source" name="source_id" required>
+  <option value="" selected>Choose a source</option>
+  {% for source in event_sources %}<option value="{{ source.source_id }}"{% if not source.implemented %} disabled{% endif %}>{{ source.label }} · {% if source.implemented %}{% if source.access_state == 'access-unverified' %}access check required{% else %}reader available{% endif %}{% elif source.access_state == 'permission-required' %}permission needed{% elif source.access_state == 'owner-action-required' %}owner action needed{% elif source.access_state == 'access-unverified' %}access not confirmed{% else %}not connected{% endif %}</option>{% endfor %}
+</select>
+<button type="submit" name="operation" value="event_source">Read selected event source</button>
+</form>
+<p>No read runs on page load, selection or reload. Source dates and notices do not confirm ticket availability. No automatic retry, ticket check or model request is made.</p>
+<details><summary>Source coverage and access notes</summary>
+{% for source in event_sources %}<section aria-labelledby="event-source-{{ source.source_id }}"><h3 id="event-source-{{ source.source_id }}">{{ source.label }}</h3>
+{% if source.implemented %}<p>Reader available; access and the result are checked when you explicitly read.{% if source.access_state == 'access-unverified' %} Source access is not yet confirmed.{% endif %}</p>{% if source.coverage %}<p>{{ source.coverage }}</p>{% endif %}
+{% else %}<p>{% if source.access_state == 'permission-required' %}Permission needed.{% elif source.access_state == 'owner-action-required' %}Owner action needed.{% elif source.access_state == 'access-unverified' %}Access not confirmed.{% else %}Not connected.{% endif %} {{ source.unavailable_message }}</p>{% endif %}
+{% for url in source.official_urls %}<p><a href="{{ url }}" target="_blank" rel="noopener noreferrer">{{ source.label }} · official reference</a> · opening a reference manually does not acquire listings into Cabinet.</p>{% endfor %}
+</section>{% endfor %}
+</details>
+</fieldset>
+{% else %}
 <form method="post" action="{{ action_url }}">{% include 'cabinet/discovery_fields.html' %}
 <button name="operation" value="events">Read one public Moshtix event · next eight weeks in VIC</button></form>
 <form method="post" action="{{ action_url }}">{% include 'cabinet/discovery_fields.html' %}
 <button name="operation" value="rrr">Read Triple R events · up to nine listings</button></form>
 <form method="post" action="{{ action_url }}">{% include 'cabinet/discovery_fields.html' %}
 <button name="operation" value="pbs">Read PBS Events · up to nine leads</button></form>
+<fieldset><legend>Official venue listings</legend>
+{% comment %}Fixed backend operations keep current mode/revision/nonce/CSRF. No event key, radio mode, caller URL or taste signal accompanies these explicit reads.{% endcomment %}
+<form method="post" action="{{ action_url }}" data-event-read="venue303">{% include 'cabinet/discovery_fields.html' %}
+<button type="submit" name="operation" value="venue303">Read 303 gigs and events</button></form>
+<form method="post" action="{{ action_url }}" data-event-read="forum">{% include 'cabinet/discovery_fields.html' %}
+<button type="submit" name="operation" value="forum">Read Forum Melbourne shows</button></form>
+<p>Read the fixed official listing only when source access permits it. Each action is separate; unavailable access or a failed response does not mean the venue has no events. No automatic retry, ticket check or model request is made.</p>
+</fieldset>
+{% endif %}
 <form method="post" action="{{ action_url }}">{% include 'cabinet/discovery_fields.html' %}<button name="operation" value="tribe">Read Tribe RSS · up to nine announcements</button></form>
 <form method="post" action="{{ action_url }}">{% include 'cabinet/discovery_fields.html' %}<button name="operation" value="soundsystems">Read Sound Systems · underground dances and festivals</button></form>
 <p>Tribe publication dates are not event starts. Sound Systems locations marked TBA remain undisclosed. Neither source confirms tickets.</p>
@@ -40,7 +71,15 @@
 <form method="post" action="{{ action_url }}">{% include 'cabinet/discovery_fields.html' %}
 <button name="operation" value="beat">Read Beat · up to nine single-date events in the next 14 days</button></form>
 {% endif %}
-{% for result in public_results %}<p role="status">{{ result.source }} · {{ result.outcome.status }} · {{ result.at }} · {{ result.outcome.message }}</p>{% endfor %}
+{% for result in public_results %}
+<section class="paper-panel" role="status" aria-label="{{ result.source }} result"><h3>{{ result.source }}</h3>
+{% comment %}A recorded response is source-local evidence, not a connection verdict or an automatic retry. In particular, failed/unrecognized reads cannot become successful empty listings.{% endcomment %}
+<p>{% if result.outcome.status == 'ready' %}Source leads received{% elif result.outcome.status == 'empty' %}No eligible leads in this bounded read{% elif result.outcome.status == 'invalid' %}Source unavailable{% elif result.outcome.status == 'permission-required' %}Source access not confirmed{% elif result.outcome.status == 'partial' %}Partial source results{% elif result.outcome.status == 'rate-limited' %}Read deferred{% elif result.outcome.status == 'timeout' %}Read timed out{% elif result.outcome.status == 'error' %}Read failed{% elif result.outcome.status == 'unavailable' %}Reader unavailable{% else %}Read outcome not confirmed{% endif %}</p>
+<p>Last recorded read: {% if result.at %}<time datetime="{{ result.at }}">{{ result.at }}</time>{% else %}time not recorded{% endif %}.</p><p>{{ result.outcome.message }}</p>
+{% if result.outcome.status == 'invalid' %}<p>No usable listing was accepted. This is not a successful empty listing or evidence that no events exist.</p>{% elif result.outcome.status == 'permission-required' %}<p>Source access remains unresolved. This is not evidence of a publisher denial or an empty venue.</p>{% elif result.outcome.status == 'empty' %}<p>This does not establish that no events or tickets exist.</p>{% elif result.outcome.status == 'rate-limited' %}<p>Wait for the source interval before explicitly trying again. There is no automatic retry.</p>{% elif result.outcome.status == 'timeout' or result.outcome.status == 'error' %}<p>No successful read is confirmed. There is no automatic retry.</p>{% endif %}
+{% if event_sources and available and mode == 'household' %}<p>Review the access and coverage notes before <a href="#event-source-picker">choosing another explicit source read</a>.</p>{% endif %}
+</section>
+{% endfor %}
 <p>{{ temporary_notice }}</p>
 <form method="get"><input type="hidden" name="mode" value="{{ mode }}"><label>Event interests <select name="category">
 {% for value,label in categories %}<option value="{{ value }}" {% if category == value %}selected{% endif %}>{{ label }}</option>{% endfor %}</select></label><button>Filter local examples</button></form>
