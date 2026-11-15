@@ -107,6 +107,11 @@ def _linden(now):
     return linden()
 
 
+def _impro_melbourne(now):
+    from shelf.event_listing_transport import impro_melbourne
+    return impro_melbourne()
+
+
 def _parse_rrr(raw, *, now, retrieved_at):
     from shelf.rrr_events import parse_listing
     return parse_listing(raw, retrieved_at=retrieved_at)
@@ -159,6 +164,11 @@ def _parse_my_aeon(raw, *, now, retrieved_at):
 
 def _parse_linden(raw, *, now, retrieved_at):
     from shelf.linden_events import parse_listing
+    return parse_listing(raw, retrieved_at=retrieved_at)
+
+
+def _parse_impro_melbourne(raw, *, now, retrieved_at):
+    from shelf.impro_melbourne_events import parse_listing
     return parse_listing(raw, retrieved_at=retrieved_at)
 
 
@@ -246,6 +256,10 @@ def _descriptor(row):
                 'Partial Linden coverage: up to nine current-region leads within eight weeks. '
                 'Local clocks have no verified timezone; audience notices remain source statements. '
                 'Confirm attendance and current conditions with Linden.'),
+        'impro_melbourne': (_impro_melbourne, _parse_impro_melbourne, 524288,
+                'Partial Impro Melbourne coverage: Now Playing show runs in the explicit 2026 season, '
+                'up to nine overlapping or next-eight-week runs. Ranges are not individual '
+                'performance sessions, venue verification or ticket availability.'),
     }
     if source_id in active:
         acquire, parse, limit, coverage = active[source_id]
@@ -261,6 +275,8 @@ def _descriptor(row):
                 'this is not proof of no events.'),
             'apw': ('The homepage establishes no current or next-eight-week opening '
                 'or bounded exhibition run. A past opening with unknown run dates is not current coverage.'),
+            'impro_melbourne': ('No eligible Now Playing run was established in this bounded 2026 season '
+                'read; this is not proof of no current shows.'),
         }
         return EventSourceDescriptor(**common, acquire=acquire, parse=parse, coverage=coverage,
             access_state='access-unverified' if source_id == 'forum' else 'implemented-unproved',
@@ -268,6 +284,9 @@ def _descriptor(row):
             max_bytes=limit, retention_seconds=900,
             policy_scope='Existing bounded factual-link scope only; no model or redistribution grant.')
     blocked = {
+        'butterfly_club': ('permission-required',
+            'The official robots rules do not permit this reader to fetch the homepage. '
+            'Current shows and venue operating status are unverified; no homepage was fetched.'),
         'affordable_art_fair': ('permission-required',
             'The official access-policy request was refused; no fair listing was fetched. '
             'Current Melbourne fair dates and sessions remain unverified.'),
