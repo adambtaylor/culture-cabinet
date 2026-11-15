@@ -65,6 +65,21 @@ class TasteHistoryPresentationTests(SimpleTestCase):
         self.assertNotIn('historical_value', posted)
         self.assertNotIn('actor_ref', posted)
 
+    def test_original_interest_enum_including_maybe_retains_meaning_and_refuses_unknown_values(self):
+        for original, label in (('yes', 'Interested'), ('maybe', 'Maybe'), ('no', 'Not interested'), (None, 'Not set / cleared')):
+            with self.subTest(original=original):
+                _, html, _ = self.compare(changes=[dict(target_label='Fictional original interest',
+                    signal='interest', historical_value=original, current_value='yes')])
+                self.assertIn('At this checkpoint</dt><dd>' + label + '</dd>', html)
+                self.assertIn('Current</dt><dd>Interested</dd>', html)
+        _, html, _ = self.compare(changes=[dict(target_label='Fictional current uncertainty',
+            signal='interest', historical_value='no', current_value='maybe')])
+        self.assertIn('Current</dt><dd>Maybe</dd>', html)
+        for invalid in ('unknown', '', 'Maybe', 'interested', True, 1, {}, mark_safe('maybe')):
+            with self.subTest(invalid=invalid), self.assertRaises(ValueError):
+                self.compare(changes=[dict(target_label='Fictional invalid interest', signal='interest',
+                    historical_value=invalid, current_value='yes')])
+
     def test_complete_and_partial_restore_have_distinct_unchecked_confirmations(self):
         for complete, token in ((True, 'restore_taste_choices'), (False, 'restore_available_choices')):
             p = point(); p['complete'] = complete
