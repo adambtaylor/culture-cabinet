@@ -204,6 +204,28 @@
     // Hide invitations to those locked actions; keep the recovery links usable.
     for (const guidance of root.querySelectorAll('.card-actions-help,[data-card-actions-open]')) guidance.hidden = true;
   }
+  function showNativeCardCompletion(doc, pageURL, navigationType) {
+    // A return receipt describes recorded history, not a new write or a refreshed
+    // ranking. Reload/back navigation must not announce that history as new work.
+    if (navigationType !== 'navigate') return;
+    try {
+      const url = new URL(pageURL), marker = refreshMarker(doc.querySelector('[data-card-action-refresh]')?.dataset);
+      const receipt = marker.receipt;
+      if (url.pathname !== '/cabinet' || url.searchParams.getAll('action_receipt').length !== 1 ||
+          url.searchParams.get('action_receipt') !== receipt?.command_id ||
+          url.searchParams.getAll('profile_ref').length !== 1 || url.searchParams.get('profile_ref') !== marker.profile_ref ||
+          marker.read_state !== 'current' || !['committed', 'unchanged'].includes(receipt.preference_outcome) ||
+          !['like', 'favourite'].includes(receipt.requested_action) || receipt.selected_state !== receipt.requested_action) return;
+      const root = doc.querySelector('[data-card-current-status]');
+      if (!root || root.querySelector('[data-card-native-completion]')) return;
+      const message = doc.createElement('p');
+      message.className = 'card-slot-feedback'; message.dataset.cardNativeCompletion = '';
+      message.setAttribute('role', 'status'); message.tabIndex = -1;
+      message.textContent = (receipt.requested_action === 'like' ? 'Like' : 'Favourite') + ' recorded. Your current picks are shown below.';
+      root.prepend(message);
+      if (doc.activeElement === doc.body) message.focus();
+    } catch (_) { /* Missing or unrecognized receipts retain the normal quiet cabinet. */ }
+  }
   function renderSlotFailure(root, card, recorded, readURL, doc) {
     const pending = card.querySelector('[data-card-action-pending]');
     const receipt = pending?.querySelector('a');
@@ -320,13 +342,14 @@
       boundNoiseInputs.add(input);
     }
   }
-  if (typeof module !== 'undefined' && module.exports) module.exports = { HoldGesture, SubmissionGate, targetAt, bindNoiseControls, confirmedSlotResult, refreshMarker, cabinetReadURL, saveRedirectURL, boundedSlotHTML, requestCardSave, encodeCardAction, showCardPending, suppressCardActionGuidance, renderSlotFailure, positionCardSlot, parseSlotDocument, currentSlotView };
+  if (typeof module !== 'undefined' && module.exports) module.exports = { HoldGesture, SubmissionGate, targetAt, bindNoiseControls, confirmedSlotResult, refreshMarker, cabinetReadURL, saveRedirectURL, boundedSlotHTML, requestCardSave, encodeCardAction, showCardPending, suppressCardActionGuidance, showNativeCardCompletion, renderSlotFailure, positionCardSlot, parseSlotDocument, currentSlotView };
   if (typeof document === 'undefined') return;
   // Guide/Prepare pages have no cards; the range binding must precede that exit.
   bindNoiseControls(document);
 
   const forms = Array.from(document.querySelectorAll('[data-card-action-form]'));
   if (!forms.length) return;
+  showNativeCardCompletion(document, location.href, window.performance?.getEntriesByType?.('navigation')[0]?.type);
   let submissions = new SubmissionGate();
   const gestures = new Set(), bindings = new WeakMap(), undoBindings = new WeakSet(), livePointers = new Set();
   let current = null, suppress = null, returningFocus = false;

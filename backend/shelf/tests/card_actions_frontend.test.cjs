@@ -242,6 +242,45 @@ function slotFixture() {
   };
   return { submitted, data, marker, pageURL, redirect, response };
 }
+function completionFixture(change = {}) {
+  const f = slotFixture(), messages = [], body = {}, focus = [];
+  const root = { querySelector: () => messages[0] || null, prepend: message => messages.unshift(message) };
+  const doc = { body, activeElement: body,
+    querySelector: selector => selector === '[data-card-action-refresh]' ? { dataset: { ...f.data, ...change } } : root,
+    createElement: () => ({ dataset: {}, setAttribute(name, value) { this[name] = value; }, focus() { focus.push(this); } }) };
+  return { ...f, doc, messages, focus };
+}
+test('native Like and Favourite returns announce the owned recorded action once near the return position', () => {
+  for (const action of ['like', 'favourite']) for (const outcome of ['committed', 'unchanged']) {
+    const f = completionFixture({ requestedAction: action, selectedState: action, preferenceOutcome: outcome });
+    slots.showNativeCardCompletion(f.doc, f.redirect, 'navigate');
+    slots.showNativeCardCompletion(f.doc, f.redirect, 'navigate');
+    assert.equal(f.messages.length, 1);
+    assert.equal(f.messages[0].textContent, (action === 'like' ? 'Like' : 'Favourite') + ' recorded. Your current picks are shown below.');
+    assert.equal(f.messages[0].role, 'status'); assert.equal(f.messages[0].tabIndex, -1);
+    assert.deepEqual(f.focus, [f.messages[0]]);
+  }
+});
+test('passive reload and history navigation stay quiet, and plain or mismatched receipts never imply success', () => {
+  for (const type of ['reload', 'back_forward', undefined]) {
+    slots.showNativeCardCompletion({ querySelector() { throw Error('Reload must not inspect or replay an action'); } }, '', type);
+  }
+  for (const change of [{ receiptPresent: 'false' }, { readState: 'unavailable' }, { commandId: slotRef(9) },
+      { profileRef: slotRef(9) }, { requestedAction: 'undo' }, { selectedState: 'none' }]) {
+    const f = completionFixture(change);
+    slots.showNativeCardCompletion(f.doc, f.redirect, 'navigate');
+    assert.deepEqual(f.messages, []); assert.deepEqual(f.focus, []);
+  }
+  const f = completionFixture();
+  slots.showNativeCardCompletion(f.doc, f.pageURL, 'navigate');
+  slots.showNativeCardCompletion(f.doc, f.redirect + '&action_receipt=' + slotRef(4), 'navigate');
+  assert.deepEqual(f.messages, []);
+});
+test('native completion does not steal focus after the owner has reached another control', () => {
+  const f = completionFixture(); f.doc.activeElement = {};
+  slots.showNativeCardCompletion(f.doc, f.redirect, 'navigate');
+  assert.equal(f.messages.length, 1); assert.deepEqual(f.focus, []);
+});
 test('typed primitive marker rejects invalid enum, nullable pair, unsafe revisions and unowned receipt', () => {
   const f = slotFixture();
   for (const change of [{ schema: 'v2' }, { publicationRef: '' }, { publicationRevision: '' }, { interestRevision: '01' }, { savedRevision: '9007199254740992' }, { requestedAction: 'send' }, { rankingState: 'pending' }, { readState: 'maybe' }, { receiptPresent: 'yes' }]) assert.throws(() => slots.refreshMarker({ ...f.data, ...change }));
