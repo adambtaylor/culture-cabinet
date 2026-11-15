@@ -1,13 +1,35 @@
 """Finite source configuration, never a test that declares live readiness."""
 from unittest import TestCase
 from unittest.mock import patch
-from shelf import event_source_registry as registry, discovery_transport, event_scraping
+from shelf import (event_source_registry as registry, discovery_transport,
+                   event_listing_transport, event_scraping)
 from shelf.discovery_sources import SourceError
 from shelf.tests.test_discovery_transport import NOW, event_document
 import json
 
 
 class EventSourceRegistryTests(TestCase):
+    def test_miff_and_comedy_registry_targets_match_fixed_transport_and_stay_unavailable(self):
+        expected = {
+            'miff': 'https://miff.com.au/program',
+            'comedy_festival': 'https://www.comedyfestival.com.au/browse-shows/',
+        }
+        controls = {row['source_id']: row for row in registry.source_controls()}
+        with patch.object(event_listing_transport, '_send') as listing_send, \
+                patch.object(discovery_transport, '_send') as discovery_send:
+            for source_id, target in expected.items():
+                with self.subTest(source=source_id):
+                    descriptor = registry.get_source(source_id)
+                    self.assertEqual(descriptor.targets, (target,))
+                    self.assertEqual(controls[source_id]['official_urls'], (target,))
+                    self.assertEqual(event_listing_transport.TARGETS[source_id][0], target)
+                    self.assertFalse(descriptor.implemented)
+                    outcome = event_scraping.collect(source_id, now=NOW)
+                    self.assertEqual(outcome.status, 'unavailable')
+                    self.assertEqual(outcome.candidates, ())
+            listing_send.assert_not_called()
+            discovery_send.assert_not_called()
+
     def test_finite35_origins_metadata_only_and_no_unimplemented_acquisition(self):
         self.assertEqual(len(registry.SOURCES), 35)
         controls = registry.source_controls()
