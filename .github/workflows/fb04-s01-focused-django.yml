@@ -1,0 +1,34 @@
+name: FB04-S01 focused Django regressions
+
+on:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  focused-regressions:
+    name: FB04-S01 focused Django regressions
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.14"
+      - name: Install pinned dependencies
+        run: python -m pip install --require-hashes -r requirements.lock
+      - name: Run FB04-S01 Django regressions
+        working-directory: backend
+        run: >-
+          python -B manage.py test
+          shelf.tests.test_source_collection.SourceCollectionTests.test_missing_configured_backend_is_sealed_as_unavailable_alongside_empty_source
+          shelf.tests.test_source_collection.SourceCollectionTests.test_denied_hardcover_and_empty_tmdb_keep_distinct_source_outcomes
+          shelf.tests.test_apple_podcast_native.AppleOperationTests.test_existing_parser_projects_episode_identity_not_show_audio_or_artwork
+          shelf.tests.test_apple_podcast_native.AppleBackendTests.test_source_collection_keeps_original_observation_and_honest_all_domain_outcomes
+          shelf.tests.test_apple_podcast_native.AppleBackendTests.test_source_collection_keeps_valid_episode_when_sibling_identity_is_malformed
+          shelf.tests.test_apple_podcast_native.AppleBackendTests.test_episode_row_missing_identity_is_incomplete_not_a_bounded_empty_result
+          shelf.tests.test_enhance_coordinator.EnhanceCoordinatorTests.test_partial_unsupported_empty_and_incomplete_coverage_remain_truthful
+          shelf.tests.test_enhance_integration.OrdinaryEnhanceCompositionTests.test_preparatory_hardcover_denial_survives_empty_tmdb_through_normal_status_path
+          shelf.tests.test_enhance_integration.OrdinaryEnhanceCompositionTests.test_existing_history_exact_source_previews_detail_and_one_personal_publication
+          --verbosity=2
