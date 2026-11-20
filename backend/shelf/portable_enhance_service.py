@@ -583,6 +583,11 @@ class EnhanceService:
         book = catalogue.backends.get('hardcover') if type(catalogue) is SourceCollection else None
         if book is None or book.issuer.connection_ref not in dict(planned.source_plans):
             return False
+        if not any(row['category'] == 'book' and row['terms']
+                   for row in read_json(planned.plan.body)['queries']):
+            # The confirmed starter operation returns complete books; let the
+            # final collection consume it once instead of probing it here.
+            return False
         # Only Hardcover search runs in this preparatory collection. Other
         # sources remain unsent until the derived IDs get their OWN confirmation.
         # Sharing the producer's bounded state resumes its original search permit;
@@ -736,7 +741,8 @@ class EnhanceService:
                     return self.status(session_ref, run_ref=run_ref)
                 if not self._inference_available():
                     store.checkpoint(run_ref, stage='sealed', code='CAPABILITY_UNAVAILABLE',
-                        outcomes=[vars(value) for value in collected.seal.outcomes],
+                        outcomes=[vars(value) for value in self._checkpoint_outcomes(
+                            memory, collected.seal.outcomes)],
                         collection_digest=collected.seal.collection_digest)
                     memory.update(phase='source_sealed', work=collected, body=b'')
                     return self.status(session_ref, run_ref=run_ref)
