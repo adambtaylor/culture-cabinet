@@ -33,14 +33,21 @@ def bind_tester_account(*, tester_id, installation_id):
         return FeedbackTesterBinding.objects.create(tester=tester, installation=installation)
 
 
+def _active_tester_link(tester, *, lock=False):
+    if not tester.is_active:
+        raise ReportDenied
+    links = FeedbackTesterBinding.objects.filter(tester=tester, active=True).select_related('installation')
+    if lock:
+        links = links.select_for_update()
+    links = list(links)
+    if len(links) != 1:
+        raise ReportDenied
+    return links[0]
+
+
 def submit_report(*, tester, reference, body):
     with recovery.access_barrier(), transaction.atomic():
-        if not tester.is_active:
-            raise ReportDenied
-        links = list(FeedbackTesterBinding.objects.select_for_update().filter(
-            tester=tester, active=True).select_related('installation'))
-        if len(links) != 1:
-            raise ReportDenied
+        link = _active_tester_link(tester, lock=True)
         prior = BetaProblemReport.objects.filter(pk=reference).first()
         if prior:
             if prior.tester_id != tester.pk:
@@ -51,7 +58,7 @@ def submit_report(*, tester, reference, body):
         try:
             with transaction.atomic():
                 report = BetaProblemReport.objects.create(reference=reference, tester=tester,
-                    installation=links[0].installation, body=body)
+                    installation=link.installation, body=body)
         except IntegrityError:
             prior = BetaProblemReport.objects.filter(pk=reference, tester=tester).first()
             if prior is None or prior.deleted or prior.body != body:
@@ -61,11 +68,23 @@ def submit_report(*, tester, reference, body):
 
 
 def tester_report(*, tester, reference):
-    if not tester.is_active:
-        raise ReportDenied
-    with recovery.access_barrier():
+    with recovery.access_barrier(), transaction.atomic():
+        _active_tester_link(tester, lock=True)
         return BetaProblemReport.objects.filter(reference=reference, tester=tester,
             deleted=False, body__isnull=False).first()
+
+
+def erase_report(*, installation_id, reference):
+    """Erase one report while retaining its scoped reference as a tombstone."""
+    with recovery.access_barrier(), transaction.atomic():
+        report = BetaProblemReport.objects.select_for_update().filter(
+            reference=reference, installation_id=installation_id).first()
+        if report is None:
+            return False
+        if not report.deleted:
+            report.body, report.deleted = None, True
+            report.save(update_fields=['body', 'deleted'])
+        return True
 
 
 def owner_report(*, authority, session_ref, reference):

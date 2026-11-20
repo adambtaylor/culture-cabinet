@@ -1,5 +1,6 @@
 """Actual native owner/create/form/event callers; all transport is synthetic."""
 import json
+import re
 from types import SimpleNamespace
 from urllib.parse import urlencode
 import uuid
@@ -414,7 +415,11 @@ class PrivateProblemReportTests(NativeFeedbackCase):
     def test_linked_submit_status_replay_scoped_owner_read_and_denials(self):
         from django.conf import settings
         from django.contrib.auth import get_user_model
-        from shelf.beta_feedback import bind_tester_account
+        from django.core.management import call_command
+        from io import StringIO
+        from unittest.mock import patch
+        from django.db import DatabaseError
+        from shelf.beta_feedback import ReportConflict, bind_tester_account, submit_report
         from shelf.models import BetaProblemReport, FeedbackTesterBinding, PortableInstallation
         User = get_user_model()
         tester = User.objects.create_user('fictional-report-tester', password=PASSWORD)
@@ -429,27 +434,81 @@ class PrivateProblemReportTests(NativeFeedbackCase):
         auth = {'username': tester.username, 'password': PASSWORD, 'csrfmiddlewaretoken': token}
         self.assertEqual(client.post('/report/login/', urlencode(auth), content_type='application/x-www-form-urlencoded',
                                      HTTP_X_CSRFTOKEN=token, **self.headers).status_code, 302)
-        self.assertContains(client.get('/report/', **self.headers), 'name="csrfmiddlewaretoken"')
+        self.assertContains(client.get('/report/', **self.headers), 'name="status_reference"')
+        page = client.get('/report/?new=1', **self.headers)
+        ref = re.search(r'Pending reference: <strong>([^<]+)</strong>', page.content.decode()).group(1)
         token = client.cookies[settings.CSRF_COOKIE_NAME].value
-        ref, body = str(uuid.uuid4()), '<script>private</script>  details\n'
+        body = '<script>private</script>  details\n'
         data = {'reference': ref, 'body': body, 'csrfmiddlewaretoken': token}
+        before = BetaProblemReport.objects.count()
+        # A lost 303 is reconciled from the reopened status form.
         self.assertEqual(client.post('/report/', urlencode(data), content_type='application/x-www-form-urlencoded',
                                      HTTP_X_CSRFTOKEN=token, **self.headers).status_code, 303)
+        reopened = client.get('/report/', **self.headers)
+        self.assertContains(reopened, 'Check status')
+        self.assertNotContains(reopened, 'Send report')
+        reconciled = client.get('/report/', {'status_reference': ref}, **self.headers)
+        self.assertContains(reconciled, 'Your report was saved.')
+        self.assertEqual(BetaProblemReport.objects.count(), before + 1)
         self.assertEqual(client.get('/report/'+ref+'/', **self.headers).status_code, 200)
         self.assertNotContains(client.get('/report/'+ref+'/', **self.headers), body, html=False)
         self.assertEqual(client.post('/report/', urlencode(data), content_type='application/x-www-form-urlencoded',
                                      HTTP_X_CSRFTOKEN=token, **self.headers).status_code, 303)
         self.assertEqual(client.post('/report/', urlencode({**data, 'body': 'changed'}),
             content_type='application/x-www-form-urlencoded', HTTP_X_CSRFTOKEN=token, **self.headers).status_code, 409)
+        binding = FeedbackTesterBinding.objects.get(tester=tester, active=True)
+        binding.active = False; binding.save(update_fields=['active'])
+        revoked = client.get('/report/'+ref+'/', **self.headers)
+        self.assertEqual(revoked.status_code, 404)
+        self.assertNotIn(body.encode(), revoked.content)
+        binding.active = True; binding.save(update_fields=['active'])
+        ambiguous = FeedbackTesterBinding.objects.create(tester=tester, installation_id=install)
+        denied_status = client.get('/report/'+ref+'/', **self.headers)
+        self.assertEqual(denied_status.status_code, 404)
+        self.assertNotIn(body.encode(), denied_status.content)
+        ambiguous.active = False; ambiguous.save(update_fields=['active'])
         self.assertEqual(client.post('/report/', urlencode({'reference': ref, 'body': body}),
             content_type='application/x-www-form-urlencoded', **self.headers).status_code, 403)
         foreign = Client(enforce_csrf_checks=True); foreign.force_login(other)
         self.assertEqual(foreign.get('/report/'+ref+'/', **self.headers).status_code, 404)
         staff = Client(enforce_csrf_checks=True); staff.force_login(unlinked)
-        staff.get('/report/', **self.headers)
+        staff.get('/report/?new=1', **self.headers)
         staff_token = staff.cookies[settings.CSRF_COOKIE_NAME].value
-        self.assertEqual(staff.post('/report/', urlencode(data), content_type='application/x-www-form-urlencoded',
-            HTTP_X_CSRFTOKEN=staff_token, **self.headers).status_code, 403)
+        staff_data = {'reference': str(uuid.uuid4()), 'body': body,
+                      'csrfmiddlewaretoken': staff_token}
+        count = BetaProblemReport.objects.count()
+        denied = staff.post('/report/', urlencode(staff_data), content_type='application/x-www-form-urlencoded',
+            HTTP_X_CSRFTOKEN=staff_token, **self.headers)
+        self.assertEqual(denied.status_code, 403)
+        self.assertIn(b'Report submission is unavailable for this account.', denied.content)
+        self.assertEqual(BetaProblemReport.objects.count(), count)
+
+        other_client = Client(enforce_csrf_checks=True); other_client.force_login(other)
+        other_page = other_client.get('/report/?new=1', **self.headers)
+        other_ref = re.search(r'Pending reference: <strong>([^<]+)</strong>', other_page.content.decode()).group(1)
+        other_token = other_client.cookies[settings.CSRF_COOKIE_NAME].value
+        own = {'reference': other_ref, 'body': 'tester B own report', 'csrfmiddlewaretoken': other_token}
+        self.assertEqual(other_client.post('/report/', urlencode(own), content_type='application/x-www-form-urlencoded',
+            HTTP_X_CSRFTOKEN=other_token, **self.headers).status_code, 303)
+        self.assertEqual(BetaProblemReport.objects.get(pk=other_ref).tester_id, other.pk)
+
+        retry_page = client.get('/report/?new=1', **self.headers)
+        retry_ref = re.search(r'Pending reference: <strong>([^<]+)</strong>', retry_page.content.decode()).group(1)
+        retry_token = client.cookies[settings.CSRF_COOKIE_NAME].value
+        oversized = {'reference': retry_ref, 'body': 'x' * 2001, 'csrfmiddlewaretoken': retry_token}
+        too_large = client.post('/report/', urlencode(oversized), content_type='application/x-www-form-urlencoded',
+            HTTP_X_CSRFTOKEN=retry_token, **self.headers)
+        self.assertEqual(too_large.status_code, 400)
+        self.assertEqual(too_large.context['form']['reference'].value(), retry_ref)
+        self.assertEqual(too_large.context['form']['body'].value(), 'x' * 2001)
+        draft = 'database temporarily unavailable'
+        with patch('shelf.beta_feedback_views.submit_report', side_effect=DatabaseError):
+            failed = client.post('/report/', urlencode({**oversized, 'body': draft}),
+                content_type='application/x-www-form-urlencoded', HTTP_X_CSRFTOKEN=retry_token, **self.headers)
+        self.assertEqual(failed.status_code, 503)
+        self.assertIn(retry_ref.encode(), failed.content)
+        self.assertIn(draft.encode(), failed.content)
+
         self.assertEqual(client.get('/cabinet/reports/', **self.headers).status_code, 401)
         owner_page = self.post('/cabinet/reports/', {'reference': ref})
         self.assertEqual(owner_page.status_code, 200)
@@ -464,9 +523,33 @@ class PrivateProblemReportTests(NativeFeedbackCase):
                                      HTTP_X_CSRFTOKEN=token, **self.headers).status_code, 303)
         self.assertContains(self.post('/cabinet/reports/', {'reference': moved}),
                             'No report found for that reference.')
-        report.body, report.deleted = None, True; report.save(update_fields=['body', 'deleted'])
-        self.assertEqual(client.post('/report/', urlencode(data), content_type='application/x-www-form-urlencoded',
-                                     HTTP_X_CSRFTOKEN=token, **self.headers).status_code, 409)
+
+        output = StringIO()
+        call_command('erase_beta_problem_report', str(other_install.pk), ref,
+                     stdout=output, stderr=StringIO())
+        self.assertEqual(output.getvalue().strip(), 'Not found.')
+        missing = StringIO()
+        call_command('erase_beta_problem_report', str(install), str(uuid.uuid4()), stdout=missing)
+        self.assertEqual(missing.getvalue(), output.getvalue())
+        report.refresh_from_db()
+        self.assertEqual(report.body, body)
+        output = StringIO()
+        call_command('erase_beta_problem_report', str(install), ref, stdout=output)
+        self.assertEqual(output.getvalue().strip(), 'Erasure recorded.')
+        call_command('erase_beta_problem_report', str(install), ref, stdout=StringIO())
+        report.refresh_from_db()
+        self.assertEqual((report.body, report.deleted, report.tester_id, report.installation_id),
+                         (None, True, tester.pk, install))
+        erased_owner_read = self.post('/cabinet/reports/', {'reference': ref})
+        self.assertContains(erased_owner_read, 'No report found for that reference.')
+        PortableInstallation.objects.filter(pk=install).update(owner_revision=2)
+        invalidated = self.post('/cabinet/reports/', {'reference': other_ref})
+        self.assertEqual(invalidated.status_code, 401)
+        self.assertEqual(client.get('/report/'+ref+'/', **self.headers).status_code, 404)
+        for replay_body in (body, 'changed after erasure'):
+            with self.assertRaises(ReportConflict):
+                submit_report(tester=tester, reference=uuid.UUID(ref), body=replay_body)
+        report.refresh_from_db()
         FeedbackTesterBinding.objects.create(tester=tester, installation_id=install)
         denied = client.post('/report/', urlencode({**new_data, 'reference': str(uuid.uuid4())}),
             content_type='application/x-www-form-urlencoded', HTTP_X_CSRFTOKEN=token, **self.headers)

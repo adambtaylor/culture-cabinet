@@ -39,7 +39,28 @@ def _render(request, *, status=200, **context):
 @sensitive_post_parameters()
 def tester_page(request):
     if request.method == 'GET':
-        return _render(request, form=ReportForm(initial={'reference': uuid.uuid4()}))
+        status_reference = request.GET.get('status_reference')
+        if status_reference is not None:
+            try:
+                reference = uuid.UUID(status_reference)
+            except (ValueError, TypeError, AttributeError):
+                return _render(request, status_check=True,
+                    message='Enter a valid report reference to check its status.', status=400)
+            try:
+                report = tester_report(tester=request.user, reference=reference)
+            except ReportDenied:
+                return _render(request, status_check=True,
+                    message='Report status is unavailable for this account.', status=403)
+            except RecoveryBlocked:
+                return HttpResponse('Report status is unavailable.\n', status=503,
+                                    content_type='text/plain')
+            if report:
+                return _render(request, report=report, saved=True)
+            return _render(request, form=ReportForm(initial={'reference': reference}),
+                message='No saved report was found. Re-enter the same text to retry this reference.')
+        if request.GET.get('new') == '1':
+            return _render(request, form=ReportForm(initial={'reference': uuid.uuid4()}))
+        return _render(request, status_check=True)
     if (request.content_type != 'application/x-www-form-urlencoded'
             or set(request.POST) - {'csrfmiddlewaretoken', 'reference', 'body'}
             or any(len(request.POST.getlist(key)) != 1 for key in request.POST)):
@@ -70,6 +91,8 @@ def tester_status(request, reference):
         report = tester_report(tester=request.user, reference=reference)
     except RecoveryBlocked:
         return HttpResponse('Report status is unavailable.\n', status=503, content_type='text/plain')
+    except ReportDenied:
+        raise Http404('Not available.') from None
     if report is None:
         raise Http404('Not available.')
     return _render(request, report=report, saved=True)
