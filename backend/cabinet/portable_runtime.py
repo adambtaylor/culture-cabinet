@@ -80,12 +80,20 @@ def prepare_database(boundary):
         finally:
             os.close(fd)
         return True
+    _validate_existing_database_files(boundary)
+    return False
+
+
+def _validate_existing_database_files(boundary):
+    """Check every existing SQLite file before any connection can open it."""
+    path = Path(boundary.database_name)
+    if not path.exists() and not path.is_symlink():
+        raise RuntimeFailure('PORTABLE_STORE_REFUSED')
     private_file(path)
     for suffix in ['-wal', '-shm', '-journal']:
         sidecar = Path(str(path) + suffix)
         if sidecar.exists() or sidecar.is_symlink():
             private_file(sidecar)
-    return False
 
 
 def configure(boundary):
@@ -176,6 +184,10 @@ def erase_existing(root, installation_id, reference):
         boundary = open_boundary(root, port=0)
         if boundary.installation_id != installation_id:
             raise RuntimeFailure('PORTABLE_ERASURE_REFUSED')
+        try:
+            _validate_existing_database_files(boundary)
+        except RuntimeFailure:
+            raise RuntimeFailure('PORTABLE_ERASURE_REFUSED') from None
         configure(boundary)
         validate_existing(boundary)
         from django.db import connections

@@ -87,13 +87,16 @@ def main(root, phase, request_fd, response_fd):
     if phase.startswith('erase-'):
         refs = json.loads((Path(root).parent/'native-proof-refs.json').read_text())
         from types import ModuleType
+        import sqlite3
         credentials = ModuleType('shelf.saved_credentials'); credentials.secret_service_request = store
         from portable import main as portable_main
         installation = uuid.UUID(refs['installation_id'])
         if phase == 'erase-wrong': installation = uuid.uuid4()
         args = ['--data-root', root, '--erase-beta-report', str(installation), refs['report_reference']]
         if phase == 'erase-port': args.extend(['--port', '0'])
-        with patch.dict(sys.modules, {'shelf.saved_credentials':credentials}):
+        sqlite_marker = Path(root).parent/'native-proof-sqlite-open-attempt'
+        with patch.dict(sys.modules, {'shelf.saved_credentials':credentials}), \
+             patch('sqlite3.connect', side_effect=lambda *_a, **_k: (sqlite_marker.touch(),sqlite3.dbapi2.connect(*_a, **_k))[1]):
             result = portable_main(args)
         print(json.dumps({'state':'NATIVE_REPORT_ERASURE_CLOSED','exit':result,'observed':{},
             'providerCalls':0}), flush=True)

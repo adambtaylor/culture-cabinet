@@ -227,6 +227,7 @@ class StartupStageTests(SimpleTestCase):
 class PrivateStore:
     def __init__(self):
         self.items, self.receipts = {}, {}
+        self.operations = []
         self.locked = False
         self.credential_puts = 0
         self.anchor_puts = 0
@@ -234,6 +235,7 @@ class PrivateStore:
         self.unknown_clean_seal = False
 
     def execute(self,value):
+        self.operations.append((value['record_kind'],value['operation']))
         reply={'version':value['version'],'operation_id':value['operation_id'],
                'status':'AVAILABLE','revision':None,'record':None}
         if self.locked:return {**reply,'status':'LOCKED'}
@@ -342,6 +344,18 @@ class NativeCleanRestartTests(SimpleTestCase):
         self.assertEqual(database.read_bytes(),original)
         locator.write_bytes(saved); locator.chmod(0o600)
         self.assertEqual(next(v['record'] for k,v in self.store.items.items() if k[0]=='clean_restart_anchor'),clean)
+        sqlite_marker=self.root.parent/'native-proof-sqlite-open-attempt'
+        operations_before=list(self.store.operations)
+        sidecar=Path(str(database)+'-wal')
+        for path, kind in ((database,'database'),(sidecar,'sidecar')):
+            sqlite_marker.unlink(missing_ok=True)
+            if kind == 'sidecar': path.write_bytes(b'inadmissible sidecar')
+            path.chmod(0o644)
+            self.assertIn('PORTABLE_ERASURE_REFUSED',self.run_child('erase-bad-'+kind,expect_refusal=True))
+            self.assertFalse(sqlite_marker.exists())
+            self.assertEqual(self.store.operations,operations_before)
+            if kind == 'sidecar': path.unlink()
+            else: path.chmod(0o600)
         erased=self.run_child('erase-valid')
         self.assertIn('REPORT_ERASURE_RECORDED',erased)
         with sqlite3.connect(database) as db:
