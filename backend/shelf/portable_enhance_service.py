@@ -323,7 +323,7 @@ class EnhanceService:
 
     @staticmethod
     def _checkpoint_outcomes(memory, outcomes):
-        """Retain prior zero-count source outcomes without rewriting sealed counts."""
+        """Keep preparatory zero-count status through terminal checkpoints."""
         retained = memory.get('preparatory_outcomes', {}) if memory else {}
         return tuple(retained.get(row.category, row) if row.candidate_count == 0 else row
                      for row in outcomes)
@@ -583,11 +583,9 @@ class EnhanceService:
         book = catalogue.backends.get('hardcover') if type(catalogue) is SourceCollection else None
         if book is None or book.issuer.connection_ref not in dict(planned.source_plans):
             return False
-        if not any(row['category'] == 'book' and row['terms']
-                   for row in read_json(planned.plan.body)['queries']):
-            # The confirmed starter operation returns complete books; let the
-            # final collection consume it once instead of probing it here.
-            return False
+        own_plan = dict(planned.source_plans)[book.issuer.connection_ref]
+        if not any(row['terms'] for row in read_json(own_plan.body)['queries']
+                   if row['category'] == 'book'): return False
         # Only Hardcover search runs in this preparatory collection. Other
         # sources remain unsent until the derived IDs get their OWN confirmation.
         # Sharing the producer's bounded state resumes its original search permit;
@@ -623,8 +621,7 @@ class EnhanceService:
             memory['detail_dependency'] = ('exact_hardcover_detail_confirmation_unavailable'
                 if details and actual.code == 'AUTHORITY_DENIED' else None)
             return False
-        own = dict(planned.source_plans)[book.issuer.connection_ref]
-        memory['source_previews'] = [(book.issuer, book.issuer.preview(own, request=request)) for request in details]
+        memory['source_previews'] = [(book.issuer, book.issuer.preview(own_plan, request=request)) for request in details]
         memory['source_index'] = -1
         return self._next_source_preview(store, row, memory)
 
