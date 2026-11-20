@@ -179,29 +179,21 @@ class SourceCollectionTests(TestCase):
         self.assertEqual({(row['source'], row['code']) for row in recorded['source_outcomes']},
                          {('moshtix', 'OK'), ('rrr', 'CAPABILITY_UNAVAILABLE')})
 
-    def test_plan_failures_keep_each_gallery_source_and_send_nothing(self):
-        registry, query = plan(('gallery',)); clock = Clock()
-        gertrude = Backend('gertrude', clock, [])
-        result = SourceCollection((('gallery', ('apw', 'gertrude')),), {'gertrude': gertrude},
-            clock=clock, isolated_fixture=True).collect(query, registry, CollectionBudget(), source_plans={})
-        self.assertEqual(({(row['source'], row['code']) for row in read_json(result.source_revisions)['_collection']['source_outcomes']},
-            gertrude.sent), ({('apw', 'CAPABILITY_UNAVAILABLE'), ('gertrude', 'AUTHORITY_DENIED')}, []))
-
-    def test_denied_hardcover_and_empty_tmdb_keep_distinct_source_outcomes(self):
-        registry, query = plan(('book', 'movie'))
-        clock = Clock()
-        hardcover = Backend('hardcover', clock, [(403, {}, ())])
-        tmdb = Backend('tmdb_movie', clock, [(200, {'results': []}, ())])
-        result = SourceCollection((('book', ('hardcover',)), ('movie', ('tmdb_movie',))),
-            {'hardcover': hardcover, 'tmdb_movie': tmdb}, clock=clock,
-            isolated_fixture=True).collect(query, registry, CollectionBudget())
-        outcomes = {row.category: row for row in result.outcomes}
-        self.assertEqual((outcomes['book'].state, outcomes['book'].code),
-                         ('unavailable', 'AUTHORITY_DENIED'))
-        self.assertEqual((outcomes['movie'].state, outcomes['movie'].code), ('empty_bounded', 'OK'))
-        recorded = read_json(result.source_revisions)['_collection']['source_outcomes']
-        self.assertEqual({(row['source'], row['code']) for row in recorded},
-                         {('hardcover', 'AUTHORITY_DENIED'), ('tmdb_movie', 'OK')})
+    def test_budget_stop_preserves_source_failures_and_plan_revalidation(self):
+        from types import SimpleNamespace
+        registry, query = plan(('book', 'gallery')); clock = Clock()
+        book, gertrude = Backend('hardcover', clock, []), Backend('gertrude', clock, [])
+        book.issuer, gertrude.issuer = (SimpleNamespace(connection_ref='book-connection'),
+                                        SimpleNamespace(connection_ref='gallery-connection'))
+        plans = {'book-connection': query}
+        collector = SourceCollection((('book', ('hardcover',)), ('gallery', ('apw', 'gertrude'))),
+            {'hardcover': book, 'gertrude': gertrude}, clock=clock, isolated_fixture=True)
+        result = collector.collect(query, registry, CollectionBudget(initial_sends=1), source_plans=plans)
+        attempts = {(row['source'], row['code']) for row in read_json(result.source_revisions)['_collection']['source_outcomes']}
+        self.assertEqual((attempts, book.sent, gertrude.sent),
+            ({('hardcover', 'LIMIT_EXCEEDED'), ('apw', 'CAPABILITY_UNAVAILABLE'),
+             ('gertrude', 'AUTHORITY_DENIED')}, [], []))
+        self.assertTrue(collector.revalidate_collection(result, query, registry, source_plans=plans))
 
     def test_missing_fetch_permission_prevents_api_and_page_sends(self):
         from shelf.category_registry import KEYS

@@ -123,8 +123,7 @@ class SourceCollection:
                 spec = registered_source(name)
                 if name not in self.backends:
                     allocation_failures[category].append('CAPABILITY_UNAVAILABLE')
-                    unavailable_sources.append({'category': category, 'source': name,
-                                                'code': 'CAPABILITY_UNAVAILABLE'})
+                    unavailable_sources.append({'category': category, 'source': name, 'code': 'CAPABILITY_UNAVAILABLE'})
                     continue
                 try:
                     selected = self._plan_for(name, plan, source_plans)
@@ -148,10 +147,15 @@ class SourceCollection:
             for requests in allocations.values() for req in requests if req.source not in ('apw', 'gertrude'))
         omitted = []
         if non_gallery_cost > budget.initial_sends:
-            outcomes = tuple(CategoryOutcome(category, 'unavailable', 0,
-                'LIMIT_EXCEEDED' if allocations[category] else 'CAPABILITY_UNAVAILABLE')
-                for category in registry.categories)
-            return self._seal(plan, registry, outcomes, (), {}, plan.expires_at, budget)
+            attempts = unavailable_sources + [dict(category=category, source=request.source,
+                code='LIMIT_EXCEEDED') for category, requests in allocations.items() for request in requests]
+            outcomes = tuple(CategoryOutcome(c, 'unavailable', 0, 'LIMIT_EXCEEDED' if allocations[c] else
+                next(iter(allocation_failures[c]), 'CAPABILITY_UNAVAILABLE')) for c in registry.categories)
+            revisions = {'_collection': {'sends': 0, 'response_bytes': 0, 'initial_sends_reserved': 0,
+                'extension_sends': 0, 'retry_sends': 0, 'source_outcomes': attempts,
+                'configured_sources': {key: list(value) for key, value in self.configured.items()},
+                'gallery_preparations': {}}, '_source_plans': self._plan_material(source_plans)}
+            return self._seal(plan, registry, outcomes, (), revisions, plan.expires_at, budget, source_plans=source_plans)
         remaining = budget.initial_sends - non_gallery_cost
         cost = non_gallery_cost
         for category, requests in allocations.items():
