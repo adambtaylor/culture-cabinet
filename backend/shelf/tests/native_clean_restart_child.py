@@ -84,6 +84,21 @@ def main(root, phase, request_fd, response_fd):
         assert 0 < size <= 65536
         return json.loads(read_exact(response_fd, size))
 
+    if phase.startswith('erase-'):
+        refs = json.loads((Path(root).parent/'native-proof-refs.json').read_text())
+        from types import ModuleType
+        credentials = ModuleType('shelf.saved_credentials'); credentials.secret_service_request = store
+        from portable import main as portable_main
+        installation = uuid.UUID(refs['installation_id'])
+        if phase == 'erase-wrong': installation = uuid.uuid4()
+        args = ['--data-root', root, '--erase-beta-report', str(installation), refs['report_reference']]
+        if phase == 'erase-port': args.extend(['--port', '0'])
+        with patch.dict(sys.modules, {'shelf.saved_credentials':credentials}):
+            result = portable_main(args)
+        print(json.dumps({'state':'NATIVE_REPORT_ERASURE_CLOSED','exit':result,'observed':{},
+            'providerCalls':0}), flush=True)
+        return result
+
     def make(boundary, application):
         server = original(boundary, application)
         try:
@@ -131,6 +146,14 @@ def main(root, phase, request_fd, response_fd):
                     'profile_ref':profile, 'connection_ref':str(row.pk),
                     'events':[(str(r.pk),hashlib.sha256(json.dumps(r.body,sort_keys=True).encode()).hexdigest())
                               for r in FeedbackEvent.objects.order_by('id')]}
+                if phase == 'first-report-erase':
+                    from django.contrib.auth import get_user_model
+                    from shelf.beta_feedback import bind_tester_account, submit_report
+                    tester = get_user_model().objects.create_user('synthetic-report-tester', password=PASSWORD)
+                    bind_tester_account(tester_id=tester.pk, installation_id=boundary.installation_id)
+                    report_ref = uuid.uuid4()
+                    submit_report(tester=tester, reference=report_ref, body='Synthetic erase proof only.')
+                    refs.update(report_reference=str(report_ref), tester_id=tester.pk)
                 if phase=='first-selection':refs['selection_runs']=seed_selection_history(settings.PORTABLE_AUTHORITY,ref,profile,row)
                 refs_path.write_text(json.dumps(refs))
             else:
@@ -147,6 +170,19 @@ def main(root, phase, request_fd, response_fd):
                     assert value == DUMMY.encode()
                 assert not settings.PORTABLE_CONNECTIONS.status(ref,row.pk,row.config_revision)['connection_ready']
                 assert str(ProfileCabinetState.objects.get().profile_ref) == refs['profile_ref']
+                if phase == 'second-report-erase':
+                    from django.contrib.auth import get_user_model
+                    from shelf.beta_feedback import ReportConflict, submit_report, tester_report
+                    report_ref = uuid.UUID(refs['report_reference'])
+                    tester = get_user_model().objects.get(pk=refs['tester_id'])
+                    assert tester_report(tester=tester, reference=report_ref) is None
+                    for body in ('Synthetic erase proof only.', 'Changed after erasure.'):
+                        try: submit_report(tester=tester, reference=report_ref, body=body)
+                        except ReportConflict: pass
+                        else: raise AssertionError('Erased report was recreated')
+                    status = Client(enforce_csrf_checks=True); status.force_login(tester)
+                    assert status.get('/report/'+str(report_ref)+'/', **headers).status_code == 404
+                    observed['erased_report']='STATUS_DENIED_AND_REPLAY_REFUSED'
                 events = [(str(r.pk),hashlib.sha256(json.dumps(r.body,sort_keys=True).encode()).hexdigest())
                           for r in FeedbackEvent.objects.order_by('id')]
                 assert [list(r) for r in events] == refs['events']

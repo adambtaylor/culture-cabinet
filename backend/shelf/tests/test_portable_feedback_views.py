@@ -415,11 +415,9 @@ class PrivateProblemReportTests(NativeFeedbackCase):
     def test_linked_submit_status_replay_scoped_owner_read_and_denials(self):
         from django.conf import settings
         from django.contrib.auth import get_user_model
-        from django.core.management import call_command
-        from io import StringIO
         from unittest.mock import patch
         from django.db import DatabaseError
-        from shelf.beta_feedback import ReportConflict, bind_tester_account, submit_report
+        from shelf.beta_feedback import bind_tester_account
         from shelf.models import BetaProblemReport, FeedbackTesterBinding, PortableInstallation
         User = get_user_model()
         tester = User.objects.create_user('fictional-report-tester', password=PASSWORD)
@@ -449,6 +447,11 @@ class PrivateProblemReportTests(NativeFeedbackCase):
         self.assertNotContains(reopened, 'Send report')
         reconciled = client.get('/report/', {'status_reference': ref}, **self.headers)
         self.assertContains(reconciled, 'Your report was saved.')
+        for path in ('/report/?status_reference='+ref, '/report/'+ref+'/'):
+            with patch('shelf.beta_feedback_views.tester_report', side_effect=DatabaseError):
+                status_failure = client.get(path, **self.headers)
+            self.assertEqual((status_failure.status_code, ref.encode() in status_failure.content,
+                              b'Status is unknown' in status_failure.content), (503, True, True))
         self.assertEqual(BetaProblemReport.objects.count(), before + 1)
         self.assertEqual(client.get('/report/'+ref+'/', **self.headers).status_code, 200)
         self.assertNotContains(client.get('/report/'+ref+'/', **self.headers), body, html=False)
@@ -513,7 +516,6 @@ class PrivateProblemReportTests(NativeFeedbackCase):
         owner_page = self.post('/cabinet/reports/', {'reference': ref})
         self.assertEqual(owner_page.status_code, 200)
         self.assertContains(owner_page, '&lt;script&gt;private&lt;/script&gt;', html=False)
-        report = BetaProblemReport.objects.get(pk=ref)
         other_install = PortableInstallation.objects.create(id=uuid.uuid4(), root_identity='a'*64,
             process_generation=uuid.uuid4())
         bind_tester_account(tester_id=tester.pk, installation_id=other_install.pk)
@@ -524,32 +526,9 @@ class PrivateProblemReportTests(NativeFeedbackCase):
         self.assertContains(self.post('/cabinet/reports/', {'reference': moved}),
                             'No report found for that reference.')
 
-        output = StringIO()
-        call_command('erase_beta_problem_report', str(other_install.pk), ref,
-                     stdout=output, stderr=StringIO())
-        self.assertEqual(output.getvalue().strip(), 'Not found.')
-        missing = StringIO()
-        call_command('erase_beta_problem_report', str(install), str(uuid.uuid4()), stdout=missing)
-        self.assertEqual(missing.getvalue(), output.getvalue())
-        report.refresh_from_db()
-        self.assertEqual(report.body, body)
-        output = StringIO()
-        call_command('erase_beta_problem_report', str(install), ref, stdout=output)
-        self.assertEqual(output.getvalue().strip(), 'Erasure recorded.')
-        call_command('erase_beta_problem_report', str(install), ref, stdout=StringIO())
-        report.refresh_from_db()
-        self.assertEqual((report.body, report.deleted, report.tester_id, report.installation_id),
-                         (None, True, tester.pk, install))
-        erased_owner_read = self.post('/cabinet/reports/', {'reference': ref})
-        self.assertContains(erased_owner_read, 'No report found for that reference.')
         PortableInstallation.objects.filter(pk=install).update(owner_revision=2)
         invalidated = self.post('/cabinet/reports/', {'reference': other_ref})
         self.assertEqual(invalidated.status_code, 401)
-        self.assertEqual(client.get('/report/'+ref+'/', **self.headers).status_code, 404)
-        for replay_body in (body, 'changed after erasure'):
-            with self.assertRaises(ReportConflict):
-                submit_report(tester=tester, reference=uuid.UUID(ref), body=replay_body)
-        report.refresh_from_db()
         FeedbackTesterBinding.objects.create(tester=tester, installation_id=install)
         denied = client.post('/report/', urlencode({**new_data, 'reference': str(uuid.uuid4())}),
             content_type='application/x-www-form-urlencoded', HTTP_X_CSRFTOKEN=token, **self.headers)

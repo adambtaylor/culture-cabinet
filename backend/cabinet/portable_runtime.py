@@ -14,6 +14,7 @@ import signal
 import sqlite3
 import stat
 import sys
+import threading
 
 
 class PortableStop(BaseException):
@@ -158,6 +159,58 @@ def validate_existing(boundary):
                 raise ValueError
     except (sqlite3.Error, ValueError):
         raise RuntimeFailure('PORTABLE_STORE_UPGRADE_OR_RECOVERY_REQUIRED') from None
+
+
+def erase_existing(root, installation_id, reference):
+    """Erase one report only after this existing root passes clean restart."""
+    from cabinet.portable_boundary import open_boundary
+    root = Path(root).absolute()
+    names = ('.portable-lock', '.portable-installation.json', 'portable.sqlite3',
+             '.portable-clean-restart.json')
+    if root.is_symlink() or not root.is_dir() or any(
+            (root / name).is_symlink() or not (root / name).is_file() for name in names):
+        raise RuntimeFailure('PORTABLE_ERASURE_REFUSED')
+    old_umask = os.umask(0o077); boundary = checkpoint = None; attempted = False
+    try:
+        protect_core()
+        boundary = open_boundary(root, port=0)
+        if boundary.installation_id != installation_id:
+            raise RuntimeFailure('PORTABLE_ERASURE_REFUSED')
+        configure(boundary)
+        validate_existing(boundary)
+        from django.db import connections
+        from shelf.beta_feedback import erase_report
+        from shelf.recovery import NativeCleanCheckpoint, native_clean_restart
+        from shelf.saved_credentials import secret_service_request
+        checkpoint = NativeCleanCheckpoint(boundary, secret_service_request)
+        with ExitStack() as lifetime:
+            lifetime.enter_context(native_clean_restart(boundary, checkpoint))
+            checkpoint.writers_stopped = lambda: (not connections['default'].in_atomic_block
+                                                   and threading.active_count() == 1)
+            lifetime.callback(lambda: _seal_clean_checkpoint(checkpoint))
+            attempted = True
+            erased = erase_report(installation_id=boundary.installation_id, reference=reference)
+            checkpoint.clean_stop = True
+        return erased
+    except RuntimeFailure:
+        raise
+    except Exception:
+        raise RuntimeFailure('PORTABLE_ERASURE_UNCONFIRMED' if attempted else
+                             'PORTABLE_ERASURE_REFUSED') from None
+    finally:
+        try:
+            if boundary is not None:
+                boundary.close()
+        except Exception:
+            raise RuntimeFailure('PORTABLE_ERASURE_UNCONFIRMED' if attempted else
+                                 'PORTABLE_ERASURE_REFUSED') from None
+        finally:
+            os.umask(old_umask)
+
+
+def _seal_clean_checkpoint(checkpoint):
+    with checkpoint.coordinator.mutex:
+        checkpoint.seal()
 
 
 def remove_fresh_fixtures():

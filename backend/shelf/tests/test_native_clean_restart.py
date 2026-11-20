@@ -5,6 +5,7 @@ import os
 from pathlib import Path
 import select
 import signal
+import sqlite3
 import struct
 import subprocess
 import sys
@@ -230,6 +231,7 @@ class PrivateStore:
         self.credential_puts = 0
         self.anchor_puts = 0
         self.unknown_anchor_put = False
+        self.unknown_clean_seal = False
 
     def execute(self,value):
         reply={'version':value['version'],'operation_id':value['operation_id'],
@@ -244,6 +246,8 @@ class PrivateStore:
         if value['operation']=='put' and value['record_kind']=='clean_restart_anchor':
             self.anchor_puts+=1
             if self.unknown_anchor_put:return {**reply,'status':'UNKNOWN'}
+        unknown_clean = (value['operation']=='put' and value['record_kind']=='clean_restart_anchor'
+                         and self.unknown_clean_seal and value['record_if_put']['state']=='CLEAN')
         if value['expected_revision']!=(current['revision'] if current else None):
             return {**reply,'status':'CONFLICT'}
         if value['operation']=='read':
@@ -254,7 +258,7 @@ class PrivateStore:
         if value['record_kind']=='credential':self.credential_puts+=1
         result={**reply,'revision':revision}
         self.receipts[value['operation_id']]=result
-        return result
+        return {**result,'status':'UNKNOWN'} if unknown_clean else result
 
 
 class NativeCleanRestartTests(SimpleTestCase):
@@ -309,8 +313,61 @@ class NativeCleanRestartTests(SimpleTestCase):
                 self.assertEqual(receipts[-1]['observed'],{})
         else:
             self.assertEqual(child.returncode,0,output.decode())
-            self.assertIn('NATIVE_DUMMY_LIFECYCLE_CLOSED',output.decode())
+            marker = 'NATIVE_REPORT_ERASURE_CLOSED' if phase.startswith('erase-') else 'NATIVE_DUMMY_LIFECYCLE_CLOSED'
+            self.assertIn(marker,output.decode())
         return output.decode()
+
+    def test_portable_offline_erasure_requires_clean_root_and_seals_tombstone(self):
+        self.run_child('first-report-erase')
+        refs=json.loads((self.root.parent/'native-proof-refs.json').read_text())
+        reference=uuid.UUID(refs['report_reference']); database=self.root/'portable.sqlite3'
+        locator=self.root/'.portable-clean-restart.json'; original=database.read_bytes()
+        clean=deepcopy(next(v['record'] for k,v in self.store.items.items() if k[0]=='clean_restart_anchor'))
+        wrong=self.run_child('erase-wrong',expect_refusal=True)
+        self.assertIn('PORTABLE_ERASURE_REFUSED',wrong)
+        self.assertEqual(database.read_bytes(),original)
+        self.assertEqual(next(v['record'] for k,v in self.store.items.items() if k[0]=='clean_restart_anchor'),clean)
+        port=self.run_child('erase-port',expect_refusal=True)
+        self.assertIn('PORTABLE_ERASURE_OPTIONS_REFUSED',port)
+        self.assertEqual(database.read_bytes(),original)
+        saved=locator.read_bytes(); locator.unlink()
+        missing=self.run_child('erase-missing',expect_refusal=True)
+        self.assertIn('PORTABLE_ERASURE_REFUSED',missing)
+        self.assertEqual(database.read_bytes(),original)
+        self.assertEqual(next(v['record'] for k,v in self.store.items.items() if k[0]=='clean_restart_anchor'),clean)
+        locator.write_bytes(saved); locator.chmod(0o600)
+        locator.write_bytes(b'{}')
+        invalid=self.run_child('erase-invalid',expect_refusal=True)
+        self.assertIn('PORTABLE_ERASURE_REFUSED',invalid)
+        self.assertEqual(database.read_bytes(),original)
+        locator.write_bytes(saved); locator.chmod(0o600)
+        self.assertEqual(next(v['record'] for k,v in self.store.items.items() if k[0]=='clean_restart_anchor'),clean)
+        erased=self.run_child('erase-valid')
+        self.assertIn('REPORT_ERASURE_RECORDED',erased)
+        with sqlite3.connect(database) as db:
+            row=db.execute('SELECT body,deleted,tester_id,installation_id FROM shelf_betaproblemreport WHERE reference=?',
+                           (reference.hex,)).fetchone()
+        self.assertEqual(row,(None,1,refs['tester_id'],uuid.UUID(refs['installation_id']).hex))
+        anchor=next(v['record'] for k,v in self.store.items.items() if k[0]=='clean_restart_anchor')
+        self.assertEqual(anchor['state'],'CLEAN')
+        verified=self.run_child('second-report-erase')
+        self.assertIn('STATUS_DENIED_AND_REPLAY_REFUSED',verified)
+        self.assertNotIn('Synthetic erase proof only.',verified)
+
+    def test_unconfirmed_clean_seal_never_reports_erasure_success(self):
+        self.run_child('first-report-erase')
+        refs=json.loads((self.root.parent/'native-proof-refs.json').read_text())
+        self.store.unknown_clean_seal=True
+        output=self.run_child('erase-valid',expect_refusal=True)
+        self.assertIn('PORTABLE_ERASURE_UNCONFIRMED',output)
+        self.assertNotIn('REPORT_ERASURE_RECORDED',output)
+        with sqlite3.connect(self.root/'portable.sqlite3') as db:
+            row=db.execute('SELECT body,deleted FROM shelf_betaproblemreport WHERE reference=?',
+                           (uuid.UUID(refs['report_reference']).hex,)).fetchone()
+        self.assertEqual(row,(None,1))
+        locator=json.loads((self.root/'.portable-clean-restart.json').read_text())
+        anchor=next(v for k,v in self.store.items.items() if k[0]=='clean_restart_anchor')
+        self.assertNotEqual(locator['revision'],anchor['revision'])
 
     def test_native_form_sighup_same_installation_fresh_login_and_consumer(self):
         first=self.run_child('first')

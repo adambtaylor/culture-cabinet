@@ -20,7 +20,7 @@
 {% elif status_check %}{% if message %}<p role="alert">{{ message }}</p>{% endif %}
 <p>Check a reference from a previous report before starting another submission.</p>
 <form method="get" action="/report/"><label for="status-reference">Report reference</label>
-<input id="status-reference" name="status_reference" maxlength="36" required><button type="submit">Check status</button></form>
+<input id="status-reference" name="status_reference" maxlength="36" value="{{ status_reference|default:'' }}" required><button type="submit">Check status</button></form>
 <p><a href="/report/?new=1">Start a new report</a></p>
 {% else %}{% if message %}<p role="alert">{{ message }}</p>{% endif %}
 <p>Describe the problem in plain text. Do not include passwords, keys or private taste details.</p>

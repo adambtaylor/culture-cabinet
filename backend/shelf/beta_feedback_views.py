@@ -51,9 +51,9 @@ def tester_page(request):
             except ReportDenied:
                 return _render(request, status_check=True,
                     message='Report status is unavailable for this account.', status=403)
-            except RecoveryBlocked:
-                return HttpResponse('Report status is unavailable.\n', status=503,
-                                    content_type='text/plain')
+            except (RecoveryBlocked, DatabaseError):
+                return _render(request, status_check=True, status_reference=reference,
+                    message='Status is unknown. Retry checking this reference before resubmitting.', status=503)
             if report:
                 return _render(request, report=report, saved=True)
             return _render(request, form=ReportForm(initial={'reference': reference}),
@@ -89,8 +89,9 @@ def tester_page(request):
 def tester_status(request, reference):
     try:
         report = tester_report(tester=request.user, reference=reference)
-    except RecoveryBlocked:
-        return HttpResponse('Report status is unavailable.\n', status=503, content_type='text/plain')
+    except (RecoveryBlocked, DatabaseError):
+        return _render(request, status_check=True, status_reference=reference,
+            message='Status is unknown. Retry checking this reference before resubmitting.', status=503)
     except ReportDenied:
         raise Http404('Not available.') from None
     if report is None:
