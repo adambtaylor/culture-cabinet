@@ -294,6 +294,7 @@
     </div>
   </div>
   {% if profile_ref %}<p><a href="/setup/journey?profile_ref={{ profile_ref|urlencode }}#events-location">Events and Art location settings</a></p>{% endif %}
+  <p><a href="/report/">Send a private problem report</a> · <a href="/cabinet/reports/">Retrieve a report by reference</a></p>
   {% if noise_run %}
   {% comment %}This summary belongs to the backend's linked published run. Never read its frozen value from the editable next-round control or invent25 for a legacy run.{% endcomment %}
   <section aria-labelledby="cabinet-noise-run-heading" data-noise-run>

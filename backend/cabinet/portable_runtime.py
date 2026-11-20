@@ -14,6 +14,7 @@ import signal
 import sqlite3
 import stat
 import sys
+import threading
 
 
 class PortableStop(BaseException):
@@ -79,12 +80,20 @@ def prepare_database(boundary):
         finally:
             os.close(fd)
         return True
+    _validate_existing_database_files(boundary)
+    return False
+
+
+def _validate_existing_database_files(boundary):
+    """Check every existing SQLite file before any connection can open it."""
+    path = Path(boundary.database_name)
+    if not path.exists() and not path.is_symlink():
+        raise RuntimeFailure('PORTABLE_STORE_REFUSED')
     private_file(path)
     for suffix in ['-wal', '-shm', '-journal']:
         sidecar = Path(str(path) + suffix)
         if sidecar.exists() or sidecar.is_symlink():
             private_file(sidecar)
-    return False
 
 
 def configure(boundary):
@@ -99,7 +108,8 @@ def configure(boundary):
                         'django.contrib.sessions', 'django.contrib.staticfiles', 'shelf'],
         MIDDLEWARE=['cabinet.portable_boundary.PortableSecurityMiddleware',
                     'django.contrib.sessions.middleware.SessionMiddleware',
-                    'django.middleware.csrf.CsrfViewMiddleware'],
+                    'django.middleware.csrf.CsrfViewMiddleware',
+                    'django.contrib.auth.middleware.AuthenticationMiddleware'],
         DATABASES={'default': {'ENGINE': 'django.db.backends.sqlite3', 'NAME': boundary.database_name}},
         DEFAULT_AUTO_FIELD='django.db.models.BigAutoField',
         TEMPLATES=[{'BACKEND': 'django.template.backends.django.DjangoTemplates',
@@ -112,6 +122,8 @@ def configure(boundary):
         SESSION_COOKIE_SECURE=False, CSRF_COOKIE_SECURE=False,
         SESSION_COOKIE_DOMAIN=None, CSRF_COOKIE_DOMAIN=None,
         SESSION_COOKIE_AGE=1800, SESSION_EXPIRE_AT_BROWSER_CLOSE=True,
+        LOGIN_REDIRECT_URL='/report/',
+        LOGIN_URL='/report/login/',
         AUTH_PASSWORD_VALIDATORS=[{'NAME': 'django.contrib.auth.password_validation.MinimumLengthValidator',
                                     'OPTIONS': {'min_length': 12}},
                                   {'NAME': 'django.contrib.auth.password_validation.CommonPasswordValidator'},
@@ -155,6 +167,62 @@ def validate_existing(boundary):
                 raise ValueError
     except (sqlite3.Error, ValueError):
         raise RuntimeFailure('PORTABLE_STORE_UPGRADE_OR_RECOVERY_REQUIRED') from None
+
+
+def erase_existing(root, installation_id, reference):
+    """Erase one report only after this existing root passes clean restart."""
+    from cabinet.portable_boundary import open_boundary
+    root = Path(root).absolute()
+    names = ('.portable-lock', '.portable-installation.json', 'portable.sqlite3',
+             '.portable-clean-restart.json')
+    if root.is_symlink() or not root.is_dir() or any(
+            (root / name).is_symlink() or not (root / name).is_file() for name in names):
+        raise RuntimeFailure('PORTABLE_ERASURE_REFUSED')
+    old_umask = os.umask(0o077); boundary = checkpoint = None; attempted = False
+    try:
+        protect_core()
+        boundary = open_boundary(root, port=0)
+        if boundary.installation_id != installation_id:
+            raise RuntimeFailure('PORTABLE_ERASURE_REFUSED')
+        try:
+            _validate_existing_database_files(boundary)
+        except RuntimeFailure:
+            raise RuntimeFailure('PORTABLE_ERASURE_REFUSED') from None
+        configure(boundary)
+        validate_existing(boundary)
+        from django.db import connections
+        from shelf.beta_feedback import erase_report
+        from shelf.recovery import NativeCleanCheckpoint, native_clean_restart
+        from shelf.saved_credentials import secret_service_request
+        checkpoint = NativeCleanCheckpoint(boundary, secret_service_request)
+        with ExitStack() as lifetime:
+            lifetime.enter_context(native_clean_restart(boundary, checkpoint))
+            checkpoint.writers_stopped = lambda: (not connections['default'].in_atomic_block
+                                                   and threading.active_count() == 1)
+            lifetime.callback(lambda: _seal_clean_checkpoint(checkpoint))
+            attempted = True
+            erased = erase_report(installation_id=boundary.installation_id, reference=reference)
+            checkpoint.clean_stop = True
+        return erased
+    except RuntimeFailure:
+        raise
+    except Exception:
+        raise RuntimeFailure('PORTABLE_ERASURE_UNCONFIRMED' if attempted else
+                             'PORTABLE_ERASURE_REFUSED') from None
+    finally:
+        try:
+            if boundary is not None:
+                boundary.close()
+        except Exception:
+            raise RuntimeFailure('PORTABLE_ERASURE_UNCONFIRMED' if attempted else
+                                 'PORTABLE_ERASURE_REFUSED') from None
+        finally:
+            os.umask(old_umask)
+
+
+def _seal_clean_checkpoint(checkpoint):
+    with checkpoint.coordinator.mutex:
+        checkpoint.seal()
 
 
 def remove_fresh_fixtures():

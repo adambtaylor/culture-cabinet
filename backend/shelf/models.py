@@ -543,6 +543,29 @@ class PortableInstallation(models.Model):
         ]
 
 
+class FeedbackTesterBinding(models.Model):
+    """Server-managed admission; browser requests can never choose an installation."""
+    tester = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.PROTECT)
+    installation = models.ForeignKey(PortableInstallation, on_delete=models.PROTECT)
+    active = models.BooleanField(default=True)
+
+
+class BetaProblemReport(models.Model):
+    """Private report audience is frozen at submission, across later relinking."""
+    reference = models.UUIDField(primary_key=True, serialize=False)
+    tester = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.PROTECT)
+    installation = models.ForeignKey(PortableInstallation, on_delete=models.PROTECT)
+    body = models.TextField(null=True)
+    deleted = models.BooleanField(default=False)
+    created_at = models.DateTimeField(default=timezone.now)
+
+    class Meta:
+        constraints = [models.CheckConstraint(
+            condition=(models.Q(deleted=False, body__isnull=False)
+                       | models.Q(deleted=True, body__isnull=True)),
+            name='beta_report_deleted_body')]
+
+
 class PortableConnection(models.Model):
     """Unproven nonsecret configuration, never a working-inference receipt."""
     id = models.UUIDField(primary_key=True, serialize=False)

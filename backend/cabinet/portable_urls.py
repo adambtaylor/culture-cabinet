@@ -1,5 +1,6 @@
 """Separate portable URLconf; legacy entrypoints keep their original routes."""
 from django.urls import path
+from django.contrib.auth.views import LoginView
 from shelf import portable_taste_history_views as taste_history
 from shelf import portable_setup_views as views
 from shelf import portable_connection_views as connections
@@ -10,8 +11,13 @@ from shelf import portable_source_views as sources
 from shelf import portable_feedback_views as feedback
 from shelf import card_action_views as card_actions
 from shelf import portable_journey_views as journey
+from shelf import beta_feedback_views as beta_feedback
 
 urlpatterns = [
+    path('report/login/', LoginView.as_view(template_name='cabinet/problem_report_login.html'), name='beta_report_login'),
+    path('report/', beta_feedback.tester_page, name='beta_report'),
+    path('report/<uuid:reference>/', beta_feedback.tester_status, name='beta_report_status'),
+    path('cabinet/reports/', beta_feedback.owner_page, name='beta_report_owner'),
     path('setup/journey', journey.page, name='portable_journey'),
     path('cabinet/journey/name', journey.name),
     path('cabinet/journey/step', journey.step),

@@ -1,0 +1,34 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width">
+<title>{% if owner %}Retrieve a report{% else %}Private problem report{% endif %} · Culture Cabinet</title>
+<link rel="stylesheet" href="/static/cabinet.css"></head><body>
+<a href="#main">Skip to content</a><header><p>Culture Cabinet · private beta</p>
+<nav aria-label="Report navigation"><a href="/cabinet">Your cabinet</a> · <a href="/report/">Problem report</a></nav></header>
+<main id="main" tabindex="-1">
+{% if owner %}<h1>Retrieve a private report</h1>
+<p>Enter the reference supplied by the tester. Only reports for this installation are available.</p>
+{% if message %}<p role="status">{{ message }}</p>{% endif %}
+<form method="post" action="/cabinet/reports/">{% csrf_token %}
+<label for="report-reference">Report reference</label>
+<input id="report-reference" name="reference" type="text" maxlength="36" value="{{ form.reference|default:'' }}" required>
+<button type="submit">Retrieve report</button></form>
+{% if report %}<section aria-labelledby="report-text-heading"><h2 id="report-text-heading">Report text</h2>
+<p>Received {{ report.created_at|date:"Y-m-d H:i" }} UTC · {{ report.reference }}</p><pre>{{ report.body }}</pre></section>{% endif %}
+{% else %}<h1>Send a private problem report</h1>
+{% if saved %}<p role="status">Your report was saved. Keep this reference for status checks: <strong>{{ report.reference }}</strong>. A receipt does not promise a fix.</p>
+<p>Reloading this page checks the saved status again.</p>
+{% elif status_check %}{% if message %}<p role="alert">{{ message }}</p>{% endif %}
+<p>Check a reference from a previous report before starting another submission.</p>
+<form method="get" action="/report/"><label for="status-reference">Report reference</label>
+<input id="status-reference" name="status_reference" maxlength="36" value="{{ status_reference|default:'' }}" required><button type="submit">Check status</button></form>
+<p><a href="/report/?new=1">Start a new report</a></p>
+{% else %}{% if message %}<p role="alert">{{ message }}</p>{% endif %}
+<p>Describe the problem in plain text. Do not include passwords, keys or private taste details.</p>
+<p>Pending reference: <strong>{{ form.reference.value }}</strong>. Keep it to check the saved status if the confirmation is interrupted.</p>
+<form method="get" action="/report/"><label for="status-reference">Check this reference before retrying</label>
+<input id="status-reference" name="status_reference" maxlength="36" value="{{ form.reference.value }}" required><button type="submit">Check status</button></form>
+<form method="post" action="/report/">{% csrf_token %}{{ form.reference }}
+<label for="id_body">What went wrong?</label>{{ form.body }}
+{% if form.body.errors %}<p role="alert">{{ form.body.errors }}</p>{% endif %}
+<button type="submit">Send report</button></form>{% endif %}{% endif %}
+</main></body></html>
