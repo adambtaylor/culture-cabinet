@@ -162,3 +162,114 @@ class OrdinaryEnhanceCompositionTests(RecoveryCase):
             self.assertEqual(service.confirm(self.ref, run_ref=status['run_ref'], preview_ref=preview['preview_ref'],
                 body_digest=preview['body_digest'], confirmed=True)['publication_revision'], current['publication_revision'])
             self.assertEqual(trace.count('personal'), 1)
+
+    def test_preparatory_hardcover_denial_survives_empty_tmdb_through_normal_status_path(self):
+        from dataclasses import replace
+        from unittest.mock import patch
+        import uuid
+        from shelf import grant_authority as ga
+        from shelf.disclosure import canonical_bytes
+        from shelf.inference_adapters import HostedResponsesAdapter
+        from shelf.inference_transport import CheckedTransport, ProbePermit
+        from shelf.models import DiscoveryState, PortableConnection, SynthesisRun
+        from shelf.portable_enhance_service import EnhanceService
+        from shelf.source_authority import SourcePolicyProvider, SourceRights
+        from .test_inference_adapters import response_document
+        from .test_source_evidence import policy
+
+        media_calls, personal_attempts, probe_calls = [], [], []
+
+        def model_send(transport, body, permit):
+            if type(permit) is ProbePermit:
+                permit.authorize(body)
+                probe_calls.append('probe')
+                return canonical_bytes(response_document())
+            personal_attempts.append(type(permit).__name__)
+            raise AssertionError('Empty source collection must not invoke inference')
+
+        def media_send(operation, **bounds):
+            self.assertTrue(bounds['revalidate']())
+            media_calls.append((operation.source, operation.operation))
+            if operation.operation == 'book_search':
+                return 403, canonical_bytes({'errors': [{'message': 'Synthetic denial.'}]}), ()
+            if operation.operation in ('search_movie', 'starter_movie_science'):
+                return 200, canonical_bytes({'results': []}), (('cache-control', 'max-age=300'),)
+            raise AssertionError('Unexpected synthetic media operation')
+
+        class Policies(SourcePolicyProvider):
+            def current(inner, authority, session_ref, *, connection_ref, **kwargs):
+                adapter = PortableConnection.objects.get(pk=connection_ref).adapter
+                return SourceRights(replace(policy(), ref='synthetic:' + adapter), 1,
+                    'synthetic-terms', 'synthetic-privacy', 'synthetic-locale',
+                    'CultureCabinet/fixture (example.invalid)', 'synthetic-processor', source=adapter)
+
+        class Clock:
+            def now(inner): return self.clock.wall
+            def monotonic(inner): return self.clock.tick
+            def sleep(inner, seconds): self.clock.advance(seconds)
+
+        with patch.object(CheckedTransport, 'send', model_send), \
+             patch('shelf.discovery_transport.media_authorized', side_effect=media_send):
+            self.service.adapter = HostedResponsesAdapter()
+            del self.authority._disclosure_fixture_token
+            self.put(); self.confirm_probe()
+            from .test_profile_snapshot import _legacy_owner_state
+            state = _legacy_owner_state(self.authority, self.ref)
+            profile = str(state.profile_ref)
+            card = dict(key='source:book:denied', title='Synthetic book seed', medium='book',
+                source='Synthetic', url='https://example.invalid/book', provenance='live-automated',
+                lane='', roots=[], fetched_at=self.clock.wall.isoformat())
+            common = dict(key=card['key'], card=card, mode='household',
+                origin='authenticated-human-post', at=self.clock.wall.isoformat())
+            DiscoveryState.objects.create(actor_id=state.actor_id, profile_id=state.profile_id,
+                mode='household', nonce='preparatory-denial-history', history=[
+                    dict(common, operation='rate', basis='enjoyment', value=5,
+                         experienced=True, choice=''),
+                    dict(common, operation='respond', choice='intrigued', note='Synthetic only')])
+            ga.bind_existing_profile(self.authority, self.ref, profile_id=state.profile_id, confirmed=True)
+            state.refresh_from_db()
+            self.consent(profile, classes=['canonical_seed', 'experienced_enjoyment',
+                'anticipated_reactions', 'raw_notes'])
+            for adapter in ('tmdb_movie', 'hardcover'):
+                row = self.vault.configure(self.ref, dict(adapter=adapter, model='', reasoning=''))
+                self.vault.replace(self.ref, row.pk, row.config_revision, b'SYNTHETIC-SOURCE')
+                ga.change_grant(self.authority, self.ref, profile_ref=profile, expected_revision=0,
+                    purpose='catalogue_lookup', connection_ref=str(row.pk),
+                    allowed_data_classes=['canonical_seed', 'experienced_enjoyment', 'anticipated_reactions'],
+                    expires_at=self.expires, action='grant')
+
+            service = EnhanceService.compose(self.authority, self.service,
+                policy_provider=Policies(), clock=Clock())
+            status = service.start(self.ref, profile_ref=profile, connection_ref=str(self.config.pk),
+                client_key=str(uuid.uuid4()), refresh_nonce=str(uuid.uuid4()))
+            plans = dict(service._memory[status['run_ref']]['work'].source_plans)
+            self.assertEqual(len(plans), 2)
+            confirmations = 0
+            for _ in range(3):
+                disclosure = service.preview(self.ref, run_ref=status['run_ref'])['disclosure']
+                self.assertEqual(disclosure['kind'], 'catalogue')
+                status = service.confirm(self.ref, run_ref=status['run_ref'],
+                    preview_ref=disclosure['preview_ref'], body_digest=disclosure['body_digest'],
+                    confirmed=True)
+                confirmations += 1
+                if status['terminal']:
+                    break
+            self.assertEqual(confirmations, 2)
+            self.assertEqual((status['stage'], status['code']), ('no_candidates', 'AUTHORITY_DENIED'),
+                msg=f"status={status['stage']}/{status['code']} outcomes={status['category_outcomes']} media={media_calls}")
+
+            separate_status = service.status(self.ref, run_ref=status['run_ref'])
+            self.assertEqual((separate_status['stage'], separate_status['code']),
+                             ('no_candidates', 'AUTHORITY_DENIED'))
+            outcomes = {row['category']: row for row in separate_status['category_outcomes']}
+            self.assertEqual((outcomes['book']['state'], outcomes['book']['code']),
+                             ('unavailable', 'AUTHORITY_DENIED'))
+            self.assertEqual((outcomes['movie']['state'], outcomes['movie']['code']),
+                             ('empty_bounded', 'OK'))
+            row = SynthesisRun.objects.get(pk=status['run_ref'])
+            self.assertEqual(row.attempts, 0)
+            self.assertEqual(media_calls.count(('hardcover', 'book_search')), 1)
+            self.assertEqual(sum(source == 'tmdb_movie' for source, _ in media_calls), 1)
+            self.assertEqual(len(media_calls), 2)
+            self.assertEqual(personal_attempts, [])
+            self.assertEqual(probe_calls, ['probe'])

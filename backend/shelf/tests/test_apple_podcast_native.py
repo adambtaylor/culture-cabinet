@@ -106,7 +106,7 @@ class AppleOperationTests(TestCase):
         request = SourceRequest(apple.SOURCE, apple.CATEGORY, apple.OPERATION, ('Synthetic',))
         body = document()
         body['results'] += [dict(body['results'][0]), dict(body['results'][0], kind='podcast'),
-                           dict(body['results'][0], kind='podcast', trackId=81002,
+                           dict(body['results'][0], trackId=81002,
                                 trackViewUrl='https://example.invalid/?i=81002')]
         body['resultCount'] = len(body['results'])
         reply = SourceReply(request.request_digest, 200, canonical_bytes(body), NOW)
@@ -179,6 +179,21 @@ class AppleBackendTests(TestCase):
         self.assertEqual(result.records[0]['candidate']['evidence_type'], 'fixture_not_live')
         self.assertNotIn('MUST_NOT', result._material.decode())
         self.assertEqual(collector.state.cache, {})
+
+    def test_source_collection_keeps_valid_episode_when_sibling_identity_is_malformed(self):
+        body = document()
+        body['results'].append({'kind': 'podcast-episode', 'trackName': 'Malformed sibling'})
+        body['resultCount'] = len(body['results'])
+        headers = (('date', NOW.strftime('%a, %d %b %Y %H:%M:%S GMT')),
+                   ('cache-control', 'no-store'))
+        self.send.return_value = 200, canonical_bytes(body), headers
+        collector = SourceCollection(((apple.CATEGORY, (apple.SOURCE,)),),
+            {apple.SOURCE: self.backend}, clock=self.clock, isolated_fixture=True)
+        result = collector.collect(self.query, self.registry, CollectionBudget())
+        outcome = next(row for row in result.outcomes if row.category == apple.CATEGORY)
+        self.assertEqual((outcome.state, outcome.candidate_count), ('fresh', 1))
+        self.assertEqual([row['candidate']['key'] for row in result.records],
+                         ['apple:podcast_episode:81001'])
 
     def test_episode_row_missing_identity_is_incomplete_not_a_bounded_empty_result(self):
         headers = (('date', NOW.strftime('%a, %d %b %Y %H:%M:%S GMT')),

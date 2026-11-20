@@ -370,20 +370,23 @@ def _normalize(spec, request, reply, *, now):
         document = source.strict_json(reply.body)
         rows = document.get('results') if type(document) is dict else None
         episode_ids = set()
+        malformed = False
         if type(rows) is list:
             for row in rows:
                 if type(row) is not dict or row.get('kind') != 'podcast-episode':
                     continue
                 episode_id, collection_id = row.get('trackId'), row.get('collectionId')
-                require(type(episode_id) is int and 0 < episode_id < 2**63
-                        and type(collection_id) is int and 0 < collection_id < 2**63,
-                        'SOURCE_UNAVAILABLE')
-                require(_episode_url(row.get('trackViewUrl'), episode_id, collection_id) is not None,
-                        'SOURCE_UNAVAILABLE')
+                if (type(episode_id) is not int or not 0 < episode_id < 2**63
+                        or type(collection_id) is not int or not 0 < collection_id < 2**63
+                        or _episode_url(row.get('trackViewUrl'), episode_id, collection_id) is None):
+                    malformed = True
+                    continue
                 episode_ids.add(episode_id)
         projected = parse_results(document, stamp)
-        require({int(row['apple_episode_id']) for row in projected} == episode_ids,
-                'SOURCE_UNAVAILABLE')
+        projected_ids = {int(row['apple_episode_id']) for row in projected}
+        require(projected_ids <= episode_ids, 'SOURCE_UNAVAILABLE')
+        malformed = malformed or projected_ids != episode_ids
+        require(projected or not malformed, 'SOURCE_UNAVAILABLE')
         for index, row in enumerate(projected):
             cards.append(SourceCard(row['key'], row['title'], 'podcast_episode', 'apple',
                 row['apple_episode_id'], row['source_url'], f'normalized-source-row:{index}'))
