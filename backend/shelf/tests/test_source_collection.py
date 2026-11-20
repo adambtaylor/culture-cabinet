@@ -179,6 +179,14 @@ class SourceCollectionTests(TestCase):
         self.assertEqual({(row['source'], row['code']) for row in recorded['source_outcomes']},
                          {('moshtix', 'OK'), ('rrr', 'CAPABILITY_UNAVAILABLE')})
 
+    def test_plan_failures_keep_each_gallery_source_and_send_nothing(self):
+        registry, query = plan(('gallery',)); clock = Clock()
+        gertrude = Backend('gertrude', clock, [])
+        result = SourceCollection((('gallery', ('apw', 'gertrude')),), {'gertrude': gertrude},
+            clock=clock, isolated_fixture=True).collect(query, registry, CollectionBudget(), source_plans={})
+        self.assertEqual(({(row['source'], row['code']) for row in read_json(result.source_revisions)['_collection']['source_outcomes']},
+            gertrude.sent), ({('apw', 'CAPABILITY_UNAVAILABLE'), ('gertrude', 'AUTHORITY_DENIED')}, []))
+
     def test_denied_hardcover_and_empty_tmdb_keep_distinct_source_outcomes(self):
         registry, query = plan(('book', 'movie'))
         clock = Clock()

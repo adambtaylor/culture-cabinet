@@ -130,6 +130,7 @@ class SourceCollection:
                     selected = self._plan_for(name, plan, source_plans)
                 except EnhanceFault as error:
                     allocation_failures[category].append(error.code)
+                    unavailable_sources.append({'category': category, 'source': name, 'code': error.code})
                     continue
                 selected_plans[name] = selected
                 source_terms = next(row['terms'] for row in read_json(selected.body)['queries']
@@ -138,6 +139,7 @@ class SourceCollection:
                     requests.append(initial_source_request(name, category, tuple(source_terms)))
                 except EnhanceFault as error:
                     allocation_failures[category].append(error.code)
+                    unavailable_sources.append({'category': category, 'source': name, 'code': error.code})
 
             allocations[category] = tuple(requests)
         # Reserve worst-case enrichment capacity for ALL categories before any
