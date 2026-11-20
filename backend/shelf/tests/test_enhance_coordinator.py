@@ -19,7 +19,7 @@ class SyntheticCollector:
         if self.mode == 'error':
             raise RuntimeError('PRIVATE-SOURCE-ERROR-CANARY')
         records = []
-        if self.mode not in ('empty',):
+        if self.mode not in ('empty', 'denied-empty'):
             record = source()
             start = (self.case.clock.wall - timedelta(seconds=1)).isoformat().replace('+00:00', 'Z')
             end = self.case.expires.isoformat().replace('+00:00', 'Z')
@@ -34,8 +34,13 @@ class SyntheticCollector:
                                            if node['basis'] == 'anticipated_reaction']
             records.append(record)
         self.trace.append(('enrich', tuple(row['candidate']['key'] for row in records)))
-        outcomes = tuple(CategoryOutcome(key, 'fresh', 1) if key == 'books' and records else
-                         CategoryOutcome(key, 'unavailable', 0, 'CAPABILITY_UNAVAILABLE') for key in registry.categories)
+        if self.mode == 'denied-empty':
+            outcomes = tuple(CategoryOutcome(key, 'unavailable', 0, 'AUTHORITY_DENIED') if key == 'books'
+                             else CategoryOutcome(key, 'empty_bounded') for key in registry.categories)
+        else:
+            outcomes = tuple(CategoryOutcome(key, 'fresh', 1) if key == 'books' and records else
+                             CategoryOutcome(key, 'unavailable', 0, 'CAPABILITY_UNAVAILABLE')
+                             for key in registry.categories)
         if self.mode == 'incomplete':
             outcomes = outcomes[:-1]
         self.trace.append(('seal', tuple(row.category for row in outcomes)))
@@ -130,6 +135,11 @@ class EnhanceCoordinatorTests(SnapshotCase):
         empty = self.collected()
         self.assertEqual((empty.event.stage, empty.event.code), ('no_candidates', 'NO_GROUNDED_CANDIDATES'))
         self.assertEqual(len(empty.event.outcomes), len(self.registry.categories))
+        self.collector.mode = 'denied-empty'
+        denied = self.collected()
+        self.assertEqual((denied.event.stage, denied.event.code), ('no_candidates', 'AUTHORITY_DENIED'))
+        self.assertEqual(next(row.code for row in denied.event.outcomes if row.category == 'books'),
+                         'AUTHORITY_DENIED')
         self.collector.mode = 'incomplete'
         incomplete = self.collected()
         self.assertEqual(incomplete.event.code, 'CONTRACT_INVALID')

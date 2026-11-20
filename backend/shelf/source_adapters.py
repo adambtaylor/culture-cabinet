@@ -366,8 +366,25 @@ def _normalize(spec, request, reply, *, now):
             cards.append(SourceCard(row.key, row.title, category, 'musicbrainz',
                 row.key.rsplit(':', 1)[-1], row.url, f'normalized-core-{category}:{index}'))
     elif spec.parser == 'apple':
-        from .podcast_sources import parse_results
-        for index, row in enumerate(parse_results(source.strict_json(reply.body), stamp)):
+        from .podcast_sources import _episode_url, parse_results
+        document = source.strict_json(reply.body)
+        rows = document.get('results') if type(document) is dict else None
+        episode_ids = set()
+        if type(rows) is list:
+            for row in rows:
+                if type(row) is not dict or row.get('kind') != 'podcast-episode':
+                    continue
+                episode_id, collection_id = row.get('trackId'), row.get('collectionId')
+                require(type(episode_id) is int and 0 < episode_id < 2**63
+                        and type(collection_id) is int and 0 < collection_id < 2**63,
+                        'SOURCE_UNAVAILABLE')
+                require(_episode_url(row.get('trackViewUrl'), episode_id, collection_id) is not None,
+                        'SOURCE_UNAVAILABLE')
+                episode_ids.add(episode_id)
+        projected = parse_results(document, stamp)
+        require({int(row['apple_episode_id']) for row in projected} == episode_ids,
+                'SOURCE_UNAVAILABLE')
+        for index, row in enumerate(projected):
             cards.append(SourceCard(row['key'], row['title'], 'podcast_episode', 'apple',
                 row['apple_episode_id'], row['source_url'], f'normalized-source-row:{index}'))
     else:

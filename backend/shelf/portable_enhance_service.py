@@ -581,7 +581,8 @@ class EnhanceService:
         # Sharing the producer's bounded state resumes its original search permit;
         # it never retries that search or promotes a proposed ID into permission.
         stage = SourceCollection((('book', ('hardcover',)),), dict(catalogue.backends),
-                                 clock=catalogue.clock, state=catalogue.state)
+                                 clock=catalogue.clock, state=catalogue.state,
+                                 isolated_fixture=catalogue.isolated_fixture)
         began = catalogue.clock.monotonic()
         seal = stage.collect(planned.plan, planned.registry, memory['coordinator'].budget,
                              source_plans=dict(planned.source_plans))
@@ -605,7 +606,8 @@ class EnhanceService:
             configured = tuple((key, tuple(name for name in names if name != 'hardcover'))
                                for key, names in catalogue.configured.items())
             memory['coordinator'].catalogue = SourceCollection(configured, dict(catalogue.backends),
-                clock=catalogue.clock, state=catalogue.state)
+                clock=catalogue.clock, state=catalogue.state,
+                isolated_fixture=catalogue.isolated_fixture)
             memory['detail_dependency'] = ('exact_hardcover_detail_confirmation_unavailable'
                 if details and actual.code == 'AUTHORITY_DENIED' else None)
             return False
@@ -697,8 +699,14 @@ class EnhanceService:
                 if type(collected) is EnhanceOutcome:
                     # A policy-denied local pool can be empty without being an
                     # empty search. Keep the producer's all-category explanation.
-                    store.finish(run_ref, stage=collected.event.stage, code=collected.event.code,
-                                 outcomes=[vars(value) for value in collected.event.outcomes])
+                    outcomes, code = collected.event.outcomes, collected.event.code
+                    if collected.event.stage == 'no_candidates':
+                        outcomes = self._settled_outcomes(memory, outcomes)
+                        if any(row.state in ('unavailable', 'failed') and row.code == 'AUTHORITY_DENIED'
+                               for row in outcomes):
+                            code = 'AUTHORITY_DENIED'
+                    store.finish(run_ref, stage=collected.event.stage, code=code,
+                                 outcomes=[vars(value) for value in outcomes])
                     self._memory.pop(str(row.pk), None)
                     return self.status(session_ref, run_ref=run_ref)
                 require(type(collected) is CollectedEnhance)

@@ -164,6 +164,37 @@ class SourceCollectionTests(TestCase):
         self.assertEqual(recorded['configured_sources'], {'event': ['moshtix', 'rrr']})
         self.assertEqual([row['source'] for row in recorded['source_outcomes']], order)
 
+    def test_missing_configured_backend_is_sealed_as_unavailable_alongside_empty_source(self):
+        from shelf.category_registry import KEYS
+        registry, query = plan(KEYS)
+        clock = Clock()
+        empty_moshtix = {'data': {'viewer': {'getEvents': {'totalCount': 0, 'items': []}}}}
+        moshtix = Backend('moshtix', clock, [(200, empty_moshtix, ())])
+        result = SourceCollection((('event', ('rrr', 'moshtix')),), {'moshtix': moshtix},
+            clock=clock, isolated_fixture=True).collect(query, registry, CollectionBudget())
+        event = next(row for row in result.outcomes if row.category == 'event')
+        self.assertEqual((event.state, event.code), ('unavailable', 'CAPABILITY_UNAVAILABLE'))
+        recorded = read_json(result.source_revisions)['_collection']
+        self.assertEqual(recorded['configured_sources'], {'event': ['moshtix', 'rrr']})
+        self.assertEqual({(row['source'], row['code']) for row in recorded['source_outcomes']},
+                         {('moshtix', 'OK'), ('rrr', 'CAPABILITY_UNAVAILABLE')})
+
+    def test_denied_hardcover_and_empty_tmdb_keep_distinct_source_outcomes(self):
+        registry, query = plan(('book', 'movie'))
+        clock = Clock()
+        hardcover = Backend('hardcover', clock, [(403, {}, ())])
+        tmdb = Backend('tmdb_movie', clock, [(200, {'results': []}, ())])
+        result = SourceCollection((('book', ('hardcover',)), ('movie', ('tmdb_movie',))),
+            {'hardcover': hardcover, 'tmdb_movie': tmdb}, clock=clock,
+            isolated_fixture=True).collect(query, registry, CollectionBudget())
+        outcomes = {row.category: row for row in result.outcomes}
+        self.assertEqual((outcomes['book'].state, outcomes['book'].code),
+                         ('unavailable', 'AUTHORITY_DENIED'))
+        self.assertEqual((outcomes['movie'].state, outcomes['movie'].code), ('empty_bounded', 'OK'))
+        recorded = read_json(result.source_revisions)['_collection']['source_outcomes']
+        self.assertEqual({(row['source'], row['code']) for row in recorded},
+                         {('hardcover', 'AUTHORITY_DENIED'), ('tmdb_movie', 'OK')})
+
     def test_missing_fetch_permission_prevents_api_and_page_sends(self):
         from shelf.category_registry import KEYS
         registry, query = plan(KEYS)

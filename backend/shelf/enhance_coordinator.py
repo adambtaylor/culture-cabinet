@@ -170,7 +170,10 @@ class EnhanceCoordinator:
             self._host_check(planned.intent, planned.plan, seal)
             events.append(self._event(run_ref, 'sealed', outcomes=seal.outcomes))
             if not seal.records:
-                return self._stop(run_ref, events, 'NO_GROUNDED_CANDIDATES', stage='no_candidates', outcomes=seal.outcomes)
+                code = ('AUTHORITY_DENIED' if any(row.state in ('unavailable', 'failed')
+                    and row.code == 'AUTHORITY_DENIED' for row in seal.outcomes)
+                    else 'NO_GROUNDED_CANDIDATES')
+                return self._stop(run_ref, events, code, stage='no_candidates', outcomes=seal.outcomes)
             return CollectedEnhance(planned, seal, tuple(events))
         except (EnhanceFault, AuthorityFault, disclosure.DisclosureError) as error:
             code = _safe_code(error)

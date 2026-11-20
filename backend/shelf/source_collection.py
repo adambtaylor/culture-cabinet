@@ -112,6 +112,7 @@ class SourceCollection:
         queries = read_json(plan.body)['queries']
         require(set(self.configured) <= set(registry.categories))
         allocations, selected_plans, allocation_failures = {}, {}, {}
+        unavailable_sources = []
         for query in queries:
             category = query['category']
             names = self.configured.get(category, ())
@@ -121,6 +122,9 @@ class SourceCollection:
             for name in names:
                 spec = registered_source(name)
                 if name not in self.backends:
+                    allocation_failures[category].append('CAPABILITY_UNAVAILABLE')
+                    unavailable_sources.append({'category': category, 'source': name,
+                                                'code': 'CAPABILITY_UNAVAILABLE'})
                     continue
                 try:
                     selected = self._plan_for(name, plan, source_plans)
@@ -164,7 +168,8 @@ class SourceCollection:
         with self.state.lock:
             start = self.clock.monotonic()
             usage = {'sends': 0, 'bytes': 0}
-            batches, revisions, outcomes, retained, attempts = [], {}, [], [], []
+            batches, revisions, outcomes, retained = [], {}, [], []
+            attempts = list(unavailable_sources)
             seen, total = set(), 0
             attempts.extend(omitted)
             for query in queries:

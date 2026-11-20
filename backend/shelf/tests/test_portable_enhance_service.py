@@ -346,6 +346,61 @@ class PreparatoryOutcomeTests(__import__('unittest').TestCase):
 
 
 class SourceUseStageTests(ServiceCase):
+    def test_preparatory_hardcover_403_and_empty_tmdb_reach_terminal_status(self):
+        from dataclasses import replace
+        from types import SimpleNamespace as N
+        from unittest.mock import patch
+        from shelf.enhance_contract import CollectionBudget
+        from shelf.source_collection import SourceCollection
+        from .test_source_collection import Backend, Clock, plan
+
+        clock = Clock()
+        book_registry, book_plan = plan(('book',))
+        hardcover = Backend('hardcover', clock, [(403, {}, ())])
+        hardcover.issuer = N(connection_ref='synthetic-hardcover', pending_details=lambda _: ())
+        preparatory = SourceCollection((('book', ('hardcover',)),), {'hardcover': hardcover},
+            clock=clock, isolated_fixture=True).collect(book_plan, book_registry, CollectionBudget())
+        denied = next(row for row in preparatory.outcomes if row.category == 'book')
+        self.assertEqual((denied.state, denied.code), ('unavailable', 'AUTHORITY_DENIED'))
+
+        combined_registry, combined_plan = plan(('book', 'movie'))
+        tmdb = Backend('tmdb_movie', clock, [(200, {'results': []}, ())])
+        replacement = SourceCollection((('movie', ('tmdb_movie',)),), {'tmdb_movie': tmdb},
+            clock=clock, isolated_fixture=True).collect(combined_plan, combined_registry, CollectionBudget())
+        movie = next(row for row in replacement.outcomes if row.category == 'movie')
+        self.assertEqual((movie.state, movie.code), ('empty_bounded', 'OK'))
+
+        started = self.start_run()
+        memory = self.enhance._memory[started['run_ref']]
+        memory['coordinator'].catalogue = SourceCollection((('book', ('hardcover',)),),
+            {'hardcover': hardcover}, clock=clock, isolated_fixture=True)
+        memory['coordinator'].budget = CollectionBudget()
+        memory['work'] = replace(memory['work'],
+            source_plans=(('synthetic-hardcover', object()),))
+        with patch.object(SourceCollection, 'collect', return_value=preparatory):
+            self.assertFalse(self.enhance._prepare_details(None, None, memory))
+        self.assertEqual(memory['preparatory_outcomes']['book'].code, 'AUTHORITY_DENIED')
+        memory['preparatory_outcomes'] = {'books': CategoryOutcome(
+            'books', denied.state, 0, denied.code)}
+
+        replacement_by_category = {row.category: row for row in replacement.outcomes}
+        translated = []
+        for category in self.registry.categories:
+            source_category = {'books': 'book', 'films': 'movie'}.get(category)
+            source_outcome = replacement_by_category.get(source_category)
+            translated.append(CategoryOutcome(category, source_outcome.state, 0, source_outcome.code)
+                if source_outcome else CategoryOutcome(category, 'unavailable', 0, 'CAPABILITY_UNAVAILABLE'))
+        event = StageEvent(started['run_ref'], 'no_candidates', 'NO_GROUNDED_CANDIDATES', tuple(translated))
+        with patch.object(self.pipeline, 'collect', return_value=EnhanceOutcome(event, (event,))):
+            status = self.confirm_run(started)
+        self.assertEqual((status['stage'], status['code']), ('no_candidates', 'AUTHORITY_DENIED'))
+        self.assertEqual(next(row['code'] for row in status['category_outcomes']
+                              if row['category'] == 'books'), 'AUTHORITY_DENIED')
+        self.assertEqual(next((row['state'], row['code']) for row in status['category_outcomes']
+                              if row['category'] == 'films'), ('empty_bounded', 'OK'))
+        row = SynthesisRun.objects.get(pk=started['run_ref'])
+        self.assertEqual((row.attempts, row.evidence['code']), (0, 'AUTHORITY_DENIED'))
+
     def test_unavailable_local_pool_keeps_actual_category_failures(self):
         from unittest.mock import patch
         def unavailable(planned, **kwargs):
