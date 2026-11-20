@@ -265,7 +265,8 @@ class OrdinaryEnhanceCompositionTests(RecoveryCase):
             self.assertEqual((media_calls.count(('hardcover', 'starter_books')), len(media_calls)), (1, 2))
             self.assertEqual(SynthesisRun.objects.get(pk=status['run_ref']).attempts, 0)
 
-    def test_preparatory_hardcover_denial_survives_model_eligible_tmdb_without_inference(self):
+    def test_hardcover_denial_survives_inference_preview_failure_readback(self):
+        from shelf.enhance_contract import EnhanceFault
         media_calls, probe_calls = [], []
 
         def model_send(transport, body, permit):
@@ -273,7 +274,7 @@ class OrdinaryEnhanceCompositionTests(RecoveryCase):
                 permit.authorize(body)
                 probe_calls.append('probe')
                 return canonical_bytes(response_document())
-            raise AssertionError('Empty source collection must not invoke inference')
+            raise AssertionError('Preview failure must precede personal inference')
 
         def media_send(operation, **bounds):
             self.assertTrue(bounds['revalidate']())
@@ -292,21 +293,22 @@ class OrdinaryEnhanceCompositionTests(RecoveryCase):
             policies, clock = self._source_runtime()
             service = EnhanceService.compose(self.authority, self.service,
                 policy_provider=policies, clock=clock)
-            service._inference_available = lambda: False
+            service._inference_available = lambda: True
             status = service.start(self.ref, profile_ref=profile, connection_ref=str(self.config.pk),
                 client_key=str(uuid.uuid4()), refresh_nonce=str(uuid.uuid4()))
-            for _ in range(2):
-                disclosure = service.preview(self.ref, run_ref=status['run_ref'])['disclosure']
-                status = service.confirm(self.ref, run_ref=status['run_ref'],
-                    preview_ref=disclosure['preview_ref'], body_digest=disclosure['body_digest'],
-                    confirmed=True)
+            disclosure = service.preview(self.ref, run_ref=status['run_ref'])['disclosure']
+            status = service.confirm(self.ref, run_ref=status['run_ref'],
+                preview_ref=disclosure['preview_ref'], body_digest=disclosure['body_digest'], confirmed=True)
+            disclosure = service.preview(self.ref, run_ref=status['run_ref'])['disclosure']
+            coordinator = service._memory[status['run_ref']]['coordinator']
+            with patch.object(coordinator, 'preview', side_effect=EnhanceFault('CAPABILITY_UNAVAILABLE')):
+                self.fault('CAPABILITY_UNAVAILABLE', service.confirm, self.ref, run_ref=status['run_ref'],
+                    preview_ref=disclosure['preview_ref'], body_digest=disclosure['body_digest'], confirmed=True)
 
             separate_status = service.status(self.ref, run_ref=status['run_ref'])
-            self.assertEqual((separate_status['stage'], separate_status['code']),
-                             ('sealed', 'CAPABILITY_UNAVAILABLE'))
+            self.assertEqual((separate_status['stage'], separate_status['code']), ('blocked', 'CAPABILITY_UNAVAILABLE'))
             outcomes = {row['category']: row for row in separate_status['category_outcomes']}
-            self.assertEqual((outcomes['book']['state'], outcomes['book']['code']),
-                             ('unavailable', 'AUTHORITY_DENIED'))
+            self.assertEqual((outcomes['book']['state'], outcomes['book']['code']), ('unavailable', 'AUTHORITY_DENIED'))
             self.assertEqual((outcomes['movie']['state'], outcomes['movie']['candidate_count']),
                              ('fresh', 1))
             source_use = {row['category']: row for row in separate_status['source_use']}

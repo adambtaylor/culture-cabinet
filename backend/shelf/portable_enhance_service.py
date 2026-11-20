@@ -724,10 +724,8 @@ class EnhanceService:
                 memory['source_use'] = summary
                 eligible = sum(value['model_eligible_count'] for value in summary)
                 expiry = min(memory['expires_at'], collected.seal.expires_at)
-                outcomes = [vars(value) for value in collected.seal.outcomes]
-                if not eligible:
-                    outcomes = [vars(value) for value in self._checkpoint_outcomes(
-                        memory, collected.seal.outcomes)]
+                outcomes = [vars(value) for value in self._checkpoint_outcomes(
+                    memory, collected.seal.outcomes)]
                 store.checkpoint(run_ref, stage='sealed', code='OK' if eligible else 'AUTHORITY_DENIED',
                     outcomes=outcomes,
                     metadata={'source_use': summary, **({} if eligible else
