@@ -321,6 +321,13 @@ class EnhanceService:
         return tuple(CategoryOutcome(row.category, 'unavailable', 0, 'AUTHORITY_DENIED')
                      if row.category in denied else retained.get(row.category, row) for row in outcomes)
 
+    @staticmethod
+    def _checkpoint_outcomes(memory, outcomes):
+        """Keep preparatory zero-count status through terminal checkpoints."""
+        retained = memory.get('preparatory_outcomes', {}) if memory else {}
+        return tuple(retained.get(row.category, row) if row.candidate_count == 0 else row
+                     for row in outcomes)
+
     @sensitive_variables()
     def _source_use(self, memory, collected):
         planned, seal = collected.planned, collected.seal
@@ -576,12 +583,16 @@ class EnhanceService:
         book = catalogue.backends.get('hardcover') if type(catalogue) is SourceCollection else None
         if book is None or book.issuer.connection_ref not in dict(planned.source_plans):
             return False
+        own_plan = dict(planned.source_plans)[book.issuer.connection_ref]
+        if not any(row['terms'] for row in read_json(own_plan.body)['queries']
+                   if row['category'] == 'book'): return False
         # Only Hardcover search runs in this preparatory collection. Other
         # sources remain unsent until the derived IDs get their OWN confirmation.
         # Sharing the producer's bounded state resumes its original search permit;
         # it never retries that search or promotes a proposed ID into permission.
         stage = SourceCollection((('book', ('hardcover',)),), dict(catalogue.backends),
-                                 clock=catalogue.clock, state=catalogue.state)
+                                 clock=catalogue.clock, state=catalogue.state,
+                                 isolated_fixture=catalogue.isolated_fixture)
         began = catalogue.clock.monotonic()
         seal = stage.collect(planned.plan, planned.registry, memory['coordinator'].budget,
                              source_plans=dict(planned.source_plans))
@@ -605,12 +616,12 @@ class EnhanceService:
             configured = tuple((key, tuple(name for name in names if name != 'hardcover'))
                                for key, names in catalogue.configured.items())
             memory['coordinator'].catalogue = SourceCollection(configured, dict(catalogue.backends),
-                clock=catalogue.clock, state=catalogue.state)
+                clock=catalogue.clock, state=catalogue.state,
+                isolated_fixture=catalogue.isolated_fixture)
             memory['detail_dependency'] = ('exact_hardcover_detail_confirmation_unavailable'
                 if details and actual.code == 'AUTHORITY_DENIED' else None)
             return False
-        own = dict(planned.source_plans)[book.issuer.connection_ref]
-        memory['source_previews'] = [(book.issuer, book.issuer.preview(own, request=request)) for request in details]
+        memory['source_previews'] = [(book.issuer, book.issuer.preview(own_plan, request=request)) for request in details]
         memory['source_index'] = -1
         return self._next_source_preview(store, row, memory)
 
@@ -697,8 +708,14 @@ class EnhanceService:
                 if type(collected) is EnhanceOutcome:
                     # A policy-denied local pool can be empty without being an
                     # empty search. Keep the producer's all-category explanation.
-                    store.finish(run_ref, stage=collected.event.stage, code=collected.event.code,
-                                 outcomes=[vars(value) for value in collected.event.outcomes])
+                    outcomes, code = collected.event.outcomes, collected.event.code
+                    if collected.event.stage == 'no_candidates':
+                        outcomes = self._settled_outcomes(memory, outcomes)
+                        if any(row.state in ('unavailable', 'failed') and row.code == 'AUTHORITY_DENIED'
+                               for row in outcomes):
+                            code = 'AUTHORITY_DENIED'
+                    store.finish(run_ref, stage=collected.event.stage, code=code,
+                                 outcomes=[vars(value) for value in outcomes])
                     self._memory.pop(str(row.pk), None)
                     return self.status(session_ref, run_ref=run_ref)
                 require(type(collected) is CollectedEnhance)
@@ -707,8 +724,10 @@ class EnhanceService:
                 memory['source_use'] = summary
                 eligible = sum(value['model_eligible_count'] for value in summary)
                 expiry = min(memory['expires_at'], collected.seal.expires_at)
+                outcomes = [vars(value) for value in self._checkpoint_outcomes(
+                    memory, collected.seal.outcomes)]
                 store.checkpoint(run_ref, stage='sealed', code='OK' if eligible else 'AUTHORITY_DENIED',
-                    outcomes=[vars(value) for value in collected.seal.outcomes],
+                    outcomes=outcomes,
                     metadata={'source_use': summary, **({} if eligible else
                         {'phase': 'source_model_context_unavailable'})},
                     collection_digest=collected.seal.collection_digest, portable_expires_at=expiry)
@@ -717,7 +736,8 @@ class EnhanceService:
                     return self.status(session_ref, run_ref=run_ref)
                 if not self._inference_available():
                     store.checkpoint(run_ref, stage='sealed', code='CAPABILITY_UNAVAILABLE',
-                        outcomes=[vars(value) for value in collected.seal.outcomes],
+                        outcomes=[vars(value) for value in self._checkpoint_outcomes(
+                            memory, collected.seal.outcomes)],
                         collection_digest=collected.seal.collection_digest)
                     memory.update(phase='source_sealed', work=collected, body=b'')
                     return self.status(session_ref, run_ref=run_ref)

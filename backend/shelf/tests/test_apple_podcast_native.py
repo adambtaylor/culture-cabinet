@@ -14,7 +14,7 @@ from urllib.parse import parse_qs, urlsplit
 
 from shelf import apple_podcast_native as apple, discovery_transport as transport
 from shelf.category_registry import KEYS
-from shelf.disclosure import SCALARS, canonical_bytes
+from shelf.disclosure import SCALARS, canonical_bytes, read_json
 from shelf.discovery_sources import SourceError
 from shelf.enhance_contract import CollectionBudget, EnhanceFault, digest
 from shelf.source_adapters import (SourceAuthorityIssuer, SourcePermit, SourceReply,
@@ -179,6 +179,54 @@ class AppleBackendTests(TestCase):
         self.assertEqual(result.records[0]['candidate']['evidence_type'], 'fixture_not_live')
         self.assertNotIn('MUST_NOT', result._material.decode())
         self.assertEqual(collector.state.cache, {})
+
+    def test_source_collection_keeps_valid_episode_when_sibling_identity_is_malformed(self):
+        body = document()
+        body['results'].append({'kind': 'podcast-episode', 'trackName': 'Malformed sibling'})
+        body['resultCount'] = len(body['results'])
+        headers = (('date', NOW.strftime('%a, %d %b %Y %H:%M:%S GMT')),
+                   ('cache-control', 'no-store'))
+        self.send.return_value = 200, canonical_bytes(body), headers
+        collector = SourceCollection(((apple.CATEGORY, (apple.SOURCE,)),),
+            {apple.SOURCE: self.backend}, clock=self.clock, isolated_fixture=True)
+        result = collector.collect(self.query, self.registry, CollectionBudget())
+        outcome = next(row for row in result.outcomes if row.category == apple.CATEGORY)
+        self.assertEqual((outcome.state, outcome.candidate_count), ('fresh', 1))
+        self.assertEqual([row['candidate']['key'] for row in result.records],
+                         ['apple:podcast_episode:81001'])
+
+    def test_episode_row_missing_identity_is_incomplete_not_a_bounded_empty_result(self):
+        headers = (('date', NOW.strftime('%a, %d %b %Y %H:%M:%S GMT')),
+                   ('cache-control', 'no-store'))
+        for field in ('trackId', 'collectionId', 'trackViewUrl'):
+            with self.subTest(field=field):
+                malformed = document()
+                del malformed['results'][0][field]
+                backend = FixtureBackend(self.issuer,
+                    transport.MediaHostLimiter(apple.SOURCE), clock=self.clock)
+                self.send.return_value = 200, canonical_bytes(malformed), headers
+                collector = SourceCollection(((apple.CATEGORY, (apple.SOURCE,)),),
+                    {apple.SOURCE: backend}, clock=self.clock, isolated_fixture=True)
+                result = collector.collect(self.query, self.registry, CollectionBudget())
+                outcome = next(row for row in result.outcomes if row.category == apple.CATEGORY)
+                self.assertEqual((outcome.state, outcome.code), ('failed', 'SOURCE_UNAVAILABLE'))
+                self.assertEqual(read_json(result.source_revisions)['_collection']['sends'], 1)
+
+    def test_unclassifiable_successful_result_is_not_reported_as_bounded_empty(self):
+        headers = (('date', NOW.strftime('%a, %d %b %Y %H:%M:%S GMT')),
+                   ('cache-control', 'no-store'))
+        malformed = {'resultCount': 1, 'results': [None]}
+        backend = FixtureBackend(self.issuer,
+            transport.MediaHostLimiter(apple.SOURCE), clock=self.clock)
+        self.send.return_value = 200, canonical_bytes(malformed), headers
+        collector = SourceCollection(((apple.CATEGORY, (apple.SOURCE,)),),
+            {apple.SOURCE: backend}, clock=self.clock, isolated_fixture=True)
+
+        result = collector.collect(self.query, self.registry, CollectionBudget())
+
+        outcome = next(row for row in result.outcomes if row.category == apple.CATEGORY)
+        self.assertEqual((outcome.state, outcome.code), ('failed', 'SOURCE_UNAVAILABLE'))
+        self.assertEqual(read_json(result.source_revisions)['_collection']['sends'], 1)
 
     def test_shorter_caller_bounds_and_original_http_headers_survive_backend(self):
         permit = self.authorize()

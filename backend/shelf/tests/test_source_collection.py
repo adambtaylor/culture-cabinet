@@ -164,6 +164,37 @@ class SourceCollectionTests(TestCase):
         self.assertEqual(recorded['configured_sources'], {'event': ['moshtix', 'rrr']})
         self.assertEqual([row['source'] for row in recorded['source_outcomes']], order)
 
+    def test_missing_configured_backend_is_sealed_as_unavailable_alongside_empty_source(self):
+        from shelf.category_registry import KEYS
+        registry, query = plan(KEYS)
+        clock = Clock()
+        empty_moshtix = {'data': {'viewer': {'getEvents': {'totalCount': 0, 'items': []}}}}
+        moshtix = Backend('moshtix', clock, [(200, empty_moshtix, ())])
+        result = SourceCollection((('event', ('rrr', 'moshtix')),), {'moshtix': moshtix},
+            clock=clock, isolated_fixture=True).collect(query, registry, CollectionBudget())
+        event = next(row for row in result.outcomes if row.category == 'event')
+        self.assertEqual((event.state, event.code), ('unavailable', 'CAPABILITY_UNAVAILABLE'))
+        recorded = read_json(result.source_revisions)['_collection']
+        self.assertEqual(recorded['configured_sources'], {'event': ['moshtix', 'rrr']})
+        self.assertEqual({(row['source'], row['code']) for row in recorded['source_outcomes']},
+                         {('moshtix', 'OK'), ('rrr', 'CAPABILITY_UNAVAILABLE')})
+
+    def test_budget_stop_preserves_source_failures_and_plan_revalidation(self):
+        from types import SimpleNamespace
+        registry, query = plan(('book', 'gallery')); clock = Clock()
+        book, gertrude = Backend('hardcover', clock, []), Backend('gertrude', clock, [])
+        book.issuer, gertrude.issuer = (SimpleNamespace(connection_ref='book-connection'),
+                                        SimpleNamespace(connection_ref='gallery-connection'))
+        plans = {'book-connection': query}
+        collector = SourceCollection((('book', ('hardcover',)), ('gallery', ('apw', 'gertrude'))),
+            {'hardcover': book, 'gertrude': gertrude}, clock=clock, isolated_fixture=True)
+        result = collector.collect(query, registry, CollectionBudget(initial_sends=1), source_plans=plans)
+        attempts = {(row['source'], row['code']) for row in read_json(result.source_revisions)['_collection']['source_outcomes']}
+        self.assertEqual((attempts, book.sent, gertrude.sent),
+            ({('hardcover', 'LIMIT_EXCEEDED'), ('apw', 'CAPABILITY_UNAVAILABLE'),
+             ('gertrude', 'AUTHORITY_DENIED')}, [], []))
+        self.assertTrue(collector.revalidate_collection(result, query, registry, source_plans=plans))
+
     def test_missing_fetch_permission_prevents_api_and_page_sends(self):
         from shelf.category_registry import KEYS
         registry, query = plan(KEYS)
