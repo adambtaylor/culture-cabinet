@@ -1,0 +1,5 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width">
+<title>Log in · Private problem reports</title></head><body><main id="main">
+<h1>Log in to send a private report</h1><p>Use the account provided for this installation.</p>
+<form method="post">{% csrf_token %}{{ form.as_p }}<button type="submit">Log in</button></form>
+</main></body></html>

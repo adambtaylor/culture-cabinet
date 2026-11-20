@@ -24,7 +24,9 @@ class NativeFeedbackCase(RecoveryCase):
             PORTABLE_AUTHORITY=self.authority, SESSION_COOKIE_NAME=self.boundary.session_cookie,
             CSRF_COOKIE_NAME=self.boundary.csrf_cookie, MIDDLEWARE=[
                 'cabinet.portable_boundary.PortableSecurityMiddleware',
-                'django.contrib.sessions.middleware.SessionMiddleware', 'django.middleware.csrf.CsrfViewMiddleware']))
+                'django.contrib.sessions.middleware.SessionMiddleware',
+                'django.middleware.csrf.CsrfViewMiddleware',
+                'django.contrib.auth.middleware.AuthenticationMiddleware']))
         self.http = Client(enforce_csrf_checks=True)
         self.headers = {'HTTP_HOST': self.boundary.origin.removeprefix('http://'),
                         'HTTP_ORIGIN': self.boundary.origin}
@@ -406,3 +408,66 @@ class NativeFeedbackOutcomeTests(NativeFeedbackCase):
         self.assertNotIn('feedback_outcome', context)
         self.assertNotIn(b'PRIVATE fixture card title', page.content)
         self.assertEqual(FeedbackEvent.objects.count(), 1)
+
+
+class PrivateProblemReportTests(NativeFeedbackCase):
+    def test_linked_submit_status_replay_scoped_owner_read_and_denials(self):
+        from django.conf import settings
+        from django.contrib.auth import get_user_model
+        from shelf.beta_feedback import bind_tester_account
+        from shelf.models import BetaProblemReport, FeedbackTesterBinding, PortableInstallation
+        User = get_user_model()
+        tester = User.objects.create_user('fictional-report-tester', password=PASSWORD)
+        other = User.objects.create_user('fictional-report-other', password=PASSWORD)
+        unlinked = User.objects.create_user('fictional-report-staff', password=PASSWORD, is_staff=True)
+        install = self.boundary.installation_id
+        bind_tester_account(tester_id=tester.pk, installation_id=install)
+        bind_tester_account(tester_id=other.pk, installation_id=install)
+        client = Client(enforce_csrf_checks=True)
+        self.assertContains(client.get('/report/login/', **self.headers), 'name="csrfmiddlewaretoken"')
+        token = client.cookies[settings.CSRF_COOKIE_NAME].value
+        auth = {'username': tester.username, 'password': PASSWORD, 'csrfmiddlewaretoken': token}
+        self.assertEqual(client.post('/report/login/', urlencode(auth), content_type='application/x-www-form-urlencoded',
+                                     HTTP_X_CSRFTOKEN=token, **self.headers).status_code, 302)
+        self.assertContains(client.get('/report/', **self.headers), 'name="csrfmiddlewaretoken"')
+        token = client.cookies[settings.CSRF_COOKIE_NAME].value
+        ref, body = str(uuid.uuid4()), '<script>private</script>  details\n'
+        data = {'reference': ref, 'body': body, 'csrfmiddlewaretoken': token}
+        self.assertEqual(client.post('/report/', urlencode(data), content_type='application/x-www-form-urlencoded',
+                                     HTTP_X_CSRFTOKEN=token, **self.headers).status_code, 303)
+        self.assertEqual(client.get('/report/'+ref+'/', **self.headers).status_code, 200)
+        self.assertNotContains(client.get('/report/'+ref+'/', **self.headers), body, html=False)
+        self.assertEqual(client.post('/report/', urlencode(data), content_type='application/x-www-form-urlencoded',
+                                     HTTP_X_CSRFTOKEN=token, **self.headers).status_code, 303)
+        self.assertEqual(client.post('/report/', urlencode({**data, 'body': 'changed'}),
+            content_type='application/x-www-form-urlencoded', HTTP_X_CSRFTOKEN=token, **self.headers).status_code, 409)
+        self.assertEqual(client.post('/report/', urlencode({'reference': ref, 'body': body}),
+            content_type='application/x-www-form-urlencoded', **self.headers).status_code, 403)
+        foreign = Client(enforce_csrf_checks=True); foreign.force_login(other)
+        self.assertEqual(foreign.get('/report/'+ref+'/', **self.headers).status_code, 404)
+        staff = Client(enforce_csrf_checks=True); staff.force_login(unlinked)
+        staff.get('/report/', **self.headers)
+        staff_token = staff.cookies[settings.CSRF_COOKIE_NAME].value
+        self.assertEqual(staff.post('/report/', urlencode(data), content_type='application/x-www-form-urlencoded',
+            HTTP_X_CSRFTOKEN=staff_token, **self.headers).status_code, 403)
+        self.assertEqual(client.get('/cabinet/reports/', **self.headers).status_code, 401)
+        owner_page = self.post('/cabinet/reports/', {'reference': ref})
+        self.assertEqual(owner_page.status_code, 200)
+        self.assertContains(owner_page, '&lt;script&gt;private&lt;/script&gt;', html=False)
+        report = BetaProblemReport.objects.get(pk=ref)
+        other_install = PortableInstallation.objects.create(id=uuid.uuid4(), root_identity='a'*64,
+            process_generation=uuid.uuid4())
+        bind_tester_account(tester_id=tester.pk, installation_id=other_install.pk)
+        self.assertEqual(BetaProblemReport.objects.get(pk=ref).installation_id, install)
+        moved = str(uuid.uuid4()); new_data = {**data, 'reference': moved}
+        self.assertEqual(client.post('/report/', urlencode(new_data), content_type='application/x-www-form-urlencoded',
+                                     HTTP_X_CSRFTOKEN=token, **self.headers).status_code, 303)
+        self.assertContains(self.post('/cabinet/reports/', {'reference': moved}),
+                            'No report found for that reference.')
+        report.body, report.deleted = None, True; report.save(update_fields=['body', 'deleted'])
+        self.assertEqual(client.post('/report/', urlencode(data), content_type='application/x-www-form-urlencoded',
+                                     HTTP_X_CSRFTOKEN=token, **self.headers).status_code, 409)
+        FeedbackTesterBinding.objects.create(tester=tester, installation_id=install)
+        denied = client.post('/report/', urlencode({**new_data, 'reference': str(uuid.uuid4())}),
+            content_type='application/x-www-form-urlencoded', HTTP_X_CSRFTOKEN=token, **self.headers)
+        self.assertEqual(denied.status_code, 403)
