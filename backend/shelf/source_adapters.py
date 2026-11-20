@@ -373,7 +373,11 @@ def _normalize(spec, request, reply, *, now):
         malformed = False
         if type(rows) is list:
             for row in rows:
-                if type(row) is not dict or row.get('kind') != 'podcast-episode':
+                if type(row) is not dict:
+                    malformed = True
+                    continue
+                if row.get('kind') != 'podcast-episode':
+                    malformed = True
                     continue
                 episode_id, collection_id = row.get('trackId'), row.get('collectionId')
                 if (type(episode_id) is not int or not 0 < episode_id < 2**63

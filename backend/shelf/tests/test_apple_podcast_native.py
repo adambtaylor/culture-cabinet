@@ -212,6 +212,22 @@ class AppleBackendTests(TestCase):
                 self.assertEqual((outcome.state, outcome.code), ('failed', 'SOURCE_UNAVAILABLE'))
                 self.assertEqual(read_json(result.source_revisions)['_collection']['sends'], 1)
 
+    def test_unclassifiable_successful_result_is_not_reported_as_bounded_empty(self):
+        headers = (('date', NOW.strftime('%a, %d %b %Y %H:%M:%S GMT')),
+                   ('cache-control', 'no-store'))
+        malformed = {'resultCount': 1, 'results': [None]}
+        backend = FixtureBackend(self.issuer,
+            transport.MediaHostLimiter(apple.SOURCE), clock=self.clock)
+        self.send.return_value = 200, canonical_bytes(malformed), headers
+        collector = SourceCollection(((apple.CATEGORY, (apple.SOURCE,)),),
+            {apple.SOURCE: backend}, clock=self.clock, isolated_fixture=True)
+
+        result = collector.collect(self.query, self.registry, CollectionBudget())
+
+        outcome = next(row for row in result.outcomes if row.category == apple.CATEGORY)
+        self.assertEqual((outcome.state, outcome.code), ('failed', 'SOURCE_UNAVAILABLE'))
+        self.assertEqual(read_json(result.source_revisions)['_collection']['sends'], 1)
+
     def test_shorter_caller_bounds_and_original_http_headers_survive_backend(self):
         permit = self.authorize()
         def wire(operation, **bounds):

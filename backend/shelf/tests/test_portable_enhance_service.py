@@ -21,7 +21,7 @@ from .test_disclosure import source, resign
 class FixtureCatalogue:
     def __init__(self, case):
         self.case, self.calls, self.on_collect = case, 0, None
-        self.denied_categories, self.extra_films, self.last_seal = set(), False, None
+        self.denied_categories, self.extra_films, self.no_books, self.last_seal = set(), False, False, None
 
     def destinations_for(self, plan):
         return ('isolated://catalogue-no-network',)
@@ -36,7 +36,7 @@ class FixtureCatalogue:
             binding['observation'].update(observed_at='2026-01-01T00:00:00Z', expires_at='2026-01-01T00:10:00Z')
             binding['rights'].update(checked_at='2026-01-01T00:00:00Z', expires_at='2026-01-01T00:10:00Z')
             resign(record, binding)
-        records = [record]
+        records = [] if self.no_books else [record]
         if self.extra_films:
             film = read_json(canonical_bytes(record))
             film['record_ref'] += ':film'
@@ -384,6 +384,32 @@ class SourceUseStageTests(ServiceCase):
             preview_ref=query['preview_ref'], body_digest=query['body_digest'], confirmed=True)
         self.assertEqual(replay['dependency'], status['dependency'])
         self.assertEqual((self.catalogue.calls, self.transport.calls), (1, 0))
+
+    def test_zero_model_eligible_sibling_keeps_prior_hardcover_denial_in_sealed_status(self):
+        self.catalogue.no_books = True
+        self.catalogue.extra_films = True
+        self.catalogue.denied_categories.add('films')
+        started = self.start_run()
+        self.enhance._memory[started['run_ref']]['preparatory_outcomes'] = {
+            'books': CategoryOutcome('books', 'unavailable', 0, 'AUTHORITY_DENIED')}
+
+        status = self.confirm_run(started)
+
+        self.assertEqual((status['stage'], status['code'], status['dependency']),
+                         ('sealed', 'AUTHORITY_DENIED', 'source_model_context_unavailable'))
+        source_use = {row['category']: row for row in status['source_use']}
+        self.assertEqual(source_use['books']['collected_count'], 0)
+        self.assertEqual((source_use['films']['collected_count'],
+                          source_use['films']['model_eligible_count']), (1, 0))
+        outcomes = {row['category']: row for row in status['category_outcomes']}
+        self.assertEqual((outcomes['books']['state'], outcomes['books']['code']),
+                         ('unavailable', 'AUTHORITY_DENIED'))
+        self.assertEqual((outcomes['films']['state'], outcomes['films']['candidate_count']),
+                         ('fresh', 1))
+        row = SynthesisRun.objects.get(pk=started['run_ref'])
+        self.assertEqual((row.attempts, row.evidence['phase']),
+                         (0, 'source_model_context_unavailable'))
+        self.assertEqual((self.transport.calls, PortableCabinetManifest.objects.count()), (0, 0))
 
     def test_mixed_pool_keeps_denied_category_unavailable_and_exact_one_send_publication(self):
         self.catalogue.extra_films = True

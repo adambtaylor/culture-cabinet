@@ -28,7 +28,9 @@ jobs:
           shelf.tests.test_apple_podcast_native.AppleBackendTests.test_source_collection_keeps_original_observation_and_honest_all_domain_outcomes
           shelf.tests.test_apple_podcast_native.AppleBackendTests.test_source_collection_keeps_valid_episode_when_sibling_identity_is_malformed
           shelf.tests.test_apple_podcast_native.AppleBackendTests.test_episode_row_missing_identity_is_incomplete_not_a_bounded_empty_result
+          shelf.tests.test_apple_podcast_native.AppleBackendTests.test_unclassifiable_successful_result_is_not_reported_as_bounded_empty
           shelf.tests.test_enhance_coordinator.EnhanceCoordinatorTests.test_partial_unsupported_empty_and_incomplete_coverage_remain_truthful
           shelf.tests.test_enhance_integration.OrdinaryEnhanceCompositionTests.test_preparatory_hardcover_denial_survives_empty_tmdb_through_normal_status_path
           shelf.tests.test_enhance_integration.OrdinaryEnhanceCompositionTests.test_existing_history_exact_source_previews_detail_and_one_personal_publication
+          shelf.tests.test_portable_enhance_service.SourceUseStageTests.test_zero_model_eligible_sibling_keeps_prior_hardcover_denial_in_sealed_status
           --verbosity=2

@@ -321,6 +321,13 @@ class EnhanceService:
         return tuple(CategoryOutcome(row.category, 'unavailable', 0, 'AUTHORITY_DENIED')
                      if row.category in denied else retained.get(row.category, row) for row in outcomes)
 
+    @staticmethod
+    def _checkpoint_outcomes(memory, outcomes):
+        """Retain prior zero-count source outcomes without rewriting sealed counts."""
+        retained = memory.get('preparatory_outcomes', {}) if memory else {}
+        return tuple(retained.get(row.category, row) if row.candidate_count == 0 else row
+                     for row in outcomes)
+
     @sensitive_variables()
     def _source_use(self, memory, collected):
         planned, seal = collected.planned, collected.seal
@@ -715,8 +722,12 @@ class EnhanceService:
                 memory['source_use'] = summary
                 eligible = sum(value['model_eligible_count'] for value in summary)
                 expiry = min(memory['expires_at'], collected.seal.expires_at)
+                outcomes = [vars(value) for value in collected.seal.outcomes]
+                if not eligible:
+                    outcomes = [vars(value) for value in self._checkpoint_outcomes(
+                        memory, collected.seal.outcomes)]
                 store.checkpoint(run_ref, stage='sealed', code='OK' if eligible else 'AUTHORITY_DENIED',
-                    outcomes=[vars(value) for value in collected.seal.outcomes],
+                    outcomes=outcomes,
                     metadata={'source_use': summary, **({} if eligible else
                         {'phase': 'source_model_context_unavailable'})},
                     collection_digest=collected.seal.collection_digest, portable_expires_at=expiry)
