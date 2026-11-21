@@ -5,6 +5,7 @@
 <p class="eyebrow">The cabinet / your context</p>
 <h1>Which shelf today?</h1>
 <p class="lede">Choose a profile before exploring. The catalogue shows whether local human history storage is ready. When ready, resume an owned run; histories remain separate. Provider metadata is temporary.</p>
+<form method="post" action="{% url 'provision_profile' %}">{% csrf_token %}<button type="submit">Create my empty private profile</button></form>
 <div class="profile-list">
 {% for profile in profile_options %}
 <form class="profile-panel" method="post" action="{% url 'select_profile' %}">

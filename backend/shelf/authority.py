@@ -1,5 +1,6 @@
 """Selections are navigation; only current database grants confer authority."""
 from django.http import Http404
+from django.db.models import Q
 from shelf.models import Profile
 from django.contrib.auth import get_user_model
 
@@ -19,7 +20,7 @@ def permitted_profiles(actor, action):
         barrier.verify_mirror(connection.connection)
         filters = {'active': True, 'grant__user_id': actor.pk, 'grant__can_view': True}
         if action != 'view': filters['grant__can_' + action] = True
-        ids = [p.pk for p in Profile.objects.filter(**filters)
+        ids = [p.pk for p in Profile.objects.filter(Q(owner__isnull=True) | Q(owner_id=actor.pk), **filters)
                if not barrier.pending_denies(p.pk, action=action, actor_id=actor.pk)]
         # Materialize authority decisions while the barrier is held. Views hold
         # the enclosing barrier through rendering; services repeat in transaction.

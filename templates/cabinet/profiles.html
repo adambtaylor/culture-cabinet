@@ -7,12 +7,13 @@
 <p class="eyebrow">The cabinet / profile context</p>
 <h1>Which shelf today?</h1>
 <p class="lede">Choose an available profile to enter the fictional catalogue.</p>
+<form method="post" action="{% url 'provision_profile' %}">{% csrf_token %}<button type="submit">Create my empty private profile</button></form>
 <div class="profile-list">
 {% for profile in profile_options %}
 <form class="profile-panel" method="post" action="{% url 'select_profile' %}">
   {% csrf_token %}
   <h2>{{ profile.label }}</h2>
-  <p>A context for this visit. The invented collection is shared.</p>
+  <p>Your saved feedback belongs to this profile.</p>
   <button type="submit" name="profile_id" value="{{ profile.pk }}">Choose {{ profile.label }} <span aria-hidden="true">→</span></button>
 </form>
 {% empty %}

@@ -8,16 +8,21 @@ class Profile(models.Model):
         OWNER = "owner", "Owner"
         PARTNER = "partner", "Partner"
         FAMILY = "family", "Family"
+        PERSONAL = "personal", "Personal"
 
-    kind = models.CharField(max_length=7, choices=Kind.choices, unique=True)
+    kind = models.CharField(max_length=8, choices=Kind.choices)
+    owner = models.OneToOneField(settings.AUTH_USER_MODEL, null=True, on_delete=models.PROTECT,
+                                related_name="personal_profile")
     label = models.CharField(max_length=80)
     active = models.BooleanField(default=False)
 
     class Meta:
         constraints = [models.CheckConstraint(
-            condition=models.Q(kind__in=["owner", "partner", "family"]),
+            condition=(models.Q(kind__in=["owner", "partner", "family"], owner__isnull=True)
+                       | models.Q(kind="personal", owner__isnull=False)),
             name="profile_kind_allowed",
-        )]
+        ), models.UniqueConstraint(fields=["kind"], condition=models.Q(owner__isnull=True),
+                                   name="legacy_profile_kind_unique")]
         ordering = ["id"]
 
 

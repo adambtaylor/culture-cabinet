@@ -51,6 +51,17 @@ def profiles(request):
 
 @login_required
 @require_POST
+def provision_profile(request):
+    from shelf.account_profiles import provision_personal_profile
+    try:
+        provision_personal_profile(request.user)
+    except FeedbackError as error:
+        return HttpResponse(str(error) + '\n', status=error.status, content_type='text/plain')
+    return redirect("profiles")
+
+
+@login_required
+@require_POST
 @guarded
 def select_profile(request):
     if len(request.POST.getlist("profile_id")) != 1:

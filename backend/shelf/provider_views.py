@@ -5,6 +5,7 @@ from urllib.parse import urlencode
 import time
 
 from django import forms
+from django.db.models import Q
 from django.contrib.auth.decorators import login_required
 from django.contrib.auth.views import LogoutView
 from django.http import Http404, HttpResponse, JsonResponse
@@ -176,13 +177,16 @@ def _profiles(actor, action='view'):
     """
     # Deliberately use only the existing framework user/profile/grant tables.
     # The synthetic feedback recovery barrier is NOT this runtime's authority.
-    if not actor.is_authenticated or actor.pk != 1:
+    if not actor.is_authenticated:
         return Profile.objects.none()
-    filters = {'pk': 1, 'kind': Profile.Kind.OWNER, 'active': True,
+    filters = {'active': True,
                'grant__user_id': actor.pk, 'grant__user__is_active': True,
                'grant__can_view': True}
     filters['grant__can_' + action] = True
-    return Profile.objects.filter(**filters)
+    scope = Q(kind=Profile.Kind.PERSONAL, owner_id=actor.pk)
+    if actor.pk == 1:
+        scope |= Q(pk=1, kind=Profile.Kind.OWNER, owner__isnull=True)
+    return Profile.objects.filter(scope, **filters)
 
 
 def _profile(request, profile_id, action='view'):
@@ -310,9 +314,10 @@ def profiles(request):
 @login_required
 @require_POST
 def select_profile(request):
-    if request.POST.getlist('profile_id') != ['1']:
+    values = request.POST.getlist('profile_id')
+    if len(values) != 1 or not values[0].isascii() or not values[0].isdigit() or len(values[0]) > 18:
         raise Http404
-    profile = _profiles(request.user, 'select').first()
+    profile = _profiles(request.user, 'select').filter(pk=int(values[0])).first()
     if profile is None:
         raise Http404
     # Preserve a still-owned prototype history before profile selection clears its deck.
