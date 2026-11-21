@@ -4,10 +4,10 @@ from datetime import timedelta
 import json
 import subprocess
 from types import SimpleNamespace
-from unittest import TestCase
 from unittest.mock import MagicMock, Mock, patch
 from urllib.parse import parse_qs, urlsplit
 from django.contrib.auth import get_user_model
+from django.test import TestCase
 from shelf.models import Grant, Profile
 
 from shelf import credential_store as store, provider_catalogue as p
