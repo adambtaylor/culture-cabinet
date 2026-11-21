@@ -149,8 +149,12 @@ class ProviderCatalogueTests(TestCase):
             if failure:
                 raise failure
             return {'results': []}
-        # These fixtures isolate metadata and secret cleanup; authority denial has its own tests.
+        # Model service identity and grant so these fixtures isolate metadata and cleanup.
         with patch('shelf.legacy_authority.legacy_owner_granted', return_value=True), \
+                patch.object(p.os, 'getuid', return_value=1000), \
+                patch.object(p.os, 'geteuid', return_value=1000), \
+                patch.object(p.os, 'getgid', return_value=1000), \
+                patch.object(p.os, 'getegid', return_value=1000), \
                 patch.object(store, 'open_store', return_value=handle), patch.object(store, 'lock_store'), \
                 patch.object(store, 'read_record', return_value=record), patch.object(p, '_send', side_effect=send) as sender:
             try:
