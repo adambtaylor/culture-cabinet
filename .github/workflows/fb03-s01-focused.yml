@@ -1,0 +1,17 @@
+name: FB03-S01 focused acceptance
+on: {pull_request: {}}
+permissions: {contents: read}
+jobs:
+  focused-acceptance:
+    name: FB03-S01 focused acceptance
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with: {python-version: "3.14"}
+      - name: Install hash-locked dependencies
+        run: python -m pip install --require-hashes -r requirements.lock
+      - name: Run CCB-11 acceptance
+        working-directory: backend
+        run: python -B manage.py test shelf.tests.test_account_profiles.AccountProfileTests.test_two_account_normal_provision_choose_read_write shelf.tests.test_account_profiles.AccountProfileTests.test_foreign_grant_and_installation_owner_claims_deny_below_http shelf.tests.test_account_profiles.AccountProfileTests.test_interruption_rollback_and_lost_response_readback shelf.tests.test_account_profiles.AccountProfileTests.test_concurrent_provision_has_one_owner_generation shelf.tests.test_account_profiles.AccountProfileTests.test_provider_chooser_uses_account_scope_and_dynamic_profile_id shelf.tests.test_account_profiles.AccountProfileTests.test_personal_profile_never_authorizes_owner_discovery_seeds shelf.tests.test_account_profiles.AccountProfileTests.test_personal_numeric_owner_pair_denies_credentials_before_open shelf.tests.test_account_profiles.AccountProfileTests.test_personal_owner_id_pair_cannot_request_synthesis_or_enhancement shelf.tests.test_account_profiles.AccountProfileMigrationTests.test_provider_chooser_and_catalogue_work_on_0031 shelf.tests.test_account_profiles.AccountProfileMigrationTests.test_pre_0032_provider_search_works_and_provisioning_is_unavailable shelf.tests.test_account_profiles.AccountProfileMigrationTests.test_legacy_identity_grants_and_portable_binding_trigger_survive shelf.tests.test_provider_views.ProviderViewsTests.test_personal_profile_cannot_start_provider_acquisition shelf.tests.test_provider_catalogue.ProviderCatalogueTests.test_store_lock_released_before_io_and_secret_cleared shelf.tests.test_provider_catalogue.ProviderCatalogueTests.test_metadata_purpose_scopes_expiry_binding_before_io shelf.tests.test_nonfiction_views.NonfictionViewTests.test_default_topic_packet_stays_with_authorized_legacy_owner shelf.tests.test_taste_funnel.TasteFunnelHTTPTests.test_personal_profile_does_not_receive_cached_household_source_report shelf.tests.test_discovery_public_ui.PublicDiscoveryUITests.test_personal_profile_has_no_household_music_seeds_or_venue_report shelf.tests.test_grant_authority.GrantAuthorityTests.test_fresh_binding_is_explicit_repeatable_and_uses_actual_owner shelf.tests.test_grant_authority.GrantAuthorityTests.test_existing_household_profile_is_never_adopted shelf.tests.test_grant_authority.GrantAuthorityTests.test_wrong_owner_revision_session_profile_and_recovery_are_denied --verbosity=2

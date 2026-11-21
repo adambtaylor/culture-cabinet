@@ -55,6 +55,26 @@ class PublicDiscoveryUITests(TestCase):
             self.assertEqual(self.client.post(self.action, self.form()).status_code, 302)
             self.assertEqual(send.call_count, 2)
 
+    def test_personal_profile_has_no_household_music_seeds_or_venue_report(self):
+        personal = existing.Profile.objects.create(pk=4, kind='personal', owner=self.actor,
+            active=True, label='Private')
+        existing.Grant.objects.create(user=self.actor, profile=personal,
+            can_view=True, can_select=True, can_mutate=True)
+        session = self.client.session
+        session['selected_profile_id'] = personal.pk
+        session.save()
+        page = self.client.get(f'/profiles/{personal.pk}/discovery/', {'mode': 'household', 'queue': 'artist'})
+        self.assertEqual(page.status_code, 200)
+        self.assertEqual(page.context['music'], [])
+        self.assertEqual(page.context['events'], [])
+        self.assertEqual(page.context['public_results'], [])
+        data = dict(mode='household', revision=page.context['revision'], nonce=page.context['nonce'],
+            operation='radio', key=s.household_candidates()[0].key, radio_mode='medium', choice='')
+        with patch.object(s, 'fetch_public') as fetch, patch.object(v.storage, 'reserve_public') as reserve:
+            self.assertEqual(self.client.post(f'/profiles/{personal.pk}/discovery/action/', data).status_code, 400)
+            fetch.assert_not_called()
+            reserve.assert_not_called()
+
     def test_invalid_sample_stale_duplicate_fields_and_nonce_never_issue_io(self):
         original = self.form()
         with patch.object(s, 'fetch_public') as fetch:

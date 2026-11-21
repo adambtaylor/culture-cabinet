@@ -24,7 +24,9 @@ def schema_ready():
 
 
 def authorize(request, profile_id, category):
-    if request.user.pk != 1 or profile_id != 1 or category not in CATEGORIES:
+    from shelf.legacy_authority import legacy_owner_granted
+    if ((request.user.pk, profile_id) != (1, 1) or category not in CATEGORIES
+            or not legacy_owner_granted(request.user.pk, profile_id)):
         raise Blocked('Current owner household and supported category required.')
     public_authorized(request, profile_id)
 

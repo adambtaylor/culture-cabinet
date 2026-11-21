@@ -127,6 +127,29 @@ class TasteFunnelHTTPTests(TestCase):
         self.assertEqual(self.page().context['snapshot'], page.context['snapshot'])
         self.assertEqual(self.client.get(self.action_url).status_code, 405)
 
+    def test_personal_profile_does_not_receive_cached_household_source_report(self):
+        personal = Profile.objects.create(pk=2, kind='personal', owner=self.actor, active=True, label='Private')
+        Grant.objects.create(user=self.actor, profile=personal, can_view=True, can_select=True, can_mutate=True)
+        session = self.client.session
+        report = [{'name': 'Household venue report'}]
+        session['funnel_source_results'] = report
+        session['selected_profile_id'] = personal.pk
+        session.save()
+        page = self.client.get('/profiles/2/taste/')
+        self.assertEqual(page.status_code, 200)
+        self.assertEqual(page.context['source_results'], [])
+        fields = self.fetch_fields(page)
+        with patch.object(catalogue, 'initial_deck') as initial, patch.object(sources, 'fetch_public') as public:
+            response = self.client.post('/profiles/2/taste/fetch/', fields)
+            initial.assert_not_called()
+            public.assert_not_called()
+        self.assertEqual(response.status_code, 404)
+        self.assertFalse(DiscoveryState.objects.exists())
+        session = self.client.session
+        session['selected_profile_id'] = 1
+        session.save()
+        self.assertEqual(self.page().context['source_results'], report)
+
     def test_numeric_one_to_five_edit_clear_and_experience_are_real_posts(self):
         key = 'tmdb:movie:100'
         for basis in ('interest', 'enjoyment'):

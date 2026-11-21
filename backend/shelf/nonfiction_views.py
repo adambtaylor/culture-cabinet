@@ -176,6 +176,11 @@ def action(request, profile_id):
     data = fields(request, ActionForm)
     if data is None:
         return HttpResponse('Invalid bounded discovery form.', status=400, content_type='text/plain')
+    if data['action'] == 'seed_authorized_defaults':
+        from shelf.legacy_authority import legacy_owner_granted
+        if not legacy_owner_granted(request.user.pk, profile_id):
+            return HttpResponse('Household topic packet is unavailable for this profile.\n', status=404,
+                                content_type='text/plain')
     if not storage.available():
         raise Conflict('Discovery storage is unavailable.')
     clusters = discovery_catalog(request, profile_id, data['mode'])

@@ -7,7 +7,7 @@ from shelf import saved_views, obtain_views
 from shelf import discovery_views, recommendation_views, event_plan_views, social_views, message_views, date_night_views, outing_views, real_outing_views, taste_views
 from shelf import nonfiction_views, taste_observation_views, enhancement_views
 from shelf.cross_media_views import sample
-from shelf.views import DemoLoginView
+from shelf.views import DemoLoginView, provision_profile
 
 urlpatterns = [
     path('profiles/<int:profile_id>/enhance/<str:category>/', enhancement_views.request_pick, name='enhancement_request'),
@@ -49,6 +49,7 @@ urlpatterns = [
     path('logout/', views.ProviderLogoutView.as_view(), name='logout'),
     path('', views.catalogue_home, name='catalogue'),
     path('profiles/', views.profiles, name='profiles'),
+    path('profiles/provision/', provision_profile, name='provision_profile'),
     path('profiles/select/', views.select_profile, name='select_profile'),
     path('profiles/<int:profile_id>/', views.profile_catalogue, name='profile_catalogue'),
     path('profiles/<int:profile_id>/catalogue/action/', views.action, name='provider_action'),
