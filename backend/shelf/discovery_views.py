@@ -16,7 +16,7 @@ from django.views.decorators.http import require_GET, require_POST
 
 from shelf import discovery_sources as sources, discovery_state as storage
 from shelf.discovery_reducer import CHOICE_LABELS, replay, select
-from shelf.models import DiscoveryState
+from shelf.models import DiscoveryState, Grant, Profile
 from shelf.recovery import RecoveryBlocked
 from shelf.provider_views import _profile
 from shelf.authority import SELECTION_KEY
@@ -98,6 +98,11 @@ def public_entries(request, profile_id):
             if 0 <= (now - value['at']).total_seconds() < 900}
 
 
+def _household_authorized(request, profile_id):
+    return Profile.objects.filter(pk=profile_id, kind=Profile.Kind.OWNER).exists() and Grant.objects.filter(
+        user_id=request.user.pk, profile_id=profile_id, can_view=True, can_select=True).exists()
+
+
 def gallery_context(request, profile_id, now, *, mode='household'):
     """Shared cached offer/source projection; reading never fetches or records taste."""
     from shelf import gallery_curation, gallery_commerce
@@ -123,7 +128,8 @@ def gallery_context(request, profile_id, now, *, mode='household'):
 def candidates(request, profile_id, mode, history):
     if mode == 'sample':
         return sources.sample_candidates()
-    cards = {c.key: c for c in sources.household_candidates()}
+    cards = ({c.key: c for c in sources.household_candidates()}
+             if _household_authorized(request, profile_id) else {})
     for entry in public_entries(request, profile_id).values():
         for card in entry['outcome'].candidates:
             old = cards.get(card.key)
@@ -423,8 +429,9 @@ def action(request, profile_id):
     if data['operation'] in ('rrr_detail', 'beat_detail'):
         _read_event_detail(request, profile_id, data)
     elif data['operation'] in ('event_source', 'radio', 'events', 'venue303', 'forum', 'rrr', 'beat', 'pbs', 'tribe', 'soundsystems', 'gallery'):
-        seeds = {c.key: c for c in sources.household_candidates()
-                 if c.kind == 'artist' and c.key.startswith('musicbrainz:artist:')}
+        seeds = ({c.key: c for c in sources.household_candidates()
+                  if c.kind == 'artist' and c.key.startswith('musicbrainz:artist:')}
+                 if _household_authorized(request, profile_id) else {})
         if (data['mode'] != 'household' or data['choice']
                 or (data['operation'] == 'radio' and (data['key'] not in seeds or not data['radio_mode']))
                 or (data['operation'] in ('event_source', 'events', 'venue303', 'forum', 'rrr', 'beat', 'pbs', 'tribe', 'soundsystems', 'gallery') and (data['key'] or data['radio_mode']))):

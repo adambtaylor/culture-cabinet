@@ -14,6 +14,7 @@ import subprocess
 from urllib.parse import urlencode
 
 from shelf import book_metadata, credential_store
+from shelf.models import Grant, Profile
 from shelf.provider_smoke import CA, CURL
 
 MAX_BODY = 512 * 1024
@@ -369,6 +370,10 @@ def _send(command, provider, secret):
 def _request(operation, value=None, *, actor_id, profile_id):
     provider, command = _command(operation, value)
     if type(actor_id) is not int or type(profile_id) is not int or (actor_id, profile_id) != (1, 1):
+        raise CatalogueError(Status.AUTH)
+    if (not Profile.objects.filter(pk=profile_id, kind=Profile.Kind.OWNER, owner__isnull=True).exists()
+            or not Grant.objects.filter(user_id=actor_id, profile_id=profile_id,
+                                        can_view=True, can_select=True).exists()):
         raise CatalogueError(Status.AUTH)
     store = record = None
     try:

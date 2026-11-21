@@ -5,6 +5,7 @@ from urllib.parse import urlencode
 import time
 
 from django import forms
+from django.db import connection
 from django.db.models import Q
 from django.contrib.auth.decorators import login_required
 from django.contrib.auth.views import LogoutView
@@ -183,10 +184,14 @@ def _profiles(actor, action='view'):
                'grant__user_id': actor.pk, 'grant__user__is_active': True,
                'grant__can_view': True}
     filters['grant__can_' + action] = True
-    scope = Q(kind=Profile.Kind.PERSONAL, owner_id=actor.pk)
+    with connection.cursor() as cursor:
+        columns = {column.name for column in connection.introspection.get_table_description(cursor, Profile._meta.db_table)}
+    profiles = Profile.objects.only('id', 'kind', 'label', 'active')
+    scope = Q(pk=1, kind=Profile.Kind.OWNER) if 'owner_id' not in columns else Q(kind=Profile.Kind.PERSONAL, owner_id=actor.pk)
     if actor.pk == 1:
-        scope |= Q(pk=1, kind=Profile.Kind.OWNER, owner__isnull=True)
-    return Profile.objects.filter(scope, **filters)
+        if 'owner_id' in columns:
+            scope |= Q(pk=1, kind=Profile.Kind.OWNER, owner__isnull=True)
+    return profiles.filter(scope, **filters)
 
 
 def _profile(request, profile_id, action='view'):
@@ -308,7 +313,10 @@ class ProviderLogoutView(LogoutView):
 @login_required
 @require_GET
 def profiles(request):
-    return render(request, 'cabinet/provider_profiles.html', {'profile_options': _profiles(request.user, 'select')})
+    with connection.cursor() as cursor:
+        personal_profiles = 'owner_id' in {column.name for column in connection.introspection.get_table_description(cursor, Profile._meta.db_table)}
+    return render(request, 'cabinet/provider_profiles.html', {
+        'profile_options': _profiles(request.user, 'select'), 'personal_profiles': personal_profiles})
 
 
 @login_required
@@ -320,11 +328,13 @@ def select_profile(request):
     profile = _profiles(request.user, 'select').filter(pk=int(values[0])).first()
     if profile is None:
         raise Http404
-    # Preserve a still-owned prototype history before profile selection clears its deck.
-    old = intake.load(request.session, request.user.pk, profile.pk)
-    if (old and old.get('choices') and request.session.get(SELECTION_KEY) == profile.pk
-            and durable.available()):
-        durable.upgrade(request.user, profile.pk, old, request.session.session_key)
+    # Preserve eligible prototype history under the outgoing profile before
+    # switching. A revoked grant removes it from this authorized lookup.
+    outgoing_id = request.session.get(SELECTION_KEY)
+    outgoing = _profiles(request.user, 'select').filter(pk=outgoing_id).first() if outgoing_id else None
+    old = intake.load(request.session, request.user.pk, outgoing.pk) if outgoing else None
+    if old and old.get('choices') and durable.available():
+        durable.upgrade(request.user, outgoing.pk, old, request.session.session_key)
     request.session.pop(intake.SESSION_KEY, None)
     request.session[SELECTION_KEY] = profile.pk
     return redirect('catalogue')

@@ -16,14 +16,15 @@ def provision_personal_profile(actor):
         with immediate():
             if not get_user_model().objects.filter(pk=actor.pk, is_active=True).exists():
                 raise Http404
-            profile, _ = Profile.objects.get_or_create(owner_id=actor.pk,
+            profile, created = Profile.objects.get_or_create(owner_id=actor.pk,
                 defaults={'kind': 'personal', 'label': 'Your profile', 'active': True})
             if not profile.active:
                 raise Http404
-            # Existing grants are authoritative, including revoked capabilities.
-            # A retry only fills the missing grant, never restores revoked access.
-            Grant.objects.get_or_create(user_id=actor.pk, profile=profile,
-                defaults={'can_view': True, 'can_select': True, 'can_mutate': True})
+            # Profile and initial authority commit together. A missing grant on
+            # an existing profile is indistinguishable from an explicit revoke.
+            if created:
+                Grant.objects.create(user_id=actor.pk, profile=profile,
+                    can_view=True, can_select=True, can_mutate=True)
             return profile
     except (OperationalError, sqlite3.OperationalError) as error:
         if is_busy(error):

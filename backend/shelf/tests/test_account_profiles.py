@@ -80,13 +80,18 @@ class AccountProfileTests(FeedbackCase):
         provision_personal_profile(friend)
         with self.assertRaises(Http404):
             mutate(actor=friend, profile_id=profile.pk, command=self.command())
+        grant.delete()
+        provision_personal_profile(friend)
+        self.assertFalse(Grant.objects.filter(user=friend, profile=profile).exists())
+        with self.assertRaises(Http404):
+            require_profile(friend, profile.pk, 'select')
         for actor in (AnonymousUser(), get_user_model().objects.create(username='inactive', is_active=False)):
             with self.assertRaises(Http404):
                 provision_personal_profile(actor)
 
     def test_interruption_rollback_and_lost_response_readback(self):
         friend = self.friends[0]
-        with patch('shelf.account_profiles.Grant.objects.get_or_create', side_effect=RuntimeError('interrupted')):
+        with patch('shelf.account_profiles.Grant.objects.create', side_effect=RuntimeError('interrupted')):
             with self.assertRaisesRegex(RuntimeError, 'interrupted'):
                 provision_personal_profile(friend)
         self.assertFalse(Profile.objects.filter(owner=friend).exists())
@@ -95,10 +100,10 @@ class AccountProfileTests(FeedbackCase):
         reloaded = get_user_model().objects.get(pk=friend.pk)
         self.assertEqual(provision_personal_profile(reloaded).pk, profile.pk)
         self.assertEqual(Grant.objects.filter(user=friend, profile=profile).count(), 1)
-        # Reconcile a pre-existing owned profile whose grant creation was interrupted.
+        # A profile without durable grant evidence stays revoked on retry.
         second = Profile.objects.create(owner=self.friends[1], kind='personal', active=True, label='Empty')
         self.assertEqual(provision_personal_profile(self.friends[1]).pk, second.pk)
-        self.assertEqual(Grant.objects.filter(user=self.friends[1], profile=second).count(), 1)
+        self.assertFalse(Grant.objects.filter(user=self.friends[1], profile=second).exists())
 
     def test_concurrent_provision_has_one_owner_generation(self):
         friend_id = self.friends[0].pk
@@ -149,8 +154,89 @@ class AccountProfileTests(FeedbackCase):
         with self.assertRaises(Http404):
             new_run(self.friends[1], foreign.pk)
 
+    @override_settings(ROOT_URLCONF='cabinet.provider_urls')
+    def test_profile_switch_imports_only_authorized_outgoing_prototype(self):
+        from shelf import intake, durable_intake
+        from shelf.tests.test_durable_intake import fiction_cards
+        from shelf.authority import SELECTION_KEY
+        from shelf.provider_views import _profiles
+        destination = provision_personal_profile(self.actor)
+        client = Client()
+        client.force_login(self.actor)
+        state = intake.new_state(self.actor.pk, self.profile.pk)
+        intake.merge(state, fiction_cards())
+        state['choices'] = {next(iter(state['candidates'])): 'interested'}
+        session = client.session
+        session[SELECTION_KEY] = self.profile.pk
+        session[intake.SESSION_KEY] = state
+        session.save()
+        with patch('shelf.provider_views.durable.available', return_value=True), patch(
+                'shelf.provider_views.durable.upgrade', wraps=durable_intake.upgrade) as upgrade:
+            self.assertEqual(client.post(reverse('select_profile'), {'profile_id': destination.pk}).status_code, 302)
+            self.assertEqual(upgrade.call_args.args[1], self.profile.pk)
+        run = durable_intake.IntakeRun.objects.get(actor=self.actor, profile=self.profile)
+        self.assertEqual(len(run.history), 1)
+        self.assertFalse(durable_intake.IntakeRun.objects.filter(profile=destination).exists())
+        owner_grant = Grant.objects.get(user=self.actor, profile=self.profile)
+        owner_grant.can_select = False
+        owner_grant.save()
+        self.assertFalse(_profiles(self.actor, 'select').filter(pk=self.profile.pk).exists())
+        session = client.session
+        session[SELECTION_KEY] = self.profile.pk
+        session[intake.SESSION_KEY] = state
+        session.save()
+        with patch('shelf.provider_views.durable.available', return_value=True), patch(
+                'shelf.provider_views.durable.upgrade') as upgrade:
+            self.assertEqual(client.post(reverse('select_profile'), {'profile_id': destination.pk}).status_code, 302)
+            upgrade.assert_not_called()
+
+    @override_settings(ROOT_URLCONF='cabinet.provider_urls')
+    def test_personal_profile_never_authorizes_owner_discovery_seeds(self):
+        from types import SimpleNamespace
+        from shelf.discovery_views import _household_authorized
+        profile = provision_personal_profile(self.friends[0])
+        self.assertFalse(_household_authorized(SimpleNamespace(user=self.friends[0]), profile.pk))
+        self.assertTrue(_household_authorized(SimpleNamespace(user=self.actor), self.profile.pk))
+
+    def test_personal_numeric_owner_pair_denies_credentials_before_open(self):
+        from shelf.provider_catalogue import CatalogueError, Status, _request
+        self.profile.kind = 'personal'
+        self.profile.owner = self.actor
+        self.profile.save()
+        try:
+            with patch('shelf.credential_store.open_store', side_effect=AssertionError('credential access')):
+                with self.assertRaises(CatalogueError) as denied:
+                    _request('search_movie', 'query', actor_id=1, profile_id=1)
+            self.assertEqual(denied.exception.status, Status.AUTH)
+        finally:
+            self.profile.kind = 'owner'
+            self.profile.owner = None
+            self.profile.save()
+
 
 class AccountProfileMigrationTests(TransactionTestCase):
+    def test_provider_chooser_and_catalogue_work_on_0031(self):
+        from django.db.migrations.executor import MigrationExecutor
+        old, current = [('shelf', '0031_beta_problem_reports')], [('shelf', '0032_account_personal_profile')]
+        executor = MigrationExecutor(connection)
+        executor.migrate(old)
+        try:
+            apps = executor.loader.project_state(old).apps
+            user = apps.get_model('auth', 'User').objects.create(username='legacy-chooser')
+            profile = apps.get_model('shelf', 'Profile').objects.create(kind='owner', label='Legacy', active=True)
+            apps.get_model('shelf', 'Grant').objects.create(user_id=user.pk, profile_id=profile.pk,
+                can_view=True, can_select=True, can_mutate=True)
+            client = Client()
+            client.force_login(get_user_model().objects.get(pk=user.pk))
+            with override_settings(ROOT_URLCONF='cabinet.provider_urls'):
+                page = client.get('/profiles/')
+                self.assertContains(page, f'value="{profile.pk}"')
+                self.assertNotContains(page, 'Create my empty private profile')
+                self.assertEqual(client.post('/profiles/select/', {'profile_id': profile.pk}).status_code, 302)
+                self.assertEqual(client.get(f'/profiles/{profile.pk}/').status_code, 200)
+        finally:
+            MigrationExecutor(connection).migrate(current)
+
     def test_legacy_identity_grants_and_portable_binding_trigger_survive(self):
         from django.db.migrations.executor import MigrationExecutor
         from importlib import import_module
