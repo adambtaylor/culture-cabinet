@@ -4,25 +4,15 @@ from datetime import timedelta
 import json
 import subprocess
 from types import SimpleNamespace
+from unittest import TestCase
 from unittest.mock import MagicMock, Mock, patch
 from urllib.parse import parse_qs, urlsplit
-from django.contrib.auth import get_user_model
-from django.test import TestCase
-from shelf.models import Grant, Profile
 
 from shelf import credential_store as store, provider_catalogue as p
 from shelf.tests.fixtures_credentials import CANARY
 
 
 class ProviderCatalogueTests(TestCase):
-    def setUp(self):
-        actor, _ = get_user_model().objects.get_or_create(pk=1,
-            defaults={'username': 'synthetic-provider-owner'})
-        profile, _ = Profile.objects.get_or_create(pk=1,
-            defaults={'kind': 'owner', 'active': True, 'label': 'Synthetic owner'})
-        Grant.objects.get_or_create(user=actor, profile=profile,
-            defaults={'can_view': True, 'can_select': True})
-
     def test_native_minimal_projection_is_closed_and_legacy_callers_keep_wider_bytes(self):
         from shelf.source_adapters import SourceRequest
         document = 'query Details($ids:[Int!]!){books(where:{id:{_in:$ids}},limit:9){id title slug}}'
@@ -159,7 +149,9 @@ class ProviderCatalogueTests(TestCase):
             if failure:
                 raise failure
             return {'results': []}
-        with patch.object(store, 'open_store', return_value=handle), patch.object(store, 'lock_store'), \
+        # These fixtures isolate metadata and secret cleanup; authority denial has its own tests.
+        with patch('shelf.legacy_authority.legacy_owner_granted', return_value=True), \
+                patch.object(store, 'open_store', return_value=handle), patch.object(store, 'lock_store'), \
                 patch.object(store, 'read_record', return_value=record), patch.object(p, '_send', side_effect=send) as sender:
             try:
                 result = p._request('search_movie', 'fiction', actor_id=1, profile_id=1)
