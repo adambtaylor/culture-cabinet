@@ -44,6 +44,28 @@ class NonfictionViewTests(TestCase):
         self.assertIn('no-store', directives)
         self.assertNotIn('public', directives)
 
+    def test_default_topic_packet_stays_with_authorized_legacy_owner(self):
+        self.assertEqual(self.post('seed_authorized_defaults',
+            authorization=storage.DEFAULT_AUTHORIZATION).status_code, 302)
+        self.assertEqual(len(AuthoredDiscoveryState.objects.get().data['seeds']), 5)
+        other = get_user_model().objects.create_user(username='SYNTHETIC-personal-reader')
+        personal = Profile.objects.create(kind='personal', owner=other, active=True, label='Private')
+        Grant.objects.create(user=other, profile=personal, can_view=True, can_select=True, can_mutate=True)
+        client = Client()
+        client.force_login(other)
+        session = client.session
+        session[SELECTION_KEY] = personal.pk
+        session.save()
+        url = f'/profiles/{personal.pk}/nonfiction/'
+        page = client.get(url)
+        self.assertEqual(page.status_code, 200)
+        self.assertEqual(page.context['seeds'], [])
+        payload = dict(mode='household', action='seed_authorized_defaults', revision=0,
+            nonce=storage.initial_nonce(other.pk, personal.pk, 'household'),
+            authorization=storage.DEFAULT_AUTHORIZATION)
+        self.assertEqual(client.post(url + 'action/', payload).status_code, 404)
+        self.assertEqual(AuthoredDiscoveryState.objects.filter(actor=other, profile=personal).count(), 0)
+
     def test_shortlist_survives_cache_expiry_and_export_is_inert(self):
         episode = views.catalog()[0]['episodes'][0]
         self.assertEqual(self.post('shortlist_add', identity=episode['key']).status_code, 302)

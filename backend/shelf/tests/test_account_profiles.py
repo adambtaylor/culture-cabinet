@@ -1,7 +1,7 @@
 """CCB-11 / FB03-S01: account ownership through the normal caller, below HTTP."""
 from concurrent.futures import ThreadPoolExecutor
 from threading import Barrier
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 from uuid import uuid4
 
 from django.contrib.auth import get_user_model
@@ -197,6 +197,7 @@ class AccountProfileTests(FeedbackCase):
         profile = provision_personal_profile(self.friends[0])
         self.assertFalse(_household_authorized(SimpleNamespace(user=self.friends[0]), profile.pk))
         self.assertTrue(_household_authorized(SimpleNamespace(user=self.actor), self.profile.pk))
+        self.assertFalse(_household_authorized(SimpleNamespace(user=self.actor), profile.pk))
 
     def test_personal_numeric_owner_pair_denies_credentials_before_open(self):
         from shelf.provider_catalogue import CatalogueError, Status, _request
@@ -213,6 +214,21 @@ class AccountProfileTests(FeedbackCase):
             self.profile.owner = None
             self.profile.save()
 
+    def test_personal_owner_id_pair_cannot_request_synthesis_or_enhancement(self):
+        from types import SimpleNamespace
+        from shelf.acquisition_contract import Blocked
+        from shelf import pick_enhancement, synthesis
+        profile = provision_personal_profile(self.actor)
+        request = SimpleNamespace(user=self.actor, method='POST')
+        with self.assertRaises(Blocked):
+            synthesis.snapshot(self.actor, profile.pk)
+        with self.assertRaises(Blocked):
+            synthesis.request(request, profile.pk, '0' * 64)
+        with self.assertRaises(Blocked):
+            pick_enhancement.authorize(request, profile.pk, 'movie')
+        from shelf.models import SynthesisRun
+        self.assertFalse(SynthesisRun.objects.filter(actor=self.actor, profile=profile).exists())
+
 
 class AccountProfileMigrationTests(TransactionTestCase):
     def test_provider_chooser_and_catalogue_work_on_0031(self):
@@ -222,18 +238,26 @@ class AccountProfileMigrationTests(TransactionTestCase):
         executor.migrate(old)
         try:
             apps = executor.loader.project_state(old).apps
-            user = apps.get_model('auth', 'User').objects.create(username='legacy-chooser')
-            profile = apps.get_model('shelf', 'Profile').objects.create(kind='owner', label='Legacy', active=True)
+            user = apps.get_model('auth', 'User').objects.create(pk=1, username='legacy-chooser')
+            profile = apps.get_model('shelf', 'Profile').objects.create(pk=1, kind='owner', label='Legacy', active=True)
             apps.get_model('shelf', 'Grant').objects.create(user_id=user.pk, profile_id=profile.pk,
                 can_view=True, can_select=True, can_mutate=True)
             client = Client()
             client.force_login(get_user_model().objects.get(pk=user.pk))
+            other = apps.get_model('auth', 'User').objects.create(pk=2, username='legacy-denied-account')
+            apps.get_model('shelf', 'Grant').objects.create(user_id=other.pk, profile_id=profile.pk,
+                can_view=True, can_select=True)
             with override_settings(ROOT_URLCONF='cabinet.provider_urls'):
                 page = client.get('/profiles/')
                 self.assertContains(page, f'value="{profile.pk}"')
                 self.assertNotContains(page, 'Create my empty private profile')
                 self.assertEqual(client.post('/profiles/select/', {'profile_id': profile.pk}).status_code, 302)
                 self.assertEqual(client.get(f'/profiles/{profile.pk}/').status_code, 200)
+                denied = Client()
+                denied.force_login(get_user_model().objects.get(pk=other.pk))
+                self.assertNotContains(denied.get('/profiles/'), f'value="{profile.pk}"')
+                self.assertEqual(denied.get(f'/profiles/{profile.pk}/').status_code, 404)
+                self.assertEqual(denied.post('/profiles/select/', {'profile_id': profile.pk}).status_code, 404)
         finally:
             MigrationExecutor(connection).migrate(current)
 
@@ -263,3 +287,50 @@ class AccountProfileMigrationTests(TransactionTestCase):
             Profile.objects.create(kind='owner', label='Duplicate legacy')
         with self.assertRaises(IntegrityError), transaction.atomic():
             Profile.objects.create(kind='personal', label='Owner missing')
+
+    def test_pre_0032_provider_search_works_and_provisioning_is_unavailable(self):
+        from datetime import timedelta
+        from django.db.migrations.executor import MigrationExecutor
+        from django.urls import reverse
+        from shelf import credential_store, provider_catalogue
+        from shelf.tests.fixtures_credentials import CANARY
+        old = [('shelf', '0031_beta_problem_reports')]
+        current = [('shelf', '0032_account_personal_profile')]
+        executor = MigrationExecutor(connection)
+        executor.migrate(old)
+        try:
+            apps = executor.loader.project_state(old).apps
+            User = apps.get_model('auth', 'User')
+            LegacyProfile, LegacyGrant = apps.get_model('shelf', 'Profile'), apps.get_model('shelf', 'Grant')
+            actor = User.objects.create(pk=1, username='pre0032-provider-owner')
+            profile = LegacyProfile.objects.create(pk=1, kind='owner', label='Legacy', active=True)
+            LegacyGrant.objects.create(user_id=actor.pk, profile_id=profile.pk,
+                can_view=True, can_select=True, can_mutate=True)
+            before = LegacyProfile.objects.count()
+            now = credential_store.utc_now()
+            metadata = credential_store.EntryMetadata(credential_store.Binding('FICTION_ACCOUNT',
+                str(actor.pk), str(profile.pk), 'tmdb', 'culture-cabinet-tmdb-backend'), now,
+                now + timedelta(days=1), now + timedelta(days=2), credential_store.TMDB_SCOPES)
+            handle = type('Handle', (), {'context': credential_store._provider_context('tmdb'),
+                'uid': 1000, 'gid': 1000, 'close': Mock()})()
+            record = credential_store.PrivateRecord(metadata, bytearray(CANARY), 'FICTION', None)
+            client = Client()
+            client.force_login(get_user_model().objects.get(pk=actor.pk))
+            with override_settings(ROOT_URLCONF='cabinet.urls'), \
+                    patch.object(provider_catalogue.os, 'getuid', return_value=1000), \
+                    patch.object(provider_catalogue.os, 'geteuid', return_value=1000), \
+                    patch.object(provider_catalogue.os, 'getgid', return_value=1000), \
+                    patch.object(provider_catalogue.os, 'getegid', return_value=1000), \
+                    patch.object(credential_store, 'open_store', return_value=handle), \
+                    patch.object(credential_store, 'lock_store'), \
+                    patch.object(credential_store, 'read_record', return_value=record), \
+                    patch.object(provider_catalogue, '_send', return_value={'results': []}) as send:
+                self.assertEqual(provider_catalogue._request('search_movie', 'fiction',
+                    actor_id=actor.pk, profile_id=profile.pk), {'results': []})
+                send.assert_called_once()
+                response = client.post(reverse('provision_profile'))
+            self.assertEqual(response.status_code, 503)
+            self.assertEqual(LegacyProfile.objects.count(), before)
+            self.assertEqual(LegacyGrant.objects.count(), 1)
+        finally:
+            MigrationExecutor(connection).migrate(current)

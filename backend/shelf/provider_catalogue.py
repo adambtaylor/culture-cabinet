@@ -369,11 +369,8 @@ def _send(command, provider, secret):
 
 def _request(operation, value=None, *, actor_id, profile_id):
     provider, command = _command(operation, value)
-    if type(actor_id) is not int or type(profile_id) is not int or (actor_id, profile_id) != (1, 1):
-        raise CatalogueError(Status.AUTH)
-    if (not Profile.objects.filter(pk=profile_id, kind=Profile.Kind.OWNER, owner__isnull=True).exists()
-            or not Grant.objects.filter(user_id=actor_id, profile_id=profile_id,
-                                        can_view=True, can_select=True).exists()):
+    from shelf.legacy_authority import legacy_owner_granted
+    if not legacy_owner_granted(actor_id, profile_id):
         raise CatalogueError(Status.AUTH)
     store = record = None
     try:

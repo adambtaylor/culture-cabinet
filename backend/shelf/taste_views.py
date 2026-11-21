@@ -120,7 +120,8 @@ def index(request,profile_id):
         'next_responses':response_page+1 if len(historical)>response_page*24 else None,
         'projection':projection,'selection':selected,'preview':signed,
         'revision':row.revision if row else 0,'nonce':row.nonce if row else storage.initial_nonce(request.user.pk,profile_id,'household'),
-        'snapshot':snapshot,'jobs':jobs,'source_results':request.session.get('funnel_source_results',[]),
+        'snapshot':snapshot,'jobs':jobs,'source_results':request.session.get('funnel_source_results',[])
+            if discovery_views._household_authorized(request,profile_id) else [],
         'sources':discovery_sources.source_statuses()}))
 
 
@@ -150,6 +151,9 @@ def synergize(request,profile_id):
 def fetch_round(request,profile_id):
     data=fields(request,FetchForm)
     if data is None:return HttpResponse('Invalid source form.',status=400)
+    from shelf.legacy_authority import legacy_owner_granted
+    if not legacy_owner_granted(request.user.pk, profile_id):
+        return HttpResponse('Household source gathering is unavailable for this profile.\n',status=404)
     storage.public_authorized(request,profile_id)
     fingerprint=funnel.digest(['funnel-source-read',data])
     with transaction.atomic():

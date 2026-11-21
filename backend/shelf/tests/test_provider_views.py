@@ -81,6 +81,21 @@ class ProviderViewsTests(ProviderFixture, TestCase):
         self.client.logout()
         self.assertEqual(self.client.get('/profiles/1/').status_code, 302)
 
+    def test_personal_profile_cannot_start_provider_acquisition(self):
+        personal = Profile.objects.create(kind='personal', owner=self.owner, label='Private', active=True)
+        Grant.objects.create(user=self.owner, profile=personal, can_view=True, can_select=True, can_mutate=True)
+        self.assertEqual(self.client.post('/profiles/select/', {'profile_id': personal.pk}).status_code, 302)
+        page = self.client.get(f'/profiles/{personal.pk}/')
+        self.assertEqual(page.status_code, 200)
+        fields = {'action': 'search', 'revision': page.context['revision'], 'nonce': page.context['nonce'],
+                  'medium': 'movie', 'query': 'fiction'}
+        with patch.object(catalogue, '_request', side_effect=AssertionError('credential path opened')) as send, \
+                patch('shelf.provider_views.durable.upgrade', side_effect=AssertionError('work reserved')) as reserve:
+            response = self.client.post(f'/profiles/{personal.pk}/catalogue/action/', fields)
+        self.assertEqual(response.status_code, 404)
+        send.assert_not_called()
+        reserve.assert_not_called()
+
     def test_csrf_required_and_no_get_mutations(self):
         client = Client(enforce_csrf_checks=True)
         client.force_login(self.owner)

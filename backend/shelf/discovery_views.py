@@ -99,8 +99,8 @@ def public_entries(request, profile_id):
 
 
 def _household_authorized(request, profile_id):
-    return Profile.objects.filter(pk=profile_id, kind=Profile.Kind.OWNER).exists() and Grant.objects.filter(
-        user_id=request.user.pk, profile_id=profile_id, can_view=True, can_select=True).exists()
+    from shelf.legacy_authority import legacy_owner_granted
+    return legacy_owner_granted(request.user.pk, profile_id)
 
 
 def gallery_context(request, profile_id, now, *, mode='household'):

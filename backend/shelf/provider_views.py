@@ -187,7 +187,10 @@ def _profiles(actor, action='view'):
     with connection.cursor() as cursor:
         columns = {column.name for column in connection.introspection.get_table_description(cursor, Profile._meta.db_table)}
     profiles = Profile.objects.only('id', 'kind', 'label', 'active')
-    scope = Q(pk=1, kind=Profile.Kind.OWNER) if 'owner_id' not in columns else Q(kind=Profile.Kind.PERSONAL, owner_id=actor.pk)
+    scope = (Q(pk=1, kind=Profile.Kind.OWNER) if 'owner_id' not in columns
+             else Q(kind=Profile.Kind.PERSONAL, owner_id=actor.pk))
+    if 'owner_id' not in columns and actor.pk != 1:
+        return Profile.objects.none()
     if actor.pk == 1:
         if 'owner_id' in columns:
             scope |= Q(pk=1, kind=Profile.Kind.OWNER, owner__isnull=True)
@@ -202,6 +205,11 @@ def _profile(request, profile_id, action='view'):
         request.session.pop(intake.SESSION_KEY, None)
         raise Http404
     return profile
+
+
+def _legacy_acquisition(actor, profile_id):
+    from shelf.legacy_authority import legacy_owner_granted
+    return actor.pk == 1 and profile_id == 1 and legacy_owner_granted(actor.pk, profile_id)
 
 
 def _guard(view):
@@ -374,8 +382,8 @@ def action(request, profile_id):
     if any(len(request.POST.getlist(k)) != 1 for k in request.POST):
         raise intake.IntakeError()
     form = ActionForm(request.POST)
-    state = _state(request, profile)
     if not form.is_valid():
+        state = _state(request, profile)
         if _partial(request):
             return JsonResponse({'ok': False, 'message': 'Review the response and try again.'}, status=400)
         return render(request, 'cabinet/provider_catalogue.html',
@@ -383,6 +391,9 @@ def action(request, profile_id):
     data = form.cleaned_data
     operation = data['action']
     queue = data.get('queue') or 'all'
+    if operation in ('start', 'search', 'browse', 'neighbors') and not _legacy_acquisition(request.user, profile.pk):
+        raise Http404
+    state = _state(request, profile)
     if _partial(request) and operation not in ('choose', 'correct'):
         raise intake.IntakeError()
     if operation in ('choose', 'correct') and queue != state.get('queue', 'all'):

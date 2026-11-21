@@ -7,12 +7,22 @@ from types import SimpleNamespace
 from unittest import TestCase
 from unittest.mock import MagicMock, Mock, patch
 from urllib.parse import parse_qs, urlsplit
+from django.contrib.auth import get_user_model
+from shelf.models import Grant, Profile
 
 from shelf import credential_store as store, provider_catalogue as p
 from shelf.tests.fixtures_credentials import CANARY
 
 
 class ProviderCatalogueTests(TestCase):
+    def setUp(self):
+        actor, _ = get_user_model().objects.get_or_create(pk=1,
+            defaults={'username': 'synthetic-provider-owner'})
+        profile, _ = Profile.objects.get_or_create(pk=1,
+            defaults={'kind': 'owner', 'active': True, 'label': 'Synthetic owner'})
+        Grant.objects.get_or_create(user=actor, profile=profile,
+            defaults={'can_view': True, 'can_select': True})
+
     def test_native_minimal_projection_is_closed_and_legacy_callers_keep_wider_bytes(self):
         from shelf.source_adapters import SourceRequest
         document = 'query Details($ids:[Int!]!){books(where:{id:{_in:$ids}},limit:9){id title slug}}'

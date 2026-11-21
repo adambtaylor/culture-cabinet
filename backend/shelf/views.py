@@ -52,7 +52,14 @@ def profiles(request):
 @login_required
 @require_POST
 def provision_profile(request):
+    from django.db import connection
     from shelf.account_profiles import provision_personal_profile
+    with connection.cursor() as cursor:
+        columns = {column.name for column in
+                   connection.introspection.get_table_description(cursor, 'shelf_profile')}
+    if 'owner_id' not in columns:
+        return HttpResponse('Personal profile provisioning is unavailable on this schema.\n', status=503,
+                            content_type='text/plain')
     try:
         provision_personal_profile(request.user)
     except FeedbackError as error:
