@@ -1,6 +1,7 @@
 """Authenticated explicit public-read flows; every transport is mocked."""
 from dataclasses import replace
 from datetime import timedelta
+from types import SimpleNamespace
 import json
 from unittest.mock import patch
 
@@ -152,6 +153,12 @@ class PublicDiscoveryUITests(TestCase):
             'event', 'Synthetic gallery', 'live-automated', 1, NOW.isoformat(),
             url='https://example.test/exhibition', category='gallery',
             starts_at=(NOW + timedelta(days=3)).isoformat(), artists=('Damian Elwes',))
+        other = get_user_model().objects.create_user(pk=2, username='discovery-fiction-guest')
+        existing.Grant.objects.create(user=other, profile=self.profile, can_view=True, can_select=True)
+        projection = v._display(SimpleNamespace(user=other), 1, card,
+            {'choices': {}, 'saved': set(), 'notes': {}}, NOW, why=('source reason',))
+        self.assertEqual(projection['why'], ('source reason',))
+        self.assertEqual(card.gallery_data['artists'], ('Damian Elwes',))
         self.profile.kind = 'personal'
         self.profile.owner = self.actor
         self.profile.save(update_fields=['kind', 'owner'])

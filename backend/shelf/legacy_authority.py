@@ -5,7 +5,7 @@ from shelf.models import Grant, Profile
 
 
 def legacy_owner_granted(actor_id, profile_id):
-    if type(actor_id) is not int or type(profile_id) is not int:
+    if type(actor_id) is not int or type(profile_id) is not int or actor_id != 1 or profile_id != 1:
         return False
     with connection.cursor() as cursor:
         columns = {column.name for column in

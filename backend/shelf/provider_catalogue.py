@@ -14,7 +14,6 @@ import subprocess
 from urllib.parse import urlencode
 
 from shelf import book_metadata, credential_store
-from shelf.models import Grant, Profile
 from shelf.provider_smoke import CA, CURL
 
 MAX_BODY = 512 * 1024
