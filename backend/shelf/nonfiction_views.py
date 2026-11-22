@@ -147,7 +147,10 @@ def context(request, profile_id, mode):
     ready = storage.available()
     state = storage.owned(request, profile_id, mode) if ready else None
     data = state.data if state else storage.empty_data()
-    clusters = discovery_catalog(request, profile_id, mode)
+    from shelf.legacy_authority import legacy_owner_granted
+    household_authorized = legacy_owner_granted(request.user.pk, profile_id)
+    clusters = (discovery_catalog(request, profile_id, mode)
+                if mode != 'household' or household_authorized else [])
     shortlist = [display_episode(row) for row in data['shortlist']]
     selected = {row['key'] for row in shortlist}
     for cluster in clusters:

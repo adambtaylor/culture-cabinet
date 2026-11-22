@@ -189,6 +189,36 @@ class ProviderCatalogueTests(TestCase):
                     p._request('book_deck', actor_id=actor, profile_id=profile)
             opener.assert_not_called()
 
+    def test_foreign_grant_to_legacy_owner_denied_before_store_open(self):
+        from django.contrib.auth import get_user_model
+        from shelf.models import Grant, Profile
+        owner = get_user_model().objects.create_user(pk=1, username='catalogue-legacy-owner', is_active=True)
+        foreign = get_user_model().objects.create_user(pk=2, username='catalogue-foreign-actor', is_active=True)
+        profile = Profile.objects.create(pk=1, kind='owner', label='Legacy household', active=True)
+        Grant.objects.create(user=owner, profile=profile, can_view=True, can_select=True)
+        Grant.objects.create(user=foreign, profile=profile, can_view=True, can_select=True)
+        with patch.object(store, 'open_store') as opener:
+            with self.assertRaises(p.CatalogueError) as denied:
+                p._request('search_movie', 'fictional', actor_id=foreign.pk, profile_id=profile.pk)
+        self.assertEqual(denied.exception.status, p.Status.AUTH)
+        opener.assert_not_called()
+        owner.is_active = False
+        owner.save(update_fields=['is_active'])
+        with patch.object(store, 'open_store') as opener:
+            with self.assertRaises(p.CatalogueError) as denied:
+                p._request('search_movie', 'fictional', actor_id=owner.pk, profile_id=profile.pk)
+        self.assertEqual(denied.exception.status, p.Status.AUTH)
+        opener.assert_not_called()
+        owner.is_active = True
+        owner.save(update_fields=['is_active'])
+        profile.active = False
+        profile.save(update_fields=['active'])
+        with patch.object(store, 'open_store') as opener:
+            with self.assertRaises(p.CatalogueError) as denied:
+                p._request('search_movie', 'fictional', actor_id=owner.pk, profile_id=profile.pk)
+        self.assertEqual(denied.exception.status, p.Status.AUTH)
+        opener.assert_not_called()
+
     def test_token_only_in_stdin_env_and_argv_clean(self):
         child = MagicMock(returncode=0)
         child.__enter__.return_value = child

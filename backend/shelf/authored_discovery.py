@@ -160,6 +160,10 @@ def apply(request, profile_id, fields, catalog=()):
         raise ValueError('Invalid authored discovery form.')
     digest = revision(fields)
     with transaction.atomic():
+        if action == 'seed_authorized_defaults':
+            from shelf.legacy_authority import legacy_owner_granted
+            if mode != 'household' or not legacy_owner_granted(request.user.pk, profile_id):
+                raise Conflict('Household topic packet is unavailable for this profile.')
         state = owned(request, profile_id, mode)
         if state is None:
             if fields['revision'] != 0 or nonce != initial_nonce(request.user.pk, profile_id, mode):

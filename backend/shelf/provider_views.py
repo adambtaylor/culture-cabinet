@@ -391,7 +391,7 @@ def action(request, profile_id):
     data = form.cleaned_data
     operation = data['action']
     queue = data.get('queue') or 'all'
-    if operation in ('start', 'search', 'browse', 'neighbors') and not _legacy_acquisition(request.user, profile.pk):
+    if operation in ('start', 'search', 'browse', 'neighbors', 'refresh') and not _legacy_acquisition(request.user, profile.pk):
         raise Http404
     state = _state(request, profile)
     if _partial(request) and operation not in ('choose', 'correct'):

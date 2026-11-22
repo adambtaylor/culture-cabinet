@@ -45,6 +45,9 @@ class NonfictionViewTests(TestCase):
         self.assertNotIn('public', directives)
 
     def test_default_topic_packet_stays_with_authorized_legacy_owner(self):
+        owner_page = self.client.get(self.base)
+        self.assertEqual(len(owner_page.context['clusters']), 5)
+        self.assertContains(owner_page, 'AI, history &amp; geopolitics')
         self.assertEqual(self.post('seed_authorized_defaults',
             authorization=storage.DEFAULT_AUTHORIZATION).status_code, 302)
         self.assertEqual(len(AuthoredDiscoveryState.objects.get().data['seeds']), 5)
@@ -60,10 +63,17 @@ class NonfictionViewTests(TestCase):
         page = client.get(url)
         self.assertEqual(page.status_code, 200)
         self.assertEqual(page.context['seeds'], [])
+        self.assertEqual(page.context['clusters'], [])
+        self.assertNotContains(page, 'AI, history &amp; geopolitics')
         payload = dict(mode='household', action='seed_authorized_defaults', revision=0,
             nonce=storage.initial_nonce(other.pk, personal.pk, 'household'),
             authorization=storage.DEFAULT_AUTHORIZATION)
         self.assertEqual(client.post(url + 'action/', payload).status_code, 404)
+        self.assertEqual(AuthoredDiscoveryState.objects.filter(actor=other, profile=personal).count(), 0)
+        from shelf.discovery_state import Conflict
+        from types import SimpleNamespace
+        with self.assertRaises(Conflict):
+            storage.apply(SimpleNamespace(user=other), personal.pk, payload)
         self.assertEqual(AuthoredDiscoveryState.objects.filter(actor=other, profile=personal).count(), 0)
 
     def test_shortlist_survives_cache_expiry_and_export_is_inert(self):

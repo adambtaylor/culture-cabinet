@@ -96,6 +96,30 @@ class ProviderViewsTests(ProviderFixture, TestCase):
         send.assert_not_called()
         reserve.assert_not_called()
 
+    def test_personal_profile_refresh_denies_before_hydration_or_run_mutation(self):
+        personal = Profile.objects.create(kind='personal', owner=self.owner, label='Private', active=True)
+        Grant.objects.create(user=self.owner, profile=personal, can_view=True, can_select=True, can_mutate=True)
+        self.client.post('/profiles/select/', {'profile_id': personal.pk})
+        from shelf import durable_intake
+        run = durable_intake.new_run(self.owner, personal.pk, revision=4, nonce='personal-refresh-nonce')
+        run.receipts = {'existing': 'receipt-digest'}
+        run.save(update_fields=['receipts'])
+        state = intake.new_state(self.owner.pk, personal.pk)
+        state.update(run_id=str(run.pk), revision=run.revision, nonce=run.nonce)
+        session = self.client.session
+        session[intake.SESSION_KEY] = state
+        session.save()
+        before = (run.revision, run.nonce, dict(run.receipts))
+        with patch('shelf.provider_views.durable.hydrate', side_effect=AssertionError('hydration must not run')), \
+                patch('shelf.provider_views.durable.upgrade', side_effect=AssertionError('reservation must not run')), \
+                patch.object(catalogue, 'initial_deck', side_effect=AssertionError('external acquisition must not run')) as external:
+            response = self.client.post(f'/profiles/{personal.pk}/catalogue/action/', {
+                'action': 'refresh', 'revision': run.revision, 'nonce': run.nonce})
+        self.assertEqual(response.status_code, 404)
+        external.assert_not_called()
+        run.refresh_from_db()
+        self.assertEqual((run.revision, run.nonce, run.receipts), before)
+
     def test_csrf_required_and_no_get_mutations(self):
         client = Client(enforce_csrf_checks=True)
         client.force_login(self.owner)

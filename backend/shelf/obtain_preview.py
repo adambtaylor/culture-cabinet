@@ -27,6 +27,19 @@ class SearchUnavailable(Exception):
         self.state = state
 
 
+def _search_authority(actor, profile_id):
+    from shelf.portable_saved_authority import active_portable_access
+    from shelf.acquisition_contract import Blocked
+    access = active_portable_access()
+    saved.authority(actor, profile_id)
+    if access is None:
+        # Legacy provider credentials are bound only to the active, explicitly
+        # granted legacy household. Personal profiles remain portable-only.
+        from shelf.legacy_authority import legacy_owner_granted
+        if not legacy_owner_granted(actor.pk, profile_id):
+            raise Blocked('Legacy provider search requires the authorized household.')
+
+
 def available():
     tables = set(connection.introspection.table_names())
     return {ObtainPreview._meta.db_table, ObtainResult._meta.db_table,
@@ -44,7 +57,7 @@ def search_backend(*, actor, profile_id, _open_store=None):
     No grant is fabricated or extended. Backend independently rereads the record
     and validates its binding/expiry before each caps/search operation.
     """
-    saved.authority(actor, profile_id)
+    _search_authority(actor, profile_id)
     opener = store.open_store if _open_store is None else _open_store
     handle = record = None
     try:
@@ -319,6 +332,9 @@ def search_origin(*, access, origin, scope, search_review_ref, factory=None):
 
 
 def search(*, actor, profile_id, item_id, factory=None, season=None, episode=None):
+    # Reject household-only access before an item lookup, preview receipt, or
+    # provider credential access can create observable state.
+    _search_authority(actor, profile_id)
     item = saved.owned_item(actor, profile_id, item_id)
     scope = selected_scope(item, season, episode)
     require_available()

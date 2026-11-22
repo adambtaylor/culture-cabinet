@@ -24,6 +24,41 @@ class AccountProfileTests(FeedbackCase):
         super().setUp()
         self.friends = [get_user_model().objects.create_user(username=f'friend-{i}') for i in range(2)]
 
+    def numeric_legacy_owner(self):
+        User = get_user_model()
+        actor = User.objects.filter(pk=1).first()
+        if actor is None:
+            actor = User.objects.create_user(pk=1, username='numeric-collision-owner')
+        actor.is_active = True
+        actor.save(update_fields=['is_active'])
+        profile = Profile.objects.filter(pk=1).first()
+        if profile is None:
+            self.profile.kind = Profile.Kind.PERSONAL
+            self.profile.owner = self.actor
+            self.profile.save()
+            profile = Profile.objects.create(pk=1, kind=Profile.Kind.OWNER,
+                label='Legacy household', active=True)
+        elif profile.pk != self.profile.pk:
+            self.profile.kind = Profile.Kind.PERSONAL
+            self.profile.owner = self.actor
+            self.profile.save()
+        profile.kind = Profile.Kind.OWNER
+        profile.active = True
+        if hasattr(profile, 'owner_id'):
+            profile.owner = None
+        profile.save()
+        grant, _ = Grant.objects.get_or_create(user=actor, profile=profile)
+        grant.can_view = grant.can_select = grant.can_mutate = True
+        grant.save(update_fields=['can_view', 'can_select', 'can_mutate'])
+        return actor, profile
+
+    def restore_legacy_owner(self, profile):
+        if profile.pk != self.profile.pk:
+            profile.delete()
+        self.profile.kind = Profile.Kind.OWNER
+        self.profile.owner = None
+        self.profile.save()
+
     def test_two_account_normal_provision_choose_read_write(self):
         profiles = []
         for friend in self.friends:
@@ -201,18 +236,18 @@ class AccountProfileTests(FeedbackCase):
 
     def test_personal_numeric_owner_pair_denies_credentials_before_open(self):
         from shelf.provider_catalogue import CatalogueError, Status, _request
-        self.profile.kind = 'personal'
-        self.profile.owner = self.actor
-        self.profile.save()
+        actor, profile = self.numeric_legacy_owner()
+        self.assertEqual((actor.pk, profile.pk), (1, 1))
+        profile.kind = Profile.Kind.PERSONAL
+        profile.owner = actor
+        profile.save()
         try:
             with patch('shelf.credential_store.open_store', side_effect=AssertionError('credential access')):
                 with self.assertRaises(CatalogueError) as denied:
-                    _request('search_movie', 'query', actor_id=1, profile_id=1)
+                    _request('search_movie', 'query', actor_id=actor.pk, profile_id=profile.pk)
             self.assertEqual(denied.exception.status, Status.AUTH)
         finally:
-            self.profile.kind = 'owner'
-            self.profile.owner = None
-            self.profile.save()
+            self.restore_legacy_owner(profile)
 
     def test_personal_owner_id_pair_cannot_request_synthesis_or_enhancement(self):
         from types import SimpleNamespace
@@ -229,6 +264,25 @@ class AccountProfileTests(FeedbackCase):
         from shelf.models import SynthesisRun
         self.assertFalse(SynthesisRun.objects.filter(actor=self.actor, profile=profile).exists())
 
+    def test_personal_numeric_owner_collision_cannot_open_obtain_credentials(self):
+        from shelf.acquisition_contract import Blocked
+        from shelf.models import ObtainPreview
+        from shelf.obtain_preview import search, search_backend
+        actor, profile = self.numeric_legacy_owner()
+        self.assertEqual((actor.pk, profile.pk), (1, 1))
+        profile.kind = Profile.Kind.PERSONAL
+        profile.owner = actor
+        profile.save()
+        try:
+            with patch('shelf.credential_store.open_store', side_effect=AssertionError('credential access')) as opener:
+                with self.assertRaises(Blocked):
+                    search(actor=actor, profile_id=profile.pk, item_id='missing')
+                with self.assertRaises(Blocked):
+                    search_backend(actor=actor, profile_id=profile.pk)
+            opener.assert_not_called()
+            self.assertFalse(ObtainPreview.objects.filter(actor=actor, profile=profile).exists())
+        finally:
+            self.restore_legacy_owner(profile)
 
 class AccountProfileMigrationTests(TransactionTestCase):
     def test_provider_chooser_and_catalogue_work_on_0031(self):
