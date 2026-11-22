@@ -109,6 +109,9 @@ def gallery_context(request, profile_id, now, *, mode='household'):
     if mode != 'household':
         return {'gallery_offers': [], 'gallery_source_checks': [], 'gallery_brief_note': ''}
     storage.public_authorized(request, profile_id)
+    authorized = _household_authorized(request, profile_id)
+    if not authorized:
+        return {'gallery_offers': [], 'gallery_source_checks': [], 'gallery_brief_note': ''}
     offers, checks = {}, []
     for entry in public_entries(request, profile_id).values():
         outcome = entry['outcome']
@@ -116,9 +119,9 @@ def gallery_context(request, profile_id, now, *, mode='household'):
             if isinstance(offer, dict):
                 offers[offer.get('offer_id', '')] = {
                     'offer': offer, 'cost_gate': asdict(gallery_commerce.evaluate_offer(offer, now=now)),
-                    'why': gallery_curation.offer_reasons(offer, actor_id=request.user.pk, profile_id=profile_id)}
+                    'why': gallery_curation.offer_reasons(offer, authorized=authorized)}
         checks.extend(getattr(outcome, 'source_checks', ()))
-    quotes = gallery_curation.principle_quotes(actor_id=request.user.pk, profile_id=profile_id)
+    quotes = gallery_curation.principle_quotes(authorized=authorized)
     return {'gallery_offers': list(offers.values()), 'gallery_source_checks': checks,
         'gallery_brief_note': ('Your authorized art brief informs these curatorial looking experiments. '
             'Quiet space, expressive imagery, landscape and unfamiliar practices remain open directions; '
@@ -269,7 +272,9 @@ def _replace_key(deck, cards, state, submitted):
 def _display(request, profile_id, card, state, now, why=()):
     from shelf.event_saved_references import ReferenceCandidate
     from shelf.gallery_curation import reasons
-    why = tuple(why) + (reasons(card, actor_id=request.user.pk, profile_id=profile_id)
+    authorized = (_household_authorized(request, profile_id)
+                  if card.category in ('gallery', 'art_fair') and card.provenance != 'fixture' else False)
+    why = tuple(why) + (reasons(card, authorized=authorized)
                         if card.provenance != 'fixture' else ())
     date_status = card.date_status(now)
     notice = getattr(card, 'source_notice', '')
@@ -297,9 +302,10 @@ def _context(request, profile, mode, queue, category, stored, cards):
         deck = {'keys': [row['card'].key for row in ranked['selection']], 'category': category, 'revision': revision}
         if mode == 'household' and queue == 'all' and category in ('all', 'gallery', 'art_fair'):
             from shelf.gallery_curation import select as gallery_selection
+            household_authorized = _household_authorized(request, profile.pk)
             for card in gallery_selection((c for c in registered.values() if c.key not in state['choices']
                     and (category == 'all' or c.category == category)),
-                    actor_id=request.user.pk, profile_id=profile.pk, limit=2):
+                    authorized=household_authorized, limit=2):
                 if card.key not in deck['keys']:
                     deck['keys'].append(card.key)
     elif deck['revision'] != revision:
@@ -427,6 +433,8 @@ def action(request, profile_id):
     if _partial(request) and data['operation'] != 'respond':
         raise ValueError('Only explicit responses use partial requests.')
     public = data['operation'] in ('event_source', 'radio', 'events', 'venue303', 'forum', 'rrr', 'rrr_detail', 'beat', 'beat_detail', 'pbs', 'tribe', 'soundsystems', 'gallery')
+    if public and data['operation'] != 'radio' and not _household_authorized(request, profile_id):
+        raise Http404
     if ('note' in data and data['operation'] != 'respond') or public and queue != 'all':
         raise ValueError('Invalid source response fields.')
     if data['operation'] in ('rrr_detail', 'beat_detail'):

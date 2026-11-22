@@ -115,12 +115,12 @@ def request(request, profile_id, expected_digest, *, purpose='manual'):
         raise Blocked('Supported explicit synthesis intent required.')
     if request.method != 'POST':
         raise Blocked('Explicit Synergize action required.')
-    from shelf.legacy_authority import legacy_owner_granted
-    if ((request.user.pk, profile_id) != (1, 1)
-            or not legacy_owner_granted(request.user.pk, profile_id)):
-        raise Blocked('Current legacy owner household and grant required.')
     with transaction.atomic():
         public_authorized(request, profile_id)
+        from shelf.legacy_authority import legacy_owner_granted
+        if ((request.user.pk, profile_id) != (1, 1)
+                or not legacy_owner_granted(request.user.pk, profile_id)):
+            raise Blocked('Current legacy owner household and grant required.')
         current = snapshot(request.user, profile_id)
         if current['input_digest'] != expected_digest:
             raise Conflict('Taste signals changed. Review before requesting synthesis.')

@@ -1,12 +1,12 @@
-# FB03-S01 / CCB-11 local implementation receipt
+# FB03-S01 / CCB-11 historical implementation receipt
 
-Contract revision 3. Candidate: uncommitted working-tree changes on `codex/ccb11-smoke`, starting HEAD `eb3d522f6561c88057be65c3c149d4ec28849293`. No target branch or PR is assigned. No commit, push, PR, Plane write, runtime configuration change, external message, or delegated agent was performed. No independent acceptance is claimed.
+Historical record for the original contract revision 3 implementation snapshot, prepared from starting HEAD `eb3d522f6561c88057be65c3c149d4ec28849293`. Its candidate description, line counts and runs refer only to that snapshot; they are not evidence about the current PR head. Historical failures are retained below. No pilot or product acceptance is claimed.
 
 ## Bound caller and behavior
 
 Both existing authenticated profile choosers expose POST `/profiles/provision/` (route `provision_profile`). The service `shelf.account_profiles.provision_personal_profile(actor)` accepts only the authenticated actor, creates one active `personal` profile keyed by its account owner, and creates an explicit view/select/mutate grant. Export stays false. POST body account/profile claims do not select authority. The caller redirects to the existing chooser; selection, normal reads, and writes continue to check current grants. Foreign personal profiles deny even with a foreign grant or staff/superuser/installation ownership.
 
-Provisioning owns an IMMEDIATE transaction. Database owner uniqueness prevents a second personal profile. Busy callers receive 503 and reconcile through a later complete call; there is no background retry. Pre-commit interruption rolls back profile and grant together. Lost committed responses return the same profile on readback. An existing owned profile with a missing grant gets that grant; an existing revoked grant remains authoritative. No household slot, feedback, seed, or portable cabinet binding is adopted or created.
+Provisioning owns an IMMEDIATE transaction. Database owner uniqueness prevents a second personal profile. Busy callers receive 503 and reconcile through a later complete call; there is no background retry. Pre-commit interruption rolls back profile and grant together. Lost committed responses return the same profile on readback. If the profile already exists but its initial grant is missing, retry preserves that absence because it cannot distinguish interrupted provisioning from revocation. An existing revoked grant remains authoritative; reconciliation does not recreate it. No household slot, feedback, seed, or portable cabinet binding is adopted or created.
 
 Account identity provisioning does not require a synthetic feedback coordinator; the provider runtime deliberately uses its existing account/grant authority. Scoped normal feedback reads/writes retain their existing recovery barrier. Portable authority services are unchanged. Migration 0032 preserves legacy kind uniqueness and existing identities/grants, adds account ownership/shape constraints, and restores the pre-existing portable binding trigger verbatim during SQLite table rebuilds.
 
@@ -73,7 +73,7 @@ An initial `makemigrations shelf --name account_personal_profile` command was re
 
 ## Budget and source identity
 
-Gross story diff against the starting HEAD, including new files: **307 physical lines**, comprising **128 production/config/workflow/migration lines** and **179 test lines**. Added plus deleted lines count positively; the generated-code total is zero (migration authored explicitly). No binary/vendor changes. This prose-only receipt is excluded by the contract counting rule. No pre-existing changes were present.
+At the time of this historical receipt, the gross story diff against its starting HEAD, including new files, was **307 physical lines**, comprising **128 production/config/workflow/migration lines** and **179 test lines**. Added plus deleted lines count positively; the generated-code total is zero (migration authored explicitly). No binary/vendor changes. This prose-only receipt is excluded by the contract counting rule. No pre-existing changes were present.
 
 Exact source candidate SHA-256 manifest (receipt excluded):
 

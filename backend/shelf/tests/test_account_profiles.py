@@ -258,7 +258,12 @@ class AccountProfileTests(FeedbackCase):
         profile.kind = Profile.Kind.PERSONAL
         profile.owner = actor
         profile.save()
-        request = SimpleNamespace(user=actor, method='POST')
+        from django.contrib.sessions.backends.db import SessionStore
+        session = SessionStore()
+        session['selected_profile_id'] = profile.pk
+        session.save()
+        request = SimpleNamespace(user=actor, method='POST',
+            session=SessionStore(session_key=session.session_key))
         try:
             with self.assertRaises(Blocked):
                 synthesis.snapshot(actor, profile.pk)

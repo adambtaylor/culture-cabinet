@@ -42,13 +42,8 @@ VENUE_EXPERIMENTS = {
 }
 
 
-def _owner(actor_id, profile_id):
-    # bool is an int in Python, but is never a profile or actor identity.
-    return type(actor_id) is int and actor_id == 1 and type(profile_id) is int and profile_id == 1
-
-
-def principle_quotes(*, actor_id, profile_id):
-    return PRINCIPLE_QUOTES if _owner(actor_id, profile_id) else ()
+def principle_quotes(*, authorized=False):
+    return PRINCIPLE_QUOTES if authorized is True else ()
 
 
 def _artists(card):
@@ -67,13 +62,13 @@ def discovery_mode(card):
     return 'unfamiliar'
 
 
-def reasons(card, *, actor_id, profile_id):
+def reasons(card, *, authorized=False):
     """Source-attributed artist names are distinct from brief-based hypotheses.
 
-    The caller supplies an authenticated owner actor and the owner profile.
+    The caller supplies the current legacy-household authorization result.
     Upstream authorization remains mandatory; this helper performs no lookup.
     """
-    if not _owner(actor_id, profile_id) or getattr(card, 'category', None) not in ('gallery', 'art_fair'):
+    if authorized is not True or getattr(card, 'category', None) not in ('gallery', 'art_fair'):
         return ()
     result = []
     for artist in _artists(card):
@@ -97,13 +92,13 @@ def reasons(card, *, actor_id, profile_id):
     return tuple(result)
 
 
-def select(cards, *, actor_id, profile_id, limit=6):
+def select(cards, *, authorized=False, limit=6):
     """Rotate affinity, bridge and unfamiliar leads without inventing relevance.
 
     Preserve order within each bucket. No implicit revisit history is generated.
     Cards are returned intact, keeping source observations separate from reasons.
     """
-    if not _owner(actor_id, profile_id) or type(limit) is not int or limit < 1:
+    if authorized is not True or type(limit) is not int or limit < 1:
         return ()
     buckets = {name: [] for name in ('affinity', 'bridge', 'unfamiliar')}
     seen = set()
@@ -121,11 +116,11 @@ def select(cards, *, actor_id, profile_id, limit=6):
     return tuple(result)
 
 
-def offer_reasons(offer, *, actor_id, profile_id):
+def offer_reasons(offer, *, authorized=False):
     """An editorial offer projection is not an event or an ownership record."""
     if not isinstance(offer, dict):
         return ()
     view = SimpleNamespace(category='art_fair',
         source_url=offer.get('source_url') or offer.get('offer_url'),
         gallery_data={'artists': (offer.get('artist'),)})
-    return reasons(view, actor_id=actor_id, profile_id=profile_id)
+    return reasons(view, authorized=authorized)

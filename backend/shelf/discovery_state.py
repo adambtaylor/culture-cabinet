@@ -158,6 +158,9 @@ def reserve_public(request, profile_id, data):
     """Consume a nonce before I/O, without adding a human choice/history event."""
     if data['mode'] != 'household' or data['operation'] not in ('event_source', 'radio', 'events', 'venue303', 'forum', 'rrr', 'rrr_detail', 'beat', 'beat_detail', 'pbs', 'tribe', 'soundsystems', 'gallery'):
         raise ValueError('Invalid public operation.')
+    from shelf.legacy_authority import legacy_owner_granted
+    if not legacy_owner_granted(request.user.pk, profile_id):
+        raise Http404
     if data['operation'] == 'event_source':
         from shelf.event_source_registry import get_source
         get_source(data.get('source_id'))

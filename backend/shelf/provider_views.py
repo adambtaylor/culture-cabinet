@@ -245,6 +245,7 @@ def _state(request, profile):
 
 def _page_context(request, profile, state, **kwargs):
     context = _context(profile, state, **kwargs)
+    context['acquisition_authorized'] = _legacy_acquisition(request.user, profile.pk)
     from shelf import pick_enhancement
     from shelf.acquisition_contract import Blocked
     from shelf.discovery_state import Conflict

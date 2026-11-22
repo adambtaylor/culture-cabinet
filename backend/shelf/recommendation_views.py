@@ -78,6 +78,7 @@ def _catalogue(request, profile_id, now, tables):
 
 
 def _discovery(request, profile_id, now, tables):
+    household_authorized = discovery_views._household_authorized(request, profile_id)
     stored = (DiscoveryState.objects.filter(actor=request.user, profile_id=profile_id,
               mode='household').first() if DiscoveryState._meta.db_table in tables else None)
     history = stored.history if stored else []
@@ -101,7 +102,7 @@ def _discovery(request, profile_id, now, tables):
     from shelf import gallery_curation
     selected_keys = {item['card'].key for item in ranked['selection']}
     for card in gallery_curation.select((c for c in eligible if not state['choices'].get(c.key)),
-            actor_id=request.user.pk, profile_id=profile_id, limit=2):
+            authorized=household_authorized, limit=2):
         if card.key not in selected_keys:
             ranked['selection'].append({'card': card, 'why': ()})
             selected_keys.add(card.key)
@@ -112,7 +113,7 @@ def _discovery(request, profile_id, now, tables):
             'medium': 'music' if card.kind in ('artist', 'recording') else 'event',
             'url': card.url, 'source': card.source, 'provenance': card.provenance,
             'retrieved_at': card.retrieved_at, 'freshness': card.freshness(now),
-            'why': tuple(item['why']) + gallery_curation.reasons(card, actor_id=request.user.pk, profile_id=profile_id),
+            'why': tuple(item['why']) + gallery_curation.reasons(card, authorized=household_authorized),
             'date_status': card.date_status(now) if card.kind == 'event' else '',
             'starts_at': card.starts_at, 'venue': card.venue,
             'rrr_event': card if getattr(card, 'source_id', '') == 'rrr' else None,
