@@ -60,11 +60,23 @@ class NonfictionViewTests(TestCase):
         session[SELECTION_KEY] = personal.pk
         session.save()
         url = f'/profiles/{personal.pk}/nonfiction/'
-        page = client.get(url)
+        with patch.object(views, 'discovery_catalog', side_effect=AssertionError('personal catalog loaded')) as load:
+            page = client.get(url)
+            sample_page = client.get(url, {'mode': 'sample'})
+            load.assert_not_called()
         self.assertEqual(page.status_code, 200)
         self.assertEqual(page.context['seeds'], [])
         self.assertEqual(page.context['clusters'], [])
         self.assertNotContains(page, 'AI, history &amp; geopolitics')
+        self.assertNotContains(page, 'five-topic request packet')
+        self.assertEqual(sample_page.status_code, 200)
+        self.assertEqual(sample_page.context['clusters'], [])
+        self.assertNotContains(sample_page, 'AI, history &amp; geopolitics')
+        self.assertNotContains(sample_page, storage.DEFAULT_AUTHORIZATION)
+        for name in ('Deep dives: AI, history and geopolitics', 'Macro financial systems',
+                     'Sleep and health optimisation', 'Urban orchards, soil microbes', 'Espionage and unusual history'):
+            self.assertNotContains(page, name)
+            self.assertNotContains(sample_page, name)
         payload = dict(mode='household', action='seed_authorized_defaults', revision=0,
             nonce=storage.initial_nonce(other.pk, personal.pk, 'household'),
             authorization=storage.DEFAULT_AUTHORIZATION)
@@ -74,7 +86,27 @@ class NonfictionViewTests(TestCase):
         from types import SimpleNamespace
         with self.assertRaises(Conflict):
             storage.apply(SimpleNamespace(user=other), personal.pk, payload)
+        with patch('shelf.podcast_sources.search_cluster') as search:
+            for mode in ('household', 'sample'):
+                for action, extra in (
+                        ('seed_authorized_defaults', {'authorization': storage.DEFAULT_AUTHORIZATION}),
+                        ('refresh', {'identity': 'living_soil'}),
+                        ('shortlist_add', {'identity': 'apple:podcast_episode:1000623089443'})):
+                    denied = dict(mode=mode, action=action, revision=0,
+                        nonce=storage.initial_nonce(other.pk, personal.pk, mode), **extra)
+                    with self.assertRaises(Conflict):
+                        storage.apply(SimpleNamespace(user=other), personal.pk, denied,
+                                      catalog={row['key']: row for cluster in views.catalog() for row in cluster['episodes']})
+                    response = client.post(url + 'action/', denied)
+                    self.assertEqual(response.status_code, 400 if mode == 'sample' and action == 'refresh' else 404)
+            search.assert_not_called()
         self.assertEqual(AuthoredDiscoveryState.objects.filter(actor=other, profile=personal).count(), 0)
+        authored = dict(mode='household', action='seed_add', revision=0,
+            nonce=storage.initial_nonce(other.pk, personal.pk, 'household'), topic='My topic',
+            terms='soil', source_text='Explore soil fungi.')
+        self.assertEqual(client.post(url + 'action/', authored).status_code, 302)
+        state = AuthoredDiscoveryState.objects.get(actor=other, profile=personal, mode='household')
+        self.assertEqual(state.data['seeds'][0]['topic'], 'My topic')
 
     def test_shortlist_survives_cache_expiry_and_export_is_inert(self):
         episode = views.catalog()[0]['episodes'][0]

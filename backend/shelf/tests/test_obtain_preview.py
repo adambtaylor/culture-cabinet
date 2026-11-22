@@ -14,7 +14,7 @@ from django.utils import timezone
 
 from shelf import obtain_parser as parser, obtain_preview as preview, saved
 from shelf.acquisition_backend import PrivateSearch
-from shelf.acquisition_contract import ContractError
+from shelf.acquisition_contract import Blocked, ContractError
 from shelf.models import AcquisitionJob, FeedbackEvent, FeedbackProjection, Grant, ObtainPreview, ObtainResult, ObtainSelection
 from shelf.tests.test_saved import SavedFixture
 
@@ -237,6 +237,27 @@ class PreviewTests(SavedFixture, TestCase):
         self.backend.search.assert_called_once_with(self.backend.caps.return_value,
             self.saved.title,'film',actor_id=1,profile_id=1)
         self.backend.enqueue.assert_not_called()
+
+    def test_personal_exact_id_collision_is_denied_on_post_before_receipt_or_credentials(self):
+        self.saved = self.item()
+        self.profile.kind = 'personal'
+        self.profile.owner = self.owner
+        self.profile.save()
+        url = f'/profiles/1/saved/{self.saved.pk}/preview/search/'
+        with patch('shelf.credential_store.open_store') as opener:
+            response = self.client.post(url, {})
+        self.assertEqual(response.status_code, 404)
+        self.assertEqual(ObtainPreview.objects.count(), 0)
+        opener.assert_not_called()
+
+    def test_read_search_recipient_rejects_personal_exact_id_collision_before_store(self):
+        self.profile.kind = 'personal'
+        self.profile.owner = self.owner
+        self.profile.save()
+        with patch('shelf.credential_store.open_store') as opener:
+            with self.assertRaises(Blocked):
+                preview.read_search_recipient(actor=self.owner, profile_id=1)
+        opener.assert_not_called()
 
     def test_multiple_episode_results_have_no_review_or_confirmation_path(self):
         self.saved = self.item('tv')

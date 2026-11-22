@@ -110,13 +110,17 @@ class ProviderViewsTests(ProviderFixture, TestCase):
         session[intake.SESSION_KEY] = state
         session.save()
         before = (run.revision, run.nonce, dict(run.receipts))
-        with patch('shelf.provider_views.durable.hydrate', side_effect=AssertionError('hydration must not run')), \
-                patch('shelf.provider_views.durable.upgrade', side_effect=AssertionError('reservation must not run')), \
-                patch.object(catalogue, 'initial_deck', side_effect=AssertionError('external acquisition must not run')) as external:
-            response = self.client.post(f'/profiles/{personal.pk}/catalogue/action/', {
-                'action': 'refresh', 'revision': run.revision, 'nonce': run.nonce})
-        self.assertEqual(response.status_code, 404)
-        external.assert_not_called()
+        for malformed in (False, True):
+            data = {'action': 'refresh', 'revision': run.revision, 'nonce': run.nonce}
+            if malformed:
+                data['revision'] = 'not-an-integer'
+            with patch('shelf.provider_views._state', side_effect=AssertionError('state must not be loaded')), \
+                    patch('shelf.provider_views.durable.hydrate', side_effect=AssertionError('hydration must not run')), \
+                    patch('shelf.provider_views.durable.upgrade', side_effect=AssertionError('reservation must not run')), \
+                    patch.object(catalogue, 'initial_deck', side_effect=AssertionError('external acquisition must not run')) as external:
+                response = self.client.post(f'/profiles/{personal.pk}/catalogue/action/', data)
+            self.assertEqual(response.status_code, 404)
+            external.assert_not_called()
         run.refresh_from_db()
         self.assertEqual((run.revision, run.nonce, run.receipts), before)
 

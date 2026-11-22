@@ -381,6 +381,11 @@ def action(request, profile_id):
         raise intake.IntakeError()
     if any(len(request.POST.getlist(k)) != 1 for k in request.POST):
         raise intake.IntakeError()
+    raw_actions = request.POST.getlist('action')
+    if (len(raw_actions) == 1 and raw_actions[0] in
+            ('start', 'search', 'browse', 'neighbors', 'refresh')
+            and not _legacy_acquisition(request.user, profile.pk)):
+        raise Http404
     form = ActionForm(request.POST)
     if not form.is_valid():
         state = _state(request, profile)

@@ -97,7 +97,7 @@ def _record_recipient(record, actor, profile_id):
 
 def read_search_recipient(*, actor, profile_id):
     """Read the real credential-record generation without exporting its secret."""
-    saved.authority(actor, profile_id)
+    _search_authority(actor, profile_id)
     handle = record = None
     try:
         handle = store.open_store(provider='hydra')

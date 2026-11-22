@@ -56,7 +56,7 @@ class PublicDiscoveryUITests(TestCase):
             self.assertEqual(send.call_count, 2)
 
     def test_personal_profile_has_no_household_music_seeds_or_venue_report(self):
-        owner_page = self.client.get(self.url, {'mode': 'household'})
+        owner_page = self.client.get(self.url)
         self.assertEqual(owner_page.status_code, 200)
         self.assertIn('Forum Melbourne', [row['label'] for row in owner_page.context['registry']['sources']])
         self.assertContains(owner_page, 'official website verified by parent research')
@@ -75,6 +75,12 @@ class PublicDiscoveryUITests(TestCase):
         self.assertEqual(page.context['registry'], {})
         self.assertNotContains(page, 'Forum Melbourne')
         self.assertNotContains(page, 'official website verified by parent research')
+        for query in ({}, {'mode': 'sample'}):
+            with self.subTest(query=query):
+                personal_page = self.client.get(f'/profiles/{personal.pk}/discovery/', query)
+                self.assertEqual(personal_page.status_code, 200)
+                self.assertEqual(personal_page.context['registry'], {})
+                self.assertNotContains(personal_page, 'Forum Melbourne')
         data = dict(mode='household', revision=page.context['revision'], nonce=page.context['nonce'],
             operation='radio', key=s.household_candidates()[0].key, radio_mode='medium', choice='')
         with patch.object(s, 'fetch_public') as fetch, patch.object(v.storage, 'reserve_public') as reserve:

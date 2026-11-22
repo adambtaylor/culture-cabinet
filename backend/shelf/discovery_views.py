@@ -342,6 +342,7 @@ def _context(request, profile, mode, queue, category, stored, cards):
             except (Blocked, storage.Conflict):
                 enhancement = {'enhancement': {'state': 'blocked', 'label': 'Enhancement needs current taste evidence',
                     'explanation': 'Record a household response before requesting supervised enhancement.'}}
+    household_authorized = _household_authorized(request, profile.pk)
     return {
         **gallery_context(request, profile.pk, now, mode=mode), **enhancement,
         'selected_profile': profile, 'mode': mode, 'category': category, 'queue': queue,
@@ -353,8 +354,9 @@ def _context(request, profile, mode, queue, category, stored, cards):
         'events': [row for row in selected if row['card'].kind in ('venue', 'event')],
         'more_source_events': more, 'responses': responses,
         'lanes': ranked['lanes'], 'sources': sources.source_statuses(),
-        'registry': (sources.registry() if mode != 'household' or _household_authorized(request, profile.pk) else {}),
-        'event_sources': source_controls(),
+        'registry': sources.registry() if household_authorized else {},
+        'event_sources': source_controls() if household_authorized else [],
+        'household_authorized': household_authorized,
         'choices': CHOICE_LABELS, 'choice_options': CHOICE_LABELS, 'reaction_options': REACTION_LABELS,
         'can_undo': state['can_undo'], 'available': available, 'revision': revision,
         'feedback_enabled': available and mode == 'household',
