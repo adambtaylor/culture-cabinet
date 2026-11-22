@@ -109,6 +109,13 @@ def _discovery(request, profile_id, now, tables):
     rows = []
     for item in ranked['selection']:
         card = item['card']
+        artwork_label = ''
+        if card.kind == 'event' and card.artwork_price is not None:
+            artwork_label = card.artwork_label()
+            if not household_authorized and card.artwork_price is not None and card.artwork_currency:
+                unit = f' per {card.price_per}' if card.price_per else ' (unit unspecified)'
+                artwork_label = (f'Listed price {card.artwork_currency} {card.artwork_price}{unit} — '
+                    'source-listed; extras and availability unknown')
         rows.append({'key': card.key, 'title': card.title,
             'medium': 'music' if card.kind in ('artist', 'recording') else 'event',
             'url': card.url, 'source': card.source, 'provenance': card.provenance,
@@ -118,6 +125,7 @@ def _discovery(request, profile_id, now, tables):
             'starts_at': card.starts_at, 'venue': card.venue,
             'rrr_event': card if getattr(card, 'source_id', '') == 'rrr' else None,
             'gallery_event': card if hasattr(card, 'opening_date') else None,
+            'artwork_label': artwork_label,
             'availability': 'Ticket availability, price and cancellation status unverified.' if card.kind == 'event' else '',
             'classification': 'Place to explore' if card.kind == 'venue' else ''})
     by_key = {c.key: c for c in eligible}
@@ -156,10 +164,16 @@ def index(request, profile_id):
                  'detail': 'Open the catalogue to request current results. A retrieval time is not the source update time.'}
                 for provider, name in (('tmdb', 'TMDB film & series'), ('hardcover', 'Hardcover books & graphic novels'))]
     public_results = list(discovery_views.public_entries(request, profile_id).values())
+    household_authorized = discovery_views._household_authorized(request, profile_id)
+    if not household_authorized:
+        for section in sections:
+            section['empty'] = 'Cached observations are read-only for this profile; source retrieval is unavailable here.'
+        for source in coverage:
+            source['detail'] = 'Only cached metadata is shown for this profile; source retrieval is unavailable here.'
     _profile(request, profile_id, 'select')
     return render(request, 'cabinet/recommendations.html', {
         **discovery_views.gallery_context(request, profile_id, now),
-        'selected_profile': profile, 'sections': sections,
+        'selected_profile': profile, 'sections': sections, 'household_authorized': household_authorized,
         'lanes': catalogue_lanes + discovery_lanes, 'coverage': coverage,
         'public_results': public_results, 'sources': discovery_sources.source_statuses(),
         'intake_revision': run.revision if run else None,

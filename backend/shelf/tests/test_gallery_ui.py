@@ -171,6 +171,28 @@ class GalleryUITests(TestCase):
                     self.assertNotContains(response, text)
         self.fetch.assert_not_called()
 
+    def test_event_price_budget_and_source_units_follow_profile_authority(self):
+        def priced(key, title, category, price, unit=None, gallery=False):
+            fields = dict(url=f'https://source.example/{key.rsplit(":", 1)[-1]}', category=category,
+                artwork_price=price, artwork_currency='AUD', price_per=unit, **({'source_url': f'https://source.example/{key.rsplit(":", 1)[-1]}'} if gallery else {}))
+            cls = GalleryEvent if gallery else sources.Candidate
+            return cls(key, title, 'event', 'Synthetic priced source', 'live-automated', 1, self.now.isoformat(), **fields)
+        cards = (priced('synthetic:event:community-below', 'Synthetic community below budget', 'community', '2499.99', 'individual artwork'),
+            priced('synthetic:event:community-ceiling', 'Synthetic community at ceiling', 'community', '2500', 'individual artwork'),
+            priced('synthetic:event:community-unspecified', 'Synthetic community unspecified unit', 'community', '2499.99'))
+        self.fetch.return_value = GalleryOutcome('ready', cards, 'Synthetic priced event read')
+        self.assertEqual(self.client.post(self.action, self.fields()).status_code, 302)
+        owner_pages = (self.client.get(self.url), self.client.get('/profiles/1/recommendations/'))
+        for page in owner_pages:
+            for text in ('AUD 2499.99 per individual artwork — within budget', 'AUD 2500 per individual artwork — outside budget'): self.assertContains(page, text)
+        self.profile.kind, self.profile.owner = Profile.Kind.PERSONAL, self.actor
+        self.profile.save(update_fields=['kind', 'owner'])
+        personal_pages = (self.client.get(self.url), self.client.get('/profiles/1/recommendations/'))
+        for page in personal_pages:
+            for text in ('https://source.example/community-below', 'https://source.example/community-ceiling', 'https://source.example/community-unspecified', 'AUD 2499.99', 'AUD 2500', 'per individual artwork', 'unit unspecified'): self.assertContains(page, text)
+            for text in ('within budget', 'outside budget', 'per item'): self.assertNotContains(page, text)
+        self.fetch.assert_called_once()
+
     def test_other_profile_cannot_see_owner_cache_or_personal_brief(self):
         self.read()
         partner = Profile.objects.get(pk=2)

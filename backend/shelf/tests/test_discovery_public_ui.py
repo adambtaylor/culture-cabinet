@@ -114,6 +114,11 @@ class PublicDiscoveryUITests(TestCase):
         self.assertNotContains(page, 'Read Beat')
         self.assertNotContains(page, 'Read selected event source')
         self.assertNotContains(page, 'Read gallery openings')
+        self.assertNotContains(page, 'For a real-source evening proposal')
+        recommendations = self.client.get(f'/profiles/{personal.pk}/recommendations/')
+        self.assertEqual(recommendations.status_code, 200)
+        for unavailable_action in ('Fetch a catalogue round', 'Search books', 'Explore and respond in'):
+            self.assertNotContains(recommendations, unavailable_action)
         key = f'{self.actor.pk}:{personal.pk}:{self.client.session.session_key}'
         cached = {'synthetic': {'source': 'synthetic retained result', 'at': NOW,
             'outcome': s.Outcome('ready', (), 'Synthetic retained result')}}

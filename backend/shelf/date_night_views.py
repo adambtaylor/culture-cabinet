@@ -58,6 +58,8 @@ class JourneyForm(forms.Form):
 @never_cache
 @require_http_methods(['GET', 'POST'])
 def detail(request, profile_id):
+    if not discovery_views._household_authorized(request, profile_id):
+        raise Http404
     public_authorized(request, profile_id)
     if set(request.GET) != {'event'} or len(request.GET.getlist('event')) != 1:
         raise Http404

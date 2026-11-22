@@ -21,7 +21,7 @@
 </div>
 {% if queue != 'artist' %}
 <h2>Events &amp; places</h2>
-<p>For a real-source evening proposal, read Beat below, open a listing’s details, then choose <strong>Date night · explore</strong> or the evening/transport link. Optional cycle origins stay local until you open a clearly labelled Google Maps link.</p>
+{% if household_authorized %}<p>For a real-source evening proposal, read Beat below, open a listing’s details, then choose <strong>Date night · explore</strong> or the evening/transport link. Optional cycle origins stay local until you open a clearly labelled Google Maps link.</p>{% endif %}
 <p><a href="{% url 'event_plans' selected_profile.pk %}">Try event planning, calendar and invitations</a> · fictional rehearsal. Live event booking awaits verified sessions and seller quotes.</p>
 {% if available and mode == 'household' and household_authorized %}
 {% if event_sources %}

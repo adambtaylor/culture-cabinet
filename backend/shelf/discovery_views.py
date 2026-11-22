@@ -271,12 +271,13 @@ def _replace_key(deck, cards, state, submitted):
 def _display(request, profile_id, card, state, now, why=()):
     from shelf.event_saved_references import ReferenceCandidate
     from shelf.gallery_curation import reasons
-    owner_authorized = (card.category in ('gallery', 'art_fair') and _household_authorized(request, profile_id))
+    owner_authorized = _household_authorized(request, profile_id)
     authorized = owner_authorized and card.provenance != 'fixture'
     artwork_label = card.artwork_label()
     if not owner_authorized and card.artwork_price is not None and card.artwork_currency:
-        artwork_label = (f'Artwork item price {card.artwork_currency} {card.artwork_price} per '
-                         f'{card.price_per or "item"} — seller-listed price; extras and availability unknown')
+        unit = f' per {card.price_per}' if card.price_per else ' (unit unspecified)'
+        artwork_label = (f'Listed price {card.artwork_currency} {card.artwork_price}{unit} — '
+                         'source-listed; extras and availability unknown')
     why = tuple(why) + (reasons(card, authorized=authorized)
                         if card.provenance != 'fixture' else ())
     date_status = card.date_status(now)
@@ -285,6 +286,7 @@ def _display(request, profile_id, card, state, now, why=()):
         date_status += f' Source notice: {notice} (not a current seller check).'
     reference_only = isinstance(card, ReferenceCandidate)
     return {'card': card, 'why': why, 'artwork_label': artwork_label, 'freshness': card.freshness(now),
+            'household_authorized': owner_authorized,
             'reference_only': reference_only,
             'saved_reference': card.saved_reference if reference_only else None,
             'date_status': date_status, 'choice': state['choices'].get(card.key, ''),
