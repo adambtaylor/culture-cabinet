@@ -53,7 +53,7 @@
   {% if row.card.source_id == 'beat' %}{% include 'cabinet/beat_detail.html' with event=row.card household_authorized=row.household_authorized %}{% endif %}
   {% if row.card.source_id == 'rrr' %}
   {% include 'cabinet/rrr_detail.html' with event=row.card %}
-  {% if available and mode == 'household' %}
+  {% if available and mode == 'household' and row.household_authorized %}
   <form method="post" action="{{ action_url }}">{% include 'cabinet/discovery_fields.html' %}
     <input type="hidden" name="key" value="{{ row.card.key }}">
     <button name="operation" value="rrr_detail">Read this event’s Triple R details</button>

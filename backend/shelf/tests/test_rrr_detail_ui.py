@@ -6,7 +6,7 @@ from unittest.mock import patch
 from django.test import Client, TestCase, override_settings
 
 from shelf import discovery_transport as transport, discovery_views as views
-from shelf.models import DiscoveryState
+from shelf.models import DiscoveryState, Grant, Profile
 from shelf.tests import test_discovery_public_ui as existing
 from shelf.tests.test_discovery_transport import NOW
 from shelf.tests.test_rrr_details import detail, event, RANGE
@@ -24,6 +24,31 @@ class DetailUITests(TestCase):
 
     def detail_form(self, **extra):
         return self.form('rrr_detail', key=event().key, **extra)
+
+    def test_personal_profile_keeps_cached_rrr_facts_but_hides_detail_read_action(self):
+        owner_page = self.client.get(self.url)
+        self.assertContains(owner_page, 'SYNTHETIC event')
+        self.assertContains(owner_page, 'Read this event’s Triple R details')
+
+        personal = Profile.objects.create(pk=4, kind=Profile.Kind.PERSONAL,
+            owner=self.actor, active=True, label='Private')
+        Grant.objects.create(user=self.actor, profile=personal,
+            can_view=True, can_select=True, can_mutate=True)
+        session = self.client.session
+        session['selected_profile_id'] = personal.pk
+        session.save()
+
+        owner_cache_key = f'{self.actor.pk}:1:{session.session_key}'
+        personal_cache_key = f'{self.actor.pk}:{personal.pk}:{session.session_key}'
+        views.PUBLIC_CACHE.set(personal_cache_key,
+            views.PUBLIC_CACHE.get(owner_cache_key), timeout=900)
+
+        page = self.client.get(f'/profiles/{personal.pk}/discovery/')
+        self.assertEqual(page.status_code, 200)
+        self.assertContains(page, 'SYNTHETIC event')
+        self.assertContains(page, 'Friday, 30 October')
+        self.assertContains(page, 'https://www.rrr.org.au/events/synthetic-1')
+        self.assertNotContains(page, 'Read this event’s Triple R details')
 
     def test_read_and_replay_are_one_request_and_no_human_preference(self):
         with patch.object(transport, 'rrr_detail', return_value=(200, detail(when=RANGE))) as send:
