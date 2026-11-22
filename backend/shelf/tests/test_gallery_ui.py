@@ -37,8 +37,9 @@ class GalleryUITests(TestCase):
                            for name in ('artwork', 'shipping', 'framing', 'fees', 'tax', 'installation', 'fx')}}
         self.offer['components']['artwork'] = {
             'status': 'known', 'amount': '1100.00', 'source_basis': 'Listed item <script>CANARY</script>'}
-        self.fetch = self.enterContext(patch.object(sources, 'fetch_public', return_value=GalleryOutcome(
-            'ready', (self.event,), 'Synthetic bounded public read', offers=(self.offer,))))
+        self.fetch = self.enterContext(patch.object(sources, 'fetch_public', return_value=GalleryOutcome('ready',
+            (self.event,), 'Synthetic bounded public read', offers=(self.offer,), source_checks=({'source': 'Synthetic check',
+            'status': 'checked', 'source_url': 'https://source.example/check'},))))
         self.enterContext(patch('socket.create_connection', side_effect=AssertionError('Network forbidden')))
 
     def page(self):
@@ -54,6 +55,12 @@ class GalleryUITests(TestCase):
     def read(self):
         self.assertEqual(self.client.post(self.action, self.fields()).status_code, 302)
         return self.page()
+
+    def budget_event(self, price):
+        return sources.Candidate('synthetic:event:' + price, 'Synthetic priced event ' + price,
+            'event', 'Synthetic gallery', 'live-automated', 1, self.now.isoformat(),
+            url='https://source.example/event', category='gallery', artwork_price=price,
+            artwork_currency='AUD', price_per='individual artwork')
 
     def test_get_is_local_and_explicit_read_replays_without_new_io(self):
         fields = self.fields()
@@ -97,6 +104,10 @@ class GalleryUITests(TestCase):
         self.assertNotContains(response, '<script>CANARY</script>')
 
     def test_exact_ceiling_is_unqualified_even_with_confirmed_stock_and_costs(self):
+        self.fetch.return_value = GalleryOutcome('ready', tuple(self.budget_event(price)
+            for price in ('2499.99', '2500')), 'Synthetic budget read', offers=(self.offer,),
+            source_checks=({'source': 'Synthetic check', 'status': 'checked',
+                            'source_url': 'https://source.example/check'},))
         self.offer['availability'] = 'available'
         self.offer['components'] = {name: {'status': 'included', 'source_basis': 'Explicitly included'}
                                     for name in self.offer['components']}
@@ -105,7 +116,18 @@ class GalleryUITests(TestCase):
         response = self.read()
         self.assertContains(response, 'Unqualified purchase lead')
         self.assertContains(response, 'Observed complete total: AUD 2500.00')
+        self.assertContains(response, 'exactly AUD 2500 fails')
         self.assertNotContains(response, 'Current cost and stock screening: strictly below')
+        self.offer['components']['artwork'].update(status='known', amount='2499.99', source_basis='Listed item price')
+        discovery = self.read()
+        recommendations = self.client.get('/profiles/1/recommendations/')
+        for response in (discovery, recommendations):
+            self.assertContains(response, 'Current stated all-in costs are below AUD 2500')
+        self.assertContains(response, 'href="https://source.example/check"')
+        self.assertContains(response, f'href="{self.offer["offer_url"]}"')
+        for text in ('AUD 2499.99 per individual artwork — within budget',
+                     'AUD 2500 per individual artwork — outside budget'):
+            self.assertContains(discovery, text)
 
     def test_recommendations_reuse_gallery_detail_and_offer_labels_without_fetch(self):
         self.read()
@@ -115,6 +137,10 @@ class GalleryUITests(TestCase):
         self.assertContains(response, 'Gallery opening:')
         self.assertContains(response, 'Artwork sale leads')
         self.assertContains(response, 'Unqualified purchase lead')
+        discovery_views.PUBLIC_CACHE.set(f'1:1:{self.client.session.session_key}', {'check': {'at': self.now,
+            'outcome': GalleryOutcome('ready', (), 'Check only', source_checks=({'source': 'Check', 'status': 'checked',
+            'source_url': 'https://source.example/check'},))}})
+        self.assertContains(self.client.get('/profiles/1/recommendations/'), 'href="https://source.example/check"')
         self.fetch.assert_not_called()
 
     def test_personal_profile_shows_only_its_session_gallery_observations(self):
@@ -122,19 +148,26 @@ class GalleryUITests(TestCase):
         self.profile.save()
         self.offer.update(title='Synthetic personal offer', medium='Print')
         check = {'source': 'Synthetic seller source', 'status': 'checked', 'stage': 'offer',
-                 'checked_at': self.now.isoformat(), 'source_url': self.offer['offer_url']}
+                 'checked_at': self.now.isoformat(), 'source_url': 'https://source.example/check'}
         discovery_views.PUBLIC_CACHE.set(f'1:1:{self.client.session.session_key}', {
             'synthetic': {'at': self.now, 'outcome': GalleryOutcome(
-                'ready', (), 'Synthetic observation', offers=(self.offer,), source_checks=(check,))}})
+                'ready', (self.event, self.budget_event('2499.99'), self.budget_event('2500')),
+                'Synthetic observation', offers=(self.offer,), source_checks=(check,))}})
         for url in (self.url, '/profiles/1/recommendations/'):
             with self.subTest(url=url):
                 response = self.client.get(url)
                 self.assertEqual(response.status_code, 200)
                 for text in ('Synthetic personal offer', 'Synthetic artist', 'Synthetic seller',
                              'unconfirmed', '2026-10-31T03:00:00+00:00', 'Listed item price',
-                             'Synthetic seller source', self.offer['offer_url']):
+                             'Synthetic seller source', self.offer['offer_url'],
+                             'href="https://source.example/check"'):
                     self.assertContains(response, text)
-                for text in ('Your authorized art brief', 'AUD 2,500', 'Unqualified purchase lead'):
+                if url == self.url:
+                    for text in ('AUD 2499.99', 'AUD 2500', 'per individual artwork',
+                                 'https://source.example/event', self.event.source_url):
+                        self.assertContains(response, text)
+                for text in ('Your authorized art brief', 'Looking question:', 'AUD 2,500', 'Unqualified purchase lead',
+                             'within budget', 'outside budget'):
                     self.assertNotContains(response, text)
         self.fetch.assert_not_called()
 

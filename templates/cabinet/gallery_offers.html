@@ -20,8 +20,8 @@
     {% else %}
     <p><strong>Unqualified purchase lead.</strong> A complete, current all-in total strictly below AUD 2,500 and confirmed stock are required. Unknown required extras remain unknown.</p>
     {% if row.cost_gate.total_aud %}<p>Observed complete total: AUD {{ row.cost_gate.total_aud }}.</p>{% else %}<p>Complete all-in total: unknown.</p>{% endif %}
-    {% for reason in row.cost_gate.reasons %}<p>{{ reason }}</p>{% endfor %}
-    {% endif %}{% else %}<p>Seller observation only; household cost screening is unavailable for this profile.</p>{% endif %}
+    {% endif %}{% for reason in row.cost_gate.reasons %}<p>{{ reason }}</p>{% endfor %}
+    {% else %}<p>Seller observation only; household cost screening is unavailable for this profile.</p>{% endif %}
     {% if row.offer.offer_url %}<p><a href="{{ row.offer.offer_url }}" target="_blank" rel="noopener noreferrer" referrerpolicy="no-referrer">Inspect the seller’s source listing</a></p>{% endif %}
   </article>
   {% endfor %}

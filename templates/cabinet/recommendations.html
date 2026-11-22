@@ -37,7 +37,7 @@
 </section>
 {% endfor %}
 {% if gallery_brief_note %}<p>{{ gallery_brief_note }}</p>{% endif %}
-{% for check in gallery_source_checks %}<p class="source-meta">{{ check.source }} · {{ check.status }}{% if check.stage %} · {{ check.stage }}{% endif %} · Checked {{ check.checked_at|default:'unknown' }}</p>{% endfor %}
+{% for check in gallery_source_checks %}<p class="source-meta">{{ check.source }} · {{ check.status }}{% if check.stage %} · {{ check.stage }}{% endif %} · Checked {{ check.checked_at|default:'unknown' }}{% if check.source_url %} · <a href="{{ check.source_url }}" target="_blank" rel="noopener noreferrer">Source</a>{% endif %}</p>{% endfor %}
 {% include 'cabinet/gallery_offers.html' %}
 <section aria-labelledby="coverage-heading">
   <h2 id="coverage-heading">What is available now</h2>
