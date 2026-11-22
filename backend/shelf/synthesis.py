@@ -115,6 +115,9 @@ def request(request, profile_id, expected_digest, *, purpose='manual'):
         raise Blocked('Supported explicit synthesis intent required.')
     if request.method != 'POST':
         raise Blocked('Explicit Synergize action required.')
+    if (request.user.pk, profile_id) != (1, 1):
+        from django.http import Http404
+        raise Http404
     with transaction.atomic():
         public_authorized(request, profile_id)
         from shelf.legacy_authority import legacy_owner_granted

@@ -146,7 +146,8 @@ def detail(request, profile_id, plan_id):
     if plan.mode != 'sample':
         raise Http404
     response = render(request, 'cabinet/event_plan.html', {
-        **event_plans.context(plan), 'selected_profile': plan.profile, 'outing_form': OutingForm(plan=plan)})
+        **event_plans.context(plan), 'selected_profile': _profile(request, profile_id, 'select'),
+        'outing_form': OutingForm(plan=plan)})
     response['Cache-Control'] = 'private, no-store'
     response['Referrer-Policy'] = 'no-referrer'
     return response

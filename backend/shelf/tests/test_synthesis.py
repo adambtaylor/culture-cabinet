@@ -132,6 +132,22 @@ class SynthesisTests(TestCase):
         self.assertEqual(self.client.get('/profiles/1/synergize/').status_code, 405)
         self.assertEqual(self.client.post('/profiles/1/synergize/', {'digest': self.current()['input_digest']}).status_code, 403)
         self.assertEqual(self.post(profile=2).status_code, 404)
+        other = get_user_model().objects.create_user(pk=2, username='second-personal-account')
+        personal = Profile.objects.get(pk=2)
+        personal.kind, personal.owner, personal.active = 'personal', other, True
+        personal.save()
+        Grant.objects.create(user=other, profile=personal, can_view=True, can_select=True)
+        Grant.objects.create(user=self.actor, profile=personal, can_view=True, can_select=True)
+        self.assertEqual(self.post(profile=2).status_code, 404)  # Foreign grant cannot defeat ownership/session scope.
+        self.assertFalse(SynthesisRun.objects.exists())
+        session = self.client.session
+        session['selected_profile_id'] = 2
+        session.save()
+        self.assertEqual(self.post(profile=2).status_code, 404)
+        self.assertFalse(SynthesisRun.objects.exists())
+        session = self.client.session
+        session['selected_profile_id'] = 1
+        session.save()
         self.grant.can_select = False
         self.grant.save()
         self.assertEqual(self.post().status_code, 404)
@@ -141,6 +157,11 @@ class SynthesisTests(TestCase):
         session['selected_profile_id'] = 2
         session.save()
         self.assertEqual(self.post().status_code, 404)
+        session['selected_profile_id'] = 1
+        session.save()
+        self.profile.kind, self.profile.owner = 'personal', self.actor
+        self.profile.save()
+        self.assertEqual(self.post().status_code, 409)
         self.assertFalse(SynthesisRun.objects.exists())
 
     def test_stale_post_reservation_and_completed_status_follow_full_revision_map(self):

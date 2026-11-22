@@ -105,7 +105,7 @@ def detail(request, profile_id, draft_id):
         raise Http404
     draft = messages.owned(request, profile_id, draft_id)
     messages.validate(draft)
-    return render(request, 'cabinet/message_draft.html', {'selected_profile': draft.profile,
+    return render(request, 'cabinet/message_draft.html', {'selected_profile': _profile(request, profile_id, 'select'),
         'draft': draft, 'preview_digest': messages.preview_digest(draft),
         'can_edit': draft.state in ('draft', 'queued'),
         'uncertain': draft.state in ('sending', 'unknown')})

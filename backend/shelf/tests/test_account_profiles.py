@@ -398,5 +398,23 @@ class AccountProfileMigrationTests(TransactionTestCase):
             self.assertEqual(response.status_code, 503)
             self.assertEqual(LegacyProfile.objects.count(), before)
             self.assertEqual(LegacyGrant.objects.count(), 1)
+            session = client.session
+            session['selected_profile_id'] = profile.pk
+            session.save()
+            with override_settings(ROOT_URLCONF='cabinet.provider_urls'):
+                event = client.post('/profiles/1/event-plans/start/', {'session_id':'fixture-session-15',
+                    'quantity':1,'contacts':[],'purchase_scenario':'confirmed','calendar_scenario':'confirmed'})
+                self.assertEqual(event.status_code, 302)
+                page = client.get(event.url)
+                self.assertEqual(page.status_code, 200)
+                self.assertContains(page, 'SYNTHETIC concert')
+                message = client.post('/profiles/1/messages/start/', {'kind':'invitation',
+                    'chat_id':'fixture-chat-alex-personal','session_id':'fixture-session-15',
+                    'message_id':'','scenario':'sent','access':'ready'})
+                self.assertEqual(message.status_code, 302)
+                page = client.get(message.url)
+                self.assertEqual(page.status_code, 200)
+                self.assertContains(page, 'fixture-session-15')
+                self.assertContains(page, 'fictional rehearsal invitation')
         finally:
             MigrationExecutor(connection).migrate(current)
