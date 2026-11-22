@@ -195,29 +195,30 @@ class AccountProfileTests(FeedbackCase):
         from shelf.tests.test_durable_intake import fiction_cards
         from shelf.authority import SELECTION_KEY
         from shelf.provider_views import _profiles
-        destination = provision_personal_profile(self.actor)
+        actor, profile = self.numeric_legacy_owner()
+        destination = provision_personal_profile(actor)
         client = Client()
-        client.force_login(self.actor)
-        state = intake.new_state(self.actor.pk, self.profile.pk)
+        client.force_login(actor)
+        state = intake.new_state(actor.pk, profile.pk)
         intake.merge(state, fiction_cards())
         state['choices'] = {next(iter(state['candidates'])): 'interested'}
         session = client.session
-        session[SELECTION_KEY] = self.profile.pk
+        session[SELECTION_KEY] = profile.pk
         session[intake.SESSION_KEY] = state
         session.save()
         with patch('shelf.provider_views.durable.available', return_value=True), patch(
                 'shelf.provider_views.durable.upgrade', wraps=durable_intake.upgrade) as upgrade:
             self.assertEqual(client.post(reverse('select_profile'), {'profile_id': destination.pk}).status_code, 302)
-            self.assertEqual(upgrade.call_args.args[1], self.profile.pk)
-        run = durable_intake.IntakeRun.objects.get(actor=self.actor, profile=self.profile)
+            self.assertEqual(upgrade.call_args.args[1], profile.pk)
+        run = durable_intake.IntakeRun.objects.get(actor=actor, profile=profile)
         self.assertEqual(len(run.history), 1)
         self.assertFalse(durable_intake.IntakeRun.objects.filter(profile=destination).exists())
-        owner_grant = Grant.objects.get(user=self.actor, profile=self.profile)
+        owner_grant = Grant.objects.get(user=actor, profile=profile)
         owner_grant.can_select = False
         owner_grant.save()
-        self.assertFalse(_profiles(self.actor, 'select').filter(pk=self.profile.pk).exists())
+        self.assertFalse(_profiles(actor, 'select').filter(pk=profile.pk).exists())
         session = client.session
-        session[SELECTION_KEY] = self.profile.pk
+        session[SELECTION_KEY] = profile.pk
         session[intake.SESSION_KEY] = state
         session.save()
         with patch('shelf.provider_views.durable.available', return_value=True), patch(
@@ -229,10 +230,11 @@ class AccountProfileTests(FeedbackCase):
     def test_personal_profile_never_authorizes_owner_discovery_seeds(self):
         from types import SimpleNamespace
         from shelf.discovery_views import _household_authorized
+        actor, owner_profile = self.numeric_legacy_owner()
         profile = provision_personal_profile(self.friends[0])
         self.assertFalse(_household_authorized(SimpleNamespace(user=self.friends[0]), profile.pk))
-        self.assertTrue(_household_authorized(SimpleNamespace(user=self.actor), self.profile.pk))
-        self.assertFalse(_household_authorized(SimpleNamespace(user=self.actor), profile.pk))
+        self.assertTrue(_household_authorized(SimpleNamespace(user=actor), owner_profile.pk))
+        self.assertFalse(_household_authorized(SimpleNamespace(user=actor), profile.pk))
 
     def test_personal_numeric_owner_pair_denies_credentials_before_open(self):
         from shelf.provider_catalogue import CatalogueError, Status, _request
