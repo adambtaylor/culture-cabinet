@@ -185,11 +185,15 @@ class GalleryUITests(TestCase):
         owner_pages = (self.client.get(self.url), self.client.get('/profiles/1/recommendations/'))
         for page in owner_pages:
             for text in ('AUD 2499.99 per individual artwork — within budget', 'AUD 2500 per individual artwork — outside budget'): self.assertContains(page, text)
+            self.assertContains(page, 'Listed price AUD 2499.99 (unit unspecified) — source-listed; extras and availability unknown')
+            self.assertNotContains(page, 'Listed price AUD 2499.99 (unit unspecified) — within budget')
+            self.assertNotContains(page, 'Listed price AUD 2499.99 (unit unspecified) — outside budget')
         self.profile.kind, self.profile.owner = Profile.Kind.PERSONAL, self.actor
         self.profile.save(update_fields=['kind', 'owner'])
         personal_pages = (self.client.get(self.url), self.client.get('/profiles/1/recommendations/'))
         for page in personal_pages:
             for text in ('https://source.example/community-below', 'https://source.example/community-ceiling', 'https://source.example/community-unspecified', 'AUD 2499.99', 'AUD 2500', 'per individual artwork', 'unit unspecified'): self.assertContains(page, text)
+            self.assertContains(page, 'Listed price AUD 2499.99 (unit unspecified) — source-listed; extras and availability unknown')
             for text in ('within budget', 'outside budget', 'per item'): self.assertNotContains(page, text)
         self.fetch.assert_called_once()
 

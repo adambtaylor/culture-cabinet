@@ -70,7 +70,9 @@ class AccountProfileTests(FeedbackCase):
             profiles.append(profile)
             self.assertEqual(provision_personal_profile(friend).pk, profile.pk)
             self.assertEqual(list(permitted_profiles(friend, 'select')), [profile])
-            self.assertContains(client.get(reverse('profiles')), f'value="{profile.pk}"')
+            chooser = client.get(reverse('profiles'))
+            self.assertContains(chooser, f'value="{profile.pk}"')
+            self.assertContains(chooser, 'Create my empty private profile')
             self.assertEqual(client.post(reverse('select_profile'), {'profile_id': profile.pk}).status_code, 302)
             self.assertEqual(client.get(reverse('profile_catalogue', args=[profile.pk])).status_code, 200)
             grant = Grant.objects.get(user=friend, profile=profile)
@@ -299,6 +301,33 @@ class AccountProfileTests(FeedbackCase):
             self.restore_legacy_owner(profile)
 
 class AccountProfileMigrationTests(TransactionTestCase):
+    def test_generic_profile_authority_and_catalogue_work_on_0031(self):
+        from django.db.migrations.executor import MigrationExecutor
+        old = [('shelf', '0031_beta_problem_reports')]
+        current = [('shelf', '0032_account_personal_profile')]
+        MigrationExecutor(connection).migrate(old)
+        try:
+            apps = MigrationExecutor(connection).loader.project_state(old).apps
+            user = apps.get_model('auth', 'User').objects.create(pk=1, username='generic-legacy-owner')
+            profile = apps.get_model('shelf', 'Profile').objects.create(
+                pk=1, kind='owner', label='Legacy household', active=True)
+            apps.get_model('shelf', 'Grant').objects.create(user_id=user.pk, profile_id=profile.pk,
+                can_view=True, can_select=True, can_mutate=True, can_export=True)
+
+            actor = get_user_model().objects.get(pk=user.pk)
+            self.assertEqual([item.pk for item in permitted_profiles(actor, 'select')], [profile.pk])
+
+            client = Client()
+            client.force_login(actor)
+            with override_settings(ROOT_URLCONF='cabinet.urls'):
+                chooser = client.get('/profiles/')
+                self.assertContains(chooser, 'value="1"')
+                self.assertNotContains(chooser, 'Create my empty private profile')
+                self.assertEqual(client.post('/profiles/select/', {'profile_id': '1'}).status_code, 302)
+                self.assertEqual(client.get('/profiles/1/').status_code, 200)
+        finally:
+            MigrationExecutor(connection).migrate(current)
+
     def test_provider_chooser_and_catalogue_work_on_0031(self):
         from django.db.migrations.executor import MigrationExecutor
         old, current = [('shelf', '0031_beta_problem_reports')], [('shelf', '0032_account_personal_profile')]

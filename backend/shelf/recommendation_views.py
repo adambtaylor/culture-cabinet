@@ -111,11 +111,8 @@ def _discovery(request, profile_id, now, tables):
         card = item['card']
         artwork_label = ''
         if card.kind == 'event' and card.artwork_price is not None:
-            artwork_label = card.artwork_label()
-            if not household_authorized and card.artwork_price is not None and card.artwork_currency:
-                unit = f' per {card.price_per}' if card.price_per else ' (unit unspecified)'
-                artwork_label = (f'Listed price {card.artwork_currency} {card.artwork_price}{unit} — '
-                    'source-listed; extras and availability unknown')
+            artwork_label = discovery_views._artwork_display_label(
+                card, household_authorized=household_authorized)
         rows.append({'key': card.key, 'title': card.title,
             'medium': 'music' if card.kind in ('artist', 'recording') else 'event',
             'url': card.url, 'source': card.source, 'provenance': card.provenance,

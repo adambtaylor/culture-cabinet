@@ -103,6 +103,16 @@ def _household_authorized(request, profile_id):
     return legacy_owner_granted(request.user.pk, profile_id)
 
 
+def _artwork_display_label(card, *, household_authorized):
+    if card.artwork_price is not None and card.artwork_currency and not card.price_per:
+        return (f'Listed price {card.artwork_currency} {card.artwork_price} (unit unspecified) — '
+                'source-listed; extras and availability unknown')
+    if not household_authorized and card.artwork_price is not None and card.artwork_currency:
+        return (f'Listed price {card.artwork_currency} {card.artwork_price} per {card.price_per} — '
+                'source-listed; extras and availability unknown')
+    return card.artwork_label()
+
+
 def gallery_context(request, profile_id, now, *, mode='household'):
     """Shared cached offer/source projection; reading never fetches or records taste."""
     from shelf import gallery_curation, gallery_commerce
@@ -273,11 +283,7 @@ def _display(request, profile_id, card, state, now, why=()):
     from shelf.gallery_curation import reasons
     owner_authorized = _household_authorized(request, profile_id)
     authorized = owner_authorized and card.provenance != 'fixture'
-    artwork_label = card.artwork_label()
-    if not owner_authorized and card.artwork_price is not None and card.artwork_currency:
-        unit = f' per {card.price_per}' if card.price_per else ' (unit unspecified)'
-        artwork_label = (f'Listed price {card.artwork_currency} {card.artwork_price}{unit} — '
-                         'source-listed; extras and availability unknown')
+    artwork_label = _artwork_display_label(card, household_authorized=owner_authorized)
     why = tuple(why) + (reasons(card, authorized=authorized)
                         if card.provenance != 'fixture' else ())
     date_status = card.date_status(now)

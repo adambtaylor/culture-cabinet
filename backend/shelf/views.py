@@ -44,8 +44,13 @@ class DemoLogoutView(LoginRequiredMixin, LogoutView):
 @require_GET
 @guarded
 def profiles(request):
+    from django.db import connection
+    with connection.cursor() as cursor:
+        columns = {column.name for column in
+                   connection.introspection.get_table_description(cursor, 'shelf_profile')}
     return render(request, "cabinet/profiles.html", {
         "profile_options": permitted_profiles(request.user, "select"),
+        "can_provision_profile": 'owner_id' in columns,
     })
 
 

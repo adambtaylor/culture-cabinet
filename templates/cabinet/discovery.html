@@ -23,7 +23,8 @@
 <h2>Events &amp; places</h2>
 {% if household_authorized %}<p>For a real-source evening proposal, read Beat below, open a listing’s details, then choose <strong>Date night · explore</strong> or the evening/transport link. Optional cycle origins stay local until you open a clearly labelled Google Maps link.</p>{% endif %}
 <p><a href="{% url 'event_plans' selected_profile.pk %}">Try event planning, calendar and invitations</a> · fictional rehearsal. Live event booking awaits verified sessions and seller quotes.</p>
-{% if available and mode == 'household' and household_authorized %}
+{% if household_authorized %}
+{% if available and mode == 'household' %}
 {% if event_sources %}
 <fieldset id="event-source-picker"><legend>Read an event source</legend>
 <p>Choose one source for an explicit public read. A reader being available does not confirm current access or a successful read. Each result below belongs to its own source; a failed read does not replace another source's results.</p>
@@ -66,6 +67,9 @@
 <p>Tribe publication dates are not event starts. Sound Systems locations marked TBA remain undisclosed. Neither source confirms tickets.</p>
 <p><a href="https://halftixmelbourne.com/all-events/" target="_blank" rel="noopener noreferrer">Check Halftix for cheaper options</a> · varied discounts; confirm session, fees and conditions. Publisher permission is needed before Cabinet can ingest its listings.</p>
 <p>PBS source notices and calendar dates do not confirm session times or available tickets. Reads share a ten-second interval.</p>
+{% endif %}
+{% else %}
+<p role="status">Live source reads are unavailable for this profile. Household mode shows cached event observations only; sample mode uses isolated fixtures. Open a cached source link to check current details.</p>
 {% endif %}
 {% if available and mode == 'household' and household_authorized %}
 <form method="post" action="{{ action_url }}">{% include 'cabinet/discovery_fields.html' %}

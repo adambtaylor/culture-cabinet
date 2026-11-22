@@ -139,6 +139,50 @@ class PublicDiscoveryUITests(TestCase):
         self.assertEqual((state.revision, state.nonce, state.history, state.receipts), before_state)
         self.assertEqual(v.PUBLIC_CACHE.get(key), before_cache)
 
+    def test_personal_event_page_is_cached_only_without_legacy_source_controls(self):
+        with patch.object(v, 'source_controls', return_value=[]):
+            owner_page = self.client.get(self.url)
+        self.assertEqual(owner_page.status_code, 200)
+        for control in ('Read one public Moshtix event', 'Read Triple R events',
+                        'Read PBS Events', 'Read 303 gigs and events',
+                        'Read Forum Melbourne shows', 'Read Tribe RSS',
+                        'Read Sound Systems'):
+            self.assertContains(owner_page, control)
+
+        personal = existing.Profile.objects.create(pk=4, kind='personal', owner=self.actor,
+            active=True, label='Private')
+        existing.Grant.objects.create(user=self.actor, profile=personal,
+            can_view=True, can_select=True, can_mutate=True)
+        session = self.client.session
+        session['selected_profile_id'] = personal.pk
+        session.save()
+        cached = s.Candidate('synthetic:event:cached-community', 'Cached synthetic event',
+            'event', 'Synthetic public source', 'live-automated', 1, NOW.isoformat(),
+            url='https://source.example/cached-event', category='community',
+            venue='Synthetic Hall', locality='Melbourne')
+        key = f'{self.actor.pk}:{personal.pk}:{session.session_key}'
+        v.PUBLIC_CACHE.set(key, {'synthetic-source': {'at': NOW,
+            'outcome': s.Outcome('ready', (cached,), 'Synthetic cached result')}}, timeout=900)
+
+        page = self.client.get(f'/profiles/{personal.pk}/discovery/')
+        self.assertEqual(page.status_code, 200)
+        self.assertContains(page, 'Live source reads are unavailable for this profile.')
+        self.assertContains(page, 'Household mode shows cached event observations only')
+        self.assertContains(page, 'Cached synthetic event')
+        self.assertContains(page, 'https://source.example/cached-event')
+        for operation in ('event_source', 'events', 'rrr', 'pbs', 'venue303', 'forum',
+                          'tribe', 'soundsystems', 'beat', 'gallery'):
+            self.assertNotContains(page, f'name="operation" value="{operation}"')
+        for control in ('Read one public Moshtix event', 'Read Triple R events',
+                        'Read PBS Events', 'Read 303 gigs and events',
+                        'Read Forum Melbourne shows', 'Read Tribe RSS',
+                        'Read Sound Systems', 'Read Beat', 'Read selected event source',
+                        'Read gallery openings'):
+            self.assertNotContains(page, control)
+        for marker in ('data-event-source-read', 'data-event-read="venue303"',
+                       'data-event-read="forum"'):
+            self.assertNotContains(page, marker)
+
     def test_authorized_legacy_owner_can_read_registry_and_legacy_source(self):
         selected = next(iter(v.EVENT_SOURCES))
         outcome = s.Outcome('ready', (), 'Synthetic authorized read')
