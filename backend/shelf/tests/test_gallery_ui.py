@@ -117,6 +117,27 @@ class GalleryUITests(TestCase):
         self.assertContains(response, 'Unqualified purchase lead')
         self.fetch.assert_not_called()
 
+    def test_personal_profile_shows_only_its_session_gallery_observations(self):
+        self.profile.kind, self.profile.owner = Profile.Kind.PERSONAL, self.actor
+        self.profile.save()
+        self.offer.update(title='Synthetic personal offer', medium='Print')
+        check = {'source': 'Synthetic seller source', 'status': 'checked', 'stage': 'offer',
+                 'checked_at': self.now.isoformat(), 'source_url': self.offer['offer_url']}
+        discovery_views.PUBLIC_CACHE.set(f'1:1:{self.client.session.session_key}', {
+            'synthetic': {'at': self.now, 'outcome': GalleryOutcome(
+                'ready', (), 'Synthetic observation', offers=(self.offer,), source_checks=(check,))}})
+        for url in (self.url, '/profiles/1/recommendations/'):
+            with self.subTest(url=url):
+                response = self.client.get(url)
+                self.assertEqual(response.status_code, 200)
+                for text in ('Synthetic personal offer', 'Synthetic artist', 'Synthetic seller',
+                             'unconfirmed', '2026-10-31T03:00:00+00:00', 'Listed item price',
+                             'Synthetic seller source', self.offer['offer_url']):
+                    self.assertContains(response, text)
+                for text in ('Your authorized art brief', 'AUD 2,500', 'Unqualified purchase lead'):
+                    self.assertNotContains(response, text)
+        self.fetch.assert_not_called()
+
     def test_other_profile_cannot_see_owner_cache_or_personal_brief(self):
         self.read()
         partner = Profile.objects.get(pk=2)

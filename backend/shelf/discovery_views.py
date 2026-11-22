@@ -110,16 +110,15 @@ def gallery_context(request, profile_id, now, *, mode='household'):
         return {'gallery_offers': [], 'gallery_source_checks': [], 'gallery_brief_note': ''}
     storage.public_authorized(request, profile_id)
     authorized = _household_authorized(request, profile_id)
-    if not authorized:
-        return {'gallery_offers': [], 'gallery_source_checks': [], 'gallery_brief_note': ''}
     offers, checks = {}, []
     for entry in public_entries(request, profile_id).values():
         outcome = entry['outcome']
         for offer in getattr(outcome, 'offers', ()):
             if isinstance(offer, dict):
                 offers[offer.get('offer_id', '')] = {
-                    'offer': offer, 'cost_gate': asdict(gallery_commerce.evaluate_offer(offer, now=now)),
-                    'why': gallery_curation.offer_reasons(offer, authorized=authorized)}
+                    'offer': offer, 'owner_authorized': authorized,
+                    'cost_gate': asdict(gallery_commerce.evaluate_offer(offer, now=now)) if authorized else None,
+                    'why': gallery_curation.offer_reasons(offer, authorized=True) if authorized else ()}
         checks.extend(getattr(outcome, 'source_checks', ()))
     quotes = gallery_curation.principle_quotes(authorized=authorized)
     return {'gallery_offers': list(offers.values()), 'gallery_source_checks': checks,
