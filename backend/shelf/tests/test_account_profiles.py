@@ -238,58 +238,36 @@ class AccountProfileTests(FeedbackCase):
         self.assertTrue(_household_authorized(SimpleNamespace(user=actor), owner_profile.pk))
         self.assertFalse(_household_authorized(SimpleNamespace(user=actor), profile.pk))
 
-    def test_personal_numeric_owner_pair_denies_credentials_before_open(self):
-        from shelf.provider_catalogue import CatalogueError, Status, _request
-        actor, profile = self.numeric_legacy_owner()
-        self.assertEqual((actor.pk, profile.pk), (1, 1))
-        profile.kind = Profile.Kind.PERSONAL
-        profile.owner = actor
-        profile.save()
-        try:
-            with patch('shelf.credential_store.open_store', side_effect=AssertionError('credential access')):
-                with self.assertRaises(CatalogueError) as denied:
-                    _request('search_movie', 'query', actor_id=actor.pk, profile_id=profile.pk)
-            self.assertEqual(denied.exception.status, Status.AUTH)
-        finally:
-            self.restore_legacy_owner(profile)
-
-    def test_personal_owner_id_pair_cannot_request_synthesis_or_enhancement(self):
+    def test_personal_numeric_owner_collision_denies_sensitive_operations(self):
         from types import SimpleNamespace
         from shelf.acquisition_contract import Blocked
         from shelf import pick_enhancement, synthesis
+        from shelf.models import ObtainPreview, SynthesisRun
+        from shelf.obtain_preview import search, search_backend
+        from shelf.provider_catalogue import CatalogueError, Status, _request
+        from django.contrib.sessions.backends.db import SessionStore
         actor, profile = self.numeric_legacy_owner()
         self.assertEqual((actor.pk, profile.pk), (1, 1))
         profile.kind = Profile.Kind.PERSONAL
         profile.owner = actor
         profile.save()
-        from django.contrib.sessions.backends.db import SessionStore
         session = SessionStore()
         session['selected_profile_id'] = profile.pk
         session.save()
         request = SimpleNamespace(user=actor, method='POST',
             session=SessionStore(session_key=session.session_key))
         try:
+            with patch('shelf.credential_store.open_store', side_effect=AssertionError('credential access')):
+                with self.assertRaises(CatalogueError) as denied:
+                    _request('search_movie', 'query', actor_id=actor.pk, profile_id=profile.pk)
+            self.assertEqual(denied.exception.status, Status.AUTH)
             with self.assertRaises(Blocked):
                 synthesis.snapshot(actor, profile.pk)
             with self.assertRaises(Blocked):
                 synthesis.request(request, profile.pk, '0' * 64)
             with self.assertRaises(Blocked):
                 pick_enhancement.authorize(request, profile.pk, 'movie')
-            from shelf.models import SynthesisRun
             self.assertFalse(SynthesisRun.objects.filter(actor=actor, profile=profile).exists())
-        finally:
-            self.restore_legacy_owner(profile)
-
-    def test_personal_numeric_owner_collision_cannot_open_obtain_credentials(self):
-        from shelf.acquisition_contract import Blocked
-        from shelf.models import ObtainPreview
-        from shelf.obtain_preview import search, search_backend
-        actor, profile = self.numeric_legacy_owner()
-        self.assertEqual((actor.pk, profile.pk), (1, 1))
-        profile.kind = Profile.Kind.PERSONAL
-        profile.owner = actor
-        profile.save()
-        try:
             with patch('shelf.credential_store.open_store', side_effect=AssertionError('credential access')) as opener:
                 with self.assertRaises(Blocked):
                     search(actor=actor, profile_id=profile.pk, item_id='missing')
@@ -301,49 +279,30 @@ class AccountProfileTests(FeedbackCase):
             self.restore_legacy_owner(profile)
 
 class AccountProfileMigrationTests(TransactionTestCase):
-    def test_generic_profile_authority_and_catalogue_work_on_0031(self):
+    def test_0031_legacy_profile_authority_catalogue_and_provider_denial(self):
         from django.db.migrations.executor import MigrationExecutor
-        old = [('shelf', '0031_beta_problem_reports')]
-        current = [('shelf', '0032_account_personal_profile')]
+        old, current = [('shelf', '0031_beta_problem_reports')], [('shelf', '0032_account_personal_profile')]
         MigrationExecutor(connection).migrate(old)
         try:
             apps = MigrationExecutor(connection).loader.project_state(old).apps
-            user = apps.get_model('auth', 'User').objects.create(pk=1, username='generic-legacy-owner')
-            profile = apps.get_model('shelf', 'Profile').objects.create(
-                pk=1, kind='owner', label='Legacy household', active=True)
-            apps.get_model('shelf', 'Grant').objects.create(user_id=user.pk, profile_id=profile.pk,
+            User, Profile, Grant = (apps.get_model('auth', 'User'), apps.get_model('shelf', 'Profile'),
+                                    apps.get_model('shelf', 'Grant'))
+            user = User.objects.create(pk=1, username='generic-legacy-owner')
+            profile = Profile.objects.create(pk=1, kind='owner', label='Legacy household', active=True)
+            Grant.objects.create(user_id=user.pk, profile_id=profile.pk,
                 can_view=True, can_select=True, can_mutate=True, can_export=True)
-
             actor = get_user_model().objects.get(pk=user.pk)
             self.assertEqual([item.pk for item in permitted_profiles(actor, 'select')], [profile.pk])
-
             client = Client()
             client.force_login(actor)
+            other = User.objects.create(pk=2, username='legacy-denied-account')
+            Grant.objects.create(user_id=other.pk, profile_id=profile.pk, can_view=True, can_select=True)
             with override_settings(ROOT_URLCONF='cabinet.urls'):
                 chooser = client.get('/profiles/')
                 self.assertContains(chooser, 'value="1"')
                 self.assertNotContains(chooser, 'Create my empty private profile')
                 self.assertEqual(client.post('/profiles/select/', {'profile_id': '1'}).status_code, 302)
                 self.assertEqual(client.get('/profiles/1/').status_code, 200)
-        finally:
-            MigrationExecutor(connection).migrate(current)
-
-    def test_provider_chooser_and_catalogue_work_on_0031(self):
-        from django.db.migrations.executor import MigrationExecutor
-        old, current = [('shelf', '0031_beta_problem_reports')], [('shelf', '0032_account_personal_profile')]
-        executor = MigrationExecutor(connection)
-        executor.migrate(old)
-        try:
-            apps = executor.loader.project_state(old).apps
-            user = apps.get_model('auth', 'User').objects.create(pk=1, username='legacy-chooser')
-            profile = apps.get_model('shelf', 'Profile').objects.create(pk=1, kind='owner', label='Legacy', active=True)
-            apps.get_model('shelf', 'Grant').objects.create(user_id=user.pk, profile_id=profile.pk,
-                can_view=True, can_select=True, can_mutate=True)
-            client = Client()
-            client.force_login(get_user_model().objects.get(pk=user.pk))
-            other = apps.get_model('auth', 'User').objects.create(pk=2, username='legacy-denied-account')
-            apps.get_model('shelf', 'Grant').objects.create(user_id=other.pk, profile_id=profile.pk,
-                can_view=True, can_select=True)
             with override_settings(ROOT_URLCONF='cabinet.provider_urls'):
                 page = client.get('/profiles/')
                 self.assertContains(page, f'value="{profile.pk}"')

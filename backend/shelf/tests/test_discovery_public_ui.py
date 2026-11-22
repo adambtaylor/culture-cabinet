@@ -148,6 +148,7 @@ class PublicDiscoveryUITests(TestCase):
                         'Read Forum Melbourne shows', 'Read Tribe RSS',
                         'Read Sound Systems'):
             self.assertContains(owner_page, control)
+        self.assertContains(self.client.get('/profiles/1/recommendations/'), 'Connector readiness and coverage gaps')
 
         personal = existing.Profile.objects.create(pk=4, kind='personal', owner=self.actor,
             active=True, label='Private')
@@ -156,20 +157,35 @@ class PublicDiscoveryUITests(TestCase):
         session = self.client.session
         session['selected_profile_id'] = personal.pk
         session.save()
-        cached = s.Candidate('synthetic:event:cached-community', 'Cached synthetic event',
-            'event', 'Synthetic public source', 'live-automated', 1, NOW.isoformat(),
-            url='https://source.example/cached-event', category='community',
-            venue='Synthetic Hall', locality='Melbourne')
+        from shelf.rrr_events import parse_listing
+        from shelf.tests.test_rrr_events import card as rrr_card, listing
+        cached, = parse_listing(listing(rrr_card(44, name='Cached Triple R event')),
+                                retrieved_at=NOW.isoformat())
+        results = {'rrr': {'at': NOW, 'source': 'Triple R events',
+            'outcome': s.Outcome('ready', (cached,), 'Cached Triple R result')},
+            'rate': {'at': NOW, 'source': 'Triple R events',
+            'outcome': s.Outcome('rate-limited', (), 'Source rate limited; no retry attempted.')}}
         key = f'{self.actor.pk}:{personal.pk}:{session.session_key}'
-        v.PUBLIC_CACHE.set(key, {'synthetic-source': {'at': NOW,
-            'outcome': s.Outcome('ready', (cached,), 'Synthetic cached result')}}, timeout=900)
+        v.PUBLIC_CACHE.set(f'{self.actor.pk}:1:{session.session_key}', results, timeout=900)
+        session['selected_profile_id'] = 1; session.save()
+        owner_page = self.client.get(self.url)
+        self.assertContains(owner_page, 'Read this event’s Triple R details')
+        self.assertContains(owner_page, 'Wait for the source interval before explicitly trying again')
+        session['selected_profile_id'] = personal.pk; session.save()
+        for url in (f'/profiles/{personal.pk}/discovery/', f'/profiles/{personal.pk}/recommendations/'):
+            page = self.client.get(url)
+            self.assertNotContains(page, 'Cached Triple R event')
+            self.assertNotContains(page, 'Source rate limited; no retry attempted.')
+        v.PUBLIC_CACHE.set(key, results, timeout=900)
 
         page = self.client.get(f'/profiles/{personal.pk}/discovery/')
         self.assertEqual(page.status_code, 200)
         self.assertContains(page, 'Live source reads are unavailable for this profile.')
         self.assertContains(page, 'Household mode shows cached event observations only')
-        self.assertContains(page, 'Cached synthetic event')
-        self.assertContains(page, 'https://source.example/cached-event')
+        self.assertContains(page, 'Cached Triple R event')
+        self.assertContains(page, 'https://www.rrr.org.au/events/synthetic-44')
+        self.assertTrue('Read deferred' in page.content.decode() and 'Wait for the source interval before explicitly trying again' not in page.content.decode())
+        self.assertNotContains(page, 'Read this event’s Triple R details')
         for operation in ('event_source', 'events', 'rrr', 'pbs', 'venue303', 'forum',
                           'tribe', 'soundsystems', 'beat', 'gallery'):
             self.assertNotContains(page, f'name="operation" value="{operation}"')
@@ -182,6 +198,11 @@ class PublicDiscoveryUITests(TestCase):
         for marker in ('data-event-source-read', 'data-event-read="venue303"',
                        'data-event-read="forum"'):
             self.assertNotContains(page, marker)
+        for route, visible, hidden in (
+                ('recommendations', ('Source rate limited; no retry attempted.', 'https://www.rrr.org.au/events/synthetic-44'), ('Connector readiness and coverage gaps', 'explicit public read available')),
+                ('taste', ('https://www.rrr.org.au/events/synthetic-44',), ('Gather current candidates', 'Search for a particular film, series or book', 'explicit public read available'))):
+            html = self.client.get(f'/profiles/{personal.pk}/{route}/').content.decode()
+            self.assertTrue(all(text in html for text in visible) and all(text not in html for text in hidden), route)
 
     def test_authorized_legacy_owner_can_read_registry_and_legacy_source(self):
         selected = next(iter(v.EVENT_SOURCES))

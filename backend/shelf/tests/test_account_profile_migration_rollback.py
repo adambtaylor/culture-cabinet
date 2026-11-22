@@ -13,6 +13,11 @@ class AccountProfileMigrationRollbackTests(TransactionTestCase):
         old = [('shelf', '0031_beta_problem_reports')]
         current = [('shelf', '0032_account_personal_profile')]
         MigrationExecutor(connection).migrate(current)
+
+        def restore_current_migration_state():
+            MigrationExecutor(connection).migrate(current)
+
+        self.addCleanup(restore_current_migration_state)
         apps = MigrationExecutor(connection).loader.project_state(current).apps
         user = apps.get_model('auth', 'User').objects.create(username='rollback-legacy-profile')
         profile = apps.get_model('shelf', 'Profile').objects.create(kind='owner',
@@ -41,6 +46,11 @@ class AccountProfileMigrationRollbackTests(TransactionTestCase):
         old = [('shelf', '0031_beta_problem_reports')]
         current = [('shelf', '0032_account_personal_profile')]
         MigrationExecutor(connection).migrate(current)
+
+        def restore_current_migration_state():
+            MigrationExecutor(connection).migrate(current)
+
+        self.addCleanup(restore_current_migration_state)
         apps = MigrationExecutor(connection).loader.project_state(current).apps
         user = apps.get_model('auth', 'User').objects.create(username='rollback-personal-profile')
         profile = apps.get_model('shelf', 'Profile').objects.create(owner_id=user.pk,

@@ -46,10 +46,10 @@
   {% for source in coverage %}<p><strong>{{ source.name }} · {{ source.status }}</strong><br>{{ source.detail }}</p>{% endfor %}
   <h3>Recent public requests in this session</h3>
   {% for result in public_results %}<p><strong>{{ result.source }} · {{ result.outcome.status }}</strong> · {{ result.at }}<br>{{ result.outcome.message }}</p>{% empty %}<p>No current public result in this session. A request may not have been made, or its temporary result has expired.</p>{% endfor %}
-  <details><summary>Connector readiness and coverage gaps</summary>
+  {% if household_authorized %}<details><summary>Connector readiness and coverage gaps</summary>
     {% for source in sources %}<p><strong>{{ source.name }} · {{ source.status }}</strong><br>{{ source.detail }}</p>{% endfor %}
     <p>Gallery coverage is limited to bounded reads of named public sources; wider gallery, community and regional coverage remains partial. Ticket availability is unverified; a future event date does not establish that tickets are on sale. Past listings are excluded from these suggestions.</p>
-  </details>
+  </details>{% else %}<p>Source reads are unavailable for this profile. Cached outcomes and original card links remain visible above.</p>{% endif %}
   <p class="source-meta">Catalogue history revision: {{ intake_revision|default_if_none:'no active durable run' }} · Music/event history revision: {{ discovery_revision|default_if_none:'no household responses' }}.</p>
 </section>
 {% endblock %}

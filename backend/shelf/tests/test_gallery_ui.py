@@ -83,6 +83,31 @@ class GalleryUITests(TestCase):
         self.assertNotContains(response, self.offer['title'])
         self.assertNotContains(response, 'Your authorized art brief')
 
+    def test_owner_authority_is_resolved_once_for_many_display_cards(self):
+        counts = []
+        for size in (1, 11):
+            cards = [self.budget_event(str(i)) for i in range(size)]
+            with patch.object(discovery_views, 'candidates', return_value=cards), \
+                 patch.object(discovery_views, '_household_authorized', wraps=discovery_views._household_authorized) as authority:
+                page = self.client.get(self.url)
+                self.assertEqual(page.status_code, 200, page.content)
+                self.assertEqual(len(page.context['events']), size)
+                for card in cards:
+                    for fact in (card.title, card.url, f'AUD {card.artwork_price} per individual artwork'):
+                        self.assertContains(page, fact)
+                counts.append(authority.call_count)
+            if size == 1:
+                self.assertTrue(page.context['household_authorized'])
+                self.assertContains(page, 'within budget')
+                self.profile.kind, self.profile.owner = Profile.Kind.PERSONAL, self.actor
+                self.profile.save(update_fields=['kind', 'owner'])
+                self.grant.delete()
+                Grant.objects.create(user=self.actor, profile=self.profile, can_view=True, can_select=True)
+            else:
+                self.assertFalse(page.context['household_authorized'])
+                self.assertNotContains(page, 'within budget')
+        self.assertEqual(counts, [2, 2])
+
     def test_opening_and_run_have_distinct_precision_and_unknown_end(self):
         response = self.read()
         for text in ('Gallery opening:', '2026-11-06', 'Exhibition run:', '2026-11-07',

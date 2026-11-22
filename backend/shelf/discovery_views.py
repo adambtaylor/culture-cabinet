@@ -278,10 +278,10 @@ def _replace_key(deck, cards, state, submitted):
     return replacement
 
 
-def _display(request, profile_id, card, state, now, why=()):
+def _display(request, profile_id, card, state, now, why=(), household_authorized=False):
     from shelf.event_saved_references import ReferenceCandidate
     from shelf.gallery_curation import reasons
-    owner_authorized = _household_authorized(request, profile_id)
+    owner_authorized = household_authorized
     authorized = owner_authorized and card.provenance != 'fixture'
     artwork_label = _artwork_display_label(card, household_authorized=owner_authorized)
     why = tuple(why) + (reasons(card, authorized=authorized)
@@ -302,6 +302,7 @@ def _display(request, profile_id, card, state, now, why=()):
 def _context(request, profile, mode, queue, category, stored, cards):
     from shelf import for_you
     state = replay(stored.history if stored else [])
+    household_authorized = _household_authorized(request, profile.pk)
     available = DiscoveryState._meta.db_table in connection.introspection.table_names()
     revision = stored.revision if stored else 0
     pool = _pool(cards, queue)
@@ -313,7 +314,6 @@ def _context(request, profile, mode, queue, category, stored, cards):
         deck = {'keys': [row['card'].key for row in ranked['selection']], 'category': category, 'revision': revision}
         if mode == 'household' and queue == 'all' and category in ('all', 'gallery', 'art_fair'):
             from shelf.gallery_curation import select as gallery_selection
-            household_authorized = _household_authorized(request, profile.pk)
             for card in gallery_selection((c for c in registered.values() if c.key not in state['choices']
                     and (category == 'all' or c.category == category)),
                     authorized=household_authorized, limit=2):
@@ -332,7 +332,8 @@ def _context(request, profile, mode, queue, category, stored, cards):
     _store_deck(request, profile.pk, mode, queue, deck)
     now = timezone.now()
     reasons = {row['card'].key: row['why'] for row in ranked['selection']}
-    selected = [_display(request, profile.pk, registered[key], state, now, reasons.get(key, ())) for key in deck['keys']]
+    selected = [_display(request, profile.pk, registered[key], state, now, reasons.get(key, ()),
+                         household_authorized=household_authorized) for key in deck['keys']]
     current_event_keys = {card.key for entry in public_entries(request, profile.pk).values()
         for card in entry['outcome'].candidates if card.kind == 'event'} if mode == 'household' and queue == 'all' else set()
     if 'source_keys' not in deck:
@@ -341,8 +342,10 @@ def _context(request, profile, mode, queue, category, stored, cards):
             and (category == 'all' or card.category == category)]
     deck['source_keys'] = [key for key in deck['source_keys'] if key in registered and key not in state['choices']]
     _store_deck(request, profile.pk, mode, queue, deck)
-    more = [_display(request, profile.pk, registered[key], state, now) for key in deck['source_keys']]
-    responses = [_display(request, profile.pk, card, state, now) for card in pool
+    more = [_display(request, profile.pk, registered[key], state, now,
+                     household_authorized=household_authorized) for key in deck['source_keys']]
+    responses = [_display(request, profile.pk, card, state, now,
+                          household_authorized=household_authorized) for card in pool
                  if card.key in state['choices'] or card.key in state['saved']]
     for_you.discovery(request, profile.pk, selected + more + responses, mode=mode)
     enhancement = {}
@@ -359,7 +362,6 @@ def _context(request, profile, mode, queue, category, stored, cards):
             except (Blocked, storage.Conflict):
                 enhancement = {'enhancement': {'state': 'blocked', 'label': 'Enhancement needs current taste evidence',
                     'explanation': 'Record a household response before requesting supervised enhancement.'}}
-    household_authorized = _household_authorized(request, profile.pk)
     return {
         **gallery_context(request, profile.pk, now, mode=mode), **enhancement,
         'selected_profile': profile, 'mode': mode, 'category': category, 'queue': queue,
