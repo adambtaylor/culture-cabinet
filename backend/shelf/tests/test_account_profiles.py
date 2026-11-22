@@ -253,16 +253,23 @@ class AccountProfileTests(FeedbackCase):
         from types import SimpleNamespace
         from shelf.acquisition_contract import Blocked
         from shelf import pick_enhancement, synthesis
-        profile = provision_personal_profile(self.actor)
-        request = SimpleNamespace(user=self.actor, method='POST')
-        with self.assertRaises(Blocked):
-            synthesis.snapshot(self.actor, profile.pk)
-        with self.assertRaises(Blocked):
-            synthesis.request(request, profile.pk, '0' * 64)
-        with self.assertRaises(Blocked):
-            pick_enhancement.authorize(request, profile.pk, 'movie')
-        from shelf.models import SynthesisRun
-        self.assertFalse(SynthesisRun.objects.filter(actor=self.actor, profile=profile).exists())
+        actor, profile = self.numeric_legacy_owner()
+        self.assertEqual((actor.pk, profile.pk), (1, 1))
+        profile.kind = Profile.Kind.PERSONAL
+        profile.owner = actor
+        profile.save()
+        request = SimpleNamespace(user=actor, method='POST')
+        try:
+            with self.assertRaises(Blocked):
+                synthesis.snapshot(actor, profile.pk)
+            with self.assertRaises(Blocked):
+                synthesis.request(request, profile.pk, '0' * 64)
+            with self.assertRaises(Blocked):
+                pick_enhancement.authorize(request, profile.pk, 'movie')
+            from shelf.models import SynthesisRun
+            self.assertFalse(SynthesisRun.objects.filter(actor=actor, profile=profile).exists())
+        finally:
+            self.restore_legacy_owner(profile)
 
     def test_personal_numeric_owner_collision_cannot_open_obtain_credentials(self):
         from shelf.acquisition_contract import Blocked
