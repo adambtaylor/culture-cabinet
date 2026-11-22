@@ -5,6 +5,8 @@ from urllib.parse import urlencode
 import time
 
 from django import forms
+from django.db import connection
+from django.db.models import Q
 from django.contrib.auth.decorators import login_required
 from django.contrib.auth.views import LogoutView
 from django.http import Http404, HttpResponse, JsonResponse
@@ -176,13 +178,23 @@ def _profiles(actor, action='view'):
     """
     # Deliberately use only the existing framework user/profile/grant tables.
     # The synthetic feedback recovery barrier is NOT this runtime's authority.
-    if not actor.is_authenticated or actor.pk != 1:
+    if not actor.is_authenticated:
         return Profile.objects.none()
-    filters = {'pk': 1, 'kind': Profile.Kind.OWNER, 'active': True,
+    filters = {'active': True,
                'grant__user_id': actor.pk, 'grant__user__is_active': True,
                'grant__can_view': True}
     filters['grant__can_' + action] = True
-    return Profile.objects.filter(**filters)
+    with connection.cursor() as cursor:
+        columns = {column.name for column in connection.introspection.get_table_description(cursor, Profile._meta.db_table)}
+    profiles = Profile.objects.only('id', 'kind', 'label', 'active')
+    scope = (Q(pk=1, kind=Profile.Kind.OWNER) if 'owner_id' not in columns
+             else Q(kind=Profile.Kind.PERSONAL, owner_id=actor.pk))
+    if 'owner_id' not in columns and actor.pk != 1:
+        return Profile.objects.none()
+    if actor.pk == 1:
+        if 'owner_id' in columns:
+            scope |= Q(pk=1, kind=Profile.Kind.OWNER, owner__isnull=True)
+    return profiles.filter(scope, **filters)
 
 
 def _profile(request, profile_id, action='view'):
@@ -193,6 +205,11 @@ def _profile(request, profile_id, action='view'):
         request.session.pop(intake.SESSION_KEY, None)
         raise Http404
     return profile
+
+
+def _legacy_acquisition(actor, profile_id):
+    from shelf.legacy_authority import legacy_owner_granted
+    return actor.pk == 1 and profile_id == 1 and legacy_owner_granted(actor.pk, profile_id)
 
 
 def _guard(view):
@@ -228,6 +245,7 @@ def _state(request, profile):
 
 def _page_context(request, profile, state, **kwargs):
     context = _context(profile, state, **kwargs)
+    context['acquisition_authorized'] = _legacy_acquisition(request.user, profile.pk)
     from shelf import pick_enhancement
     from shelf.acquisition_contract import Blocked
     from shelf.discovery_state import Conflict
@@ -304,22 +322,28 @@ class ProviderLogoutView(LogoutView):
 @login_required
 @require_GET
 def profiles(request):
-    return render(request, 'cabinet/provider_profiles.html', {'profile_options': _profiles(request.user, 'select')})
+    with connection.cursor() as cursor:
+        personal_profiles = 'owner_id' in {column.name for column in connection.introspection.get_table_description(cursor, Profile._meta.db_table)}
+    return render(request, 'cabinet/provider_profiles.html', {
+        'profile_options': _profiles(request.user, 'select'), 'personal_profiles': personal_profiles})
 
 
 @login_required
 @require_POST
 def select_profile(request):
-    if request.POST.getlist('profile_id') != ['1']:
+    values = request.POST.getlist('profile_id')
+    if len(values) != 1 or not values[0].isascii() or not values[0].isdigit() or len(values[0]) > 18:
         raise Http404
-    profile = _profiles(request.user, 'select').first()
+    profile = _profiles(request.user, 'select').filter(pk=int(values[0])).first()
     if profile is None:
         raise Http404
-    # Preserve a still-owned prototype history before profile selection clears its deck.
-    old = intake.load(request.session, request.user.pk, profile.pk)
-    if (old and old.get('choices') and request.session.get(SELECTION_KEY) == profile.pk
-            and durable.available()):
-        durable.upgrade(request.user, profile.pk, old, request.session.session_key)
+    # Preserve eligible prototype history under the outgoing profile before
+    # switching. A revoked grant removes it from this authorized lookup.
+    outgoing_id = request.session.get(SELECTION_KEY)
+    outgoing = _profiles(request.user, 'select').filter(pk=outgoing_id).first() if outgoing_id else None
+    old = intake.load(request.session, request.user.pk, outgoing.pk) if outgoing else None
+    if old and old.get('choices') and durable.available():
+        durable.upgrade(request.user, outgoing.pk, old, request.session.session_key)
     request.session.pop(intake.SESSION_KEY, None)
     request.session[SELECTION_KEY] = profile.pk
     return redirect('catalogue')
@@ -358,9 +382,14 @@ def action(request, profile_id):
         raise intake.IntakeError()
     if any(len(request.POST.getlist(k)) != 1 for k in request.POST):
         raise intake.IntakeError()
+    raw_actions = request.POST.getlist('action')
+    if (len(raw_actions) == 1 and raw_actions[0] in
+            ('start', 'search', 'browse', 'neighbors', 'refresh')
+            and not _legacy_acquisition(request.user, profile.pk)):
+        raise Http404
     form = ActionForm(request.POST)
-    state = _state(request, profile)
     if not form.is_valid():
+        state = _state(request, profile)
         if _partial(request):
             return JsonResponse({'ok': False, 'message': 'Review the response and try again.'}, status=400)
         return render(request, 'cabinet/provider_catalogue.html',
@@ -368,6 +397,9 @@ def action(request, profile_id):
     data = form.cleaned_data
     operation = data['action']
     queue = data.get('queue') or 'all'
+    if operation in ('start', 'search', 'browse', 'neighbors', 'refresh') and not _legacy_acquisition(request.user, profile.pk):
+        raise Http404
+    state = _state(request, profile)
     if _partial(request) and operation not in ('choose', 'correct'):
         raise intake.IntakeError()
     if operation in ('choose', 'correct') and queue != state.get('queue', 'all'):

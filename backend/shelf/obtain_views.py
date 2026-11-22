@@ -1,12 +1,12 @@
 """Provider work is reachable only through an authenticated CSRF-protected POST."""
 from django import forms
 from django.contrib.auth.decorators import login_required
-from django.http import HttpResponse, JsonResponse
+from django.http import Http404, HttpResponse, JsonResponse
 from django.shortcuts import redirect, render
 from django.views.decorators.http import require_GET, require_POST
 
 from shelf import obtain_preview as preview, obtain_acquisition as acquire, obtain_runtime, saved
-from shelf.acquisition_contract import ContractError
+from shelf.acquisition_contract import Blocked, ContractError
 from shelf.provider_views import _profile
 from shelf.saved_views import fields, guard
 
@@ -23,6 +23,10 @@ def page(request, profile, **extra):
 def start(request, profile_id, item_id):
     profile = _profile(request, profile_id, 'select')
     item = saved.owned_item(request.user, profile_id, item_id)
+    try:
+        preview._search_authority(request.user, profile_id)
+    except Blocked:
+        return page(request, profile, obtain_search_unavailable=True)
     return page(request, profile, obtain_preview_available=preview.available(),
         obtain_search={'title': item.title, 'scope': saved.SCOPES[item.medium], 'is_tv': item.medium == 'tv',
                        'url': f'/profiles/{profile_id}/saved/{item_id}/preview/search/'})
@@ -33,12 +37,19 @@ def start(request, profile_id, item_id):
 @guard
 def search(request, profile_id, item_id):
     _profile(request, profile_id, 'select')
+    try:
+        preview._search_authority(request.user, profile_id)
+    except Blocked:
+        raise Http404
     data = fields(request, set(preview.SearchForm.base_fields))
     form = preview.SearchForm(data)
     if not form.is_valid():
         raise saved.SavedError('Choose both season (0–999) and episode (1–999), or leave both blank for S01E01.')
-    receipt = preview.search(actor=request.user, profile_id=profile_id, item_id=item_id,
-                             **form.cleaned_data)
+    try:
+        receipt = preview.search(actor=request.user, profile_id=profile_id, item_id=item_id,
+                                 **form.cleaned_data)
+    except Blocked:
+        raise Http404
     # Selected session authority is also rechecked after provider work.
     _profile(request, profile_id, 'select')
     return redirect('obtain_preview_results', profile_id=profile_id, preview_id=receipt.pk)

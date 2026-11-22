@@ -138,6 +138,43 @@ class EveningUITests(TestCase):
         self.client.post(self.action,self.form('save',key=event().key))
         self.assertContains(self.client.get(self.url),'class="date-night-badge"')
 
+    def test_cached_beat_facts_and_planner_actions_follow_legacy_owner_authority(self):
+        from shelf.models import Grant, Profile
+        cached = replace(event(True), starts_at='2026-11-02', listed_date='Mon 2 Nov 2026')
+        def retain(profile_id):
+            key = f'1:{profile_id}:{self.client.session.session_key}'
+            views.PUBLIC_CACHE.set(key, {('beat', '', ''): {'at': NOW,
+                'outcome': public.s.Outcome('ready', (cached,), 'Synthetic retained Beat listing')}}, timeout=900)
+        retain(1)
+        with patch.object(transport, 'beat') as listing, patch.object(transport, 'beat_detail') as detail_read:
+            owner_discovery = self.client.get(self.url)
+            owner_recommendations = self.client.get('/profiles/1/recommendations/')
+            self.assertEqual(owner_discovery.status_code, 200); self.assertEqual(owner_recommendations.status_code, 200)
+            self.assertContains(owner_discovery, 'Read this event’s Beat details'); self.assertContains(owner_discovery, 'Date night · explore')
+            owner_plan = self.client.get(self.evening)
+            self.assertEqual(owner_plan.status_code, 200)
+            self.assertContains(owner_plan, 'Lisa'); self.assertContains(owner_plan, 'Batman, Coburg and Merlynston')
+            listing.assert_not_called(); detail_read.assert_not_called()
+        personal = Profile.objects.create(pk=4, kind=Profile.Kind.PERSONAL, owner=self.actor, active=True, label='Private')
+        Grant.objects.create(user=self.actor, profile=personal, can_view=True, can_select=True, can_mutate=True)
+        session = self.client.session
+        session['selected_profile_id'] = personal.pk
+        session.save()
+        retain(4)
+        with patch.object(transport, 'beat') as listing, patch.object(transport, 'beat_detail') as detail_read:
+            for path in ('/profiles/4/discovery/', '/profiles/4/recommendations/'):
+                response = self.client.get(path)
+                self.assertEqual(response.status_code, 200)
+                facts = ('Synthetic event', 'Synthetic Hall', 'https://beat.com.au/synthetic-event/')
+                if path.endswith('/discovery/'):
+                    facts += ('123 Example Street', 'Source date: Mon 2 Nov 2026')
+                for fact in facts: self.assertContains(response, fact)
+                for private in ('Lisa’s interest', 'Lisa&#x27;s interest', 'Date night · explore', 'Explore an evening and transport', 'Batman, Coburg and Merlynston'):
+                    self.assertNotContains(response, private)
+            self.assertEqual(self.client.get('/profiles/4/date-night/?event=' + cached.key).status_code, 404)
+            listing.assert_not_called()
+            detail_read.assert_not_called()
+
     def test_low_rank_source_results_remain_reachable_without_duplicates_or_rejected_cards(self):
         from shelf.tests.test_beat_events import card
         raw=(''.join(card(slug='old-'+str(i),date='Thu 29 Oct 2026') for i in range(30))+

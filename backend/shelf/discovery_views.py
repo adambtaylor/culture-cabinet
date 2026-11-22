@@ -16,7 +16,7 @@ from django.views.decorators.http import require_GET, require_POST
 
 from shelf import discovery_sources as sources, discovery_state as storage
 from shelf.discovery_reducer import CHOICE_LABELS, replay, select
-from shelf.models import DiscoveryState
+from shelf.models import DiscoveryState, Grant, Profile
 from shelf.recovery import RecoveryBlocked
 from shelf.provider_views import _profile
 from shelf.authority import SELECTION_KEY
@@ -98,22 +98,39 @@ def public_entries(request, profile_id):
             if 0 <= (now - value['at']).total_seconds() < 900}
 
 
+def _household_authorized(request, profile_id):
+    from shelf.legacy_authority import legacy_owner_granted
+    return legacy_owner_granted(request.user.pk, profile_id)
+
+
+def _artwork_display_label(card, *, household_authorized):
+    if card.artwork_price is not None and card.artwork_currency and not card.price_per:
+        return (f'Listed price {card.artwork_currency} {card.artwork_price} (unit unspecified) — '
+                'source-listed; extras and availability unknown')
+    if not household_authorized and card.artwork_price is not None and card.artwork_currency:
+        return (f'Listed price {card.artwork_currency} {card.artwork_price} per {card.price_per} — '
+                'source-listed; extras and availability unknown')
+    return card.artwork_label()
+
+
 def gallery_context(request, profile_id, now, *, mode='household'):
     """Shared cached offer/source projection; reading never fetches or records taste."""
     from shelf import gallery_curation, gallery_commerce
     if mode != 'household':
         return {'gallery_offers': [], 'gallery_source_checks': [], 'gallery_brief_note': ''}
     storage.public_authorized(request, profile_id)
+    authorized = _household_authorized(request, profile_id)
     offers, checks = {}, []
     for entry in public_entries(request, profile_id).values():
         outcome = entry['outcome']
         for offer in getattr(outcome, 'offers', ()):
             if isinstance(offer, dict):
                 offers[offer.get('offer_id', '')] = {
-                    'offer': offer, 'cost_gate': asdict(gallery_commerce.evaluate_offer(offer, now=now)),
-                    'why': gallery_curation.offer_reasons(offer, actor_id=request.user.pk, profile_id=profile_id)}
+                    'offer': offer, 'owner_authorized': authorized,
+                    'cost_gate': asdict(gallery_commerce.evaluate_offer(offer, now=now)) if authorized else None,
+                    'why': gallery_curation.offer_reasons(offer, authorized=True) if authorized else ()}
         checks.extend(getattr(outcome, 'source_checks', ()))
-    quotes = gallery_curation.principle_quotes(actor_id=request.user.pk, profile_id=profile_id)
+    quotes = gallery_curation.principle_quotes(authorized=authorized)
     return {'gallery_offers': list(offers.values()), 'gallery_source_checks': checks,
         'gallery_brief_note': ('Your authorized art brief informs these curatorial looking experiments. '
             'Quiet space, expressive imagery, landscape and unfamiliar practices remain open directions; '
@@ -123,7 +140,8 @@ def gallery_context(request, profile_id, now, *, mode='household'):
 def candidates(request, profile_id, mode, history):
     if mode == 'sample':
         return sources.sample_candidates()
-    cards = {c.key: c for c in sources.household_candidates()}
+    cards = ({c.key: c for c in sources.household_candidates()}
+             if _household_authorized(request, profile_id) else {})
     for entry in public_entries(request, profile_id).values():
         for card in entry['outcome'].candidates:
             old = cards.get(card.key)
@@ -260,17 +278,21 @@ def _replace_key(deck, cards, state, submitted):
     return replacement
 
 
-def _display(request, profile_id, card, state, now, why=()):
+def _display(request, profile_id, card, state, now, why=(), household_authorized=False):
     from shelf.event_saved_references import ReferenceCandidate
     from shelf.gallery_curation import reasons
-    why = tuple(why) + (reasons(card, actor_id=request.user.pk, profile_id=profile_id)
+    owner_authorized = household_authorized
+    authorized = owner_authorized and card.provenance != 'fixture'
+    artwork_label = _artwork_display_label(card, household_authorized=owner_authorized)
+    why = tuple(why) + (reasons(card, authorized=authorized)
                         if card.provenance != 'fixture' else ())
     date_status = card.date_status(now)
     notice = getattr(card, 'source_notice', '')
     if notice:
         date_status += f' Source notice: {notice} (not a current seller check).'
     reference_only = isinstance(card, ReferenceCandidate)
-    return {'card': card, 'why': why, 'freshness': card.freshness(now),
+    return {'card': card, 'why': why, 'artwork_label': artwork_label, 'freshness': card.freshness(now),
+            'household_authorized': owner_authorized,
             'reference_only': reference_only,
             'saved_reference': card.saved_reference if reference_only else None,
             'date_status': date_status, 'choice': state['choices'].get(card.key, ''),
@@ -280,6 +302,7 @@ def _display(request, profile_id, card, state, now, why=()):
 def _context(request, profile, mode, queue, category, stored, cards):
     from shelf import for_you
     state = replay(stored.history if stored else [])
+    household_authorized = _household_authorized(request, profile.pk)
     available = DiscoveryState._meta.db_table in connection.introspection.table_names()
     revision = stored.revision if stored else 0
     pool = _pool(cards, queue)
@@ -293,7 +316,7 @@ def _context(request, profile, mode, queue, category, stored, cards):
             from shelf.gallery_curation import select as gallery_selection
             for card in gallery_selection((c for c in registered.values() if c.key not in state['choices']
                     and (category == 'all' or c.category == category)),
-                    actor_id=request.user.pk, profile_id=profile.pk, limit=2):
+                    authorized=household_authorized, limit=2):
                 if card.key not in deck['keys']:
                     deck['keys'].append(card.key)
     elif deck['revision'] != revision:
@@ -309,7 +332,8 @@ def _context(request, profile, mode, queue, category, stored, cards):
     _store_deck(request, profile.pk, mode, queue, deck)
     now = timezone.now()
     reasons = {row['card'].key: row['why'] for row in ranked['selection']}
-    selected = [_display(request, profile.pk, registered[key], state, now, reasons.get(key, ())) for key in deck['keys']]
+    selected = [_display(request, profile.pk, registered[key], state, now, reasons.get(key, ()),
+                         household_authorized=household_authorized) for key in deck['keys']]
     current_event_keys = {card.key for entry in public_entries(request, profile.pk).values()
         for card in entry['outcome'].candidates if card.kind == 'event'} if mode == 'household' and queue == 'all' else set()
     if 'source_keys' not in deck:
@@ -318,8 +342,10 @@ def _context(request, profile, mode, queue, category, stored, cards):
             and (category == 'all' or card.category == category)]
     deck['source_keys'] = [key for key in deck['source_keys'] if key in registered and key not in state['choices']]
     _store_deck(request, profile.pk, mode, queue, deck)
-    more = [_display(request, profile.pk, registered[key], state, now) for key in deck['source_keys']]
-    responses = [_display(request, profile.pk, card, state, now) for card in pool
+    more = [_display(request, profile.pk, registered[key], state, now,
+                     household_authorized=household_authorized) for key in deck['source_keys']]
+    responses = [_display(request, profile.pk, card, state, now,
+                          household_authorized=household_authorized) for card in pool
                  if card.key in state['choices'] or card.key in state['saved']]
     for_you.discovery(request, profile.pk, selected + more + responses, mode=mode)
     enhancement = {}
@@ -346,8 +372,10 @@ def _context(request, profile, mode, queue, category, stored, cards):
         'music': [row for row in selected if row['card'].kind in ('artist', 'recording')],
         'events': [row for row in selected if row['card'].kind in ('venue', 'event')],
         'more_source_events': more, 'responses': responses,
-        'lanes': ranked['lanes'], 'sources': sources.source_statuses(), 'registry': sources.registry(),
-        'event_sources': source_controls(),
+        'lanes': ranked['lanes'], 'sources': sources.source_statuses(),
+        'registry': sources.registry() if household_authorized else {},
+        'event_sources': source_controls() if household_authorized else [],
+        'household_authorized': household_authorized,
         'choices': CHOICE_LABELS, 'choice_options': CHOICE_LABELS, 'reaction_options': REACTION_LABELS,
         'can_undo': state['can_undo'], 'available': available, 'revision': revision,
         'feedback_enabled': available and mode == 'household',
@@ -418,13 +446,16 @@ def action(request, profile_id):
     if _partial(request) and data['operation'] != 'respond':
         raise ValueError('Only explicit responses use partial requests.')
     public = data['operation'] in ('event_source', 'radio', 'events', 'venue303', 'forum', 'rrr', 'rrr_detail', 'beat', 'beat_detail', 'pbs', 'tribe', 'soundsystems', 'gallery')
+    if public and data['operation'] != 'radio' and not _household_authorized(request, profile_id):
+        raise Http404
     if ('note' in data and data['operation'] != 'respond') or public and queue != 'all':
         raise ValueError('Invalid source response fields.')
     if data['operation'] in ('rrr_detail', 'beat_detail'):
         _read_event_detail(request, profile_id, data)
     elif data['operation'] in ('event_source', 'radio', 'events', 'venue303', 'forum', 'rrr', 'beat', 'pbs', 'tribe', 'soundsystems', 'gallery'):
-        seeds = {c.key: c for c in sources.household_candidates()
-                 if c.kind == 'artist' and c.key.startswith('musicbrainz:artist:')}
+        seeds = ({c.key: c for c in sources.household_candidates()
+                  if c.kind == 'artist' and c.key.startswith('musicbrainz:artist:')}
+                 if _household_authorized(request, profile_id) else {})
         if (data['mode'] != 'household' or data['choice']
                 or (data['operation'] == 'radio' and (data['key'] not in seeds or not data['radio_mode']))
                 or (data['operation'] in ('event_source', 'events', 'venue303', 'forum', 'rrr', 'beat', 'pbs', 'tribe', 'soundsystems', 'gallery') and (data['key'] or data['radio_mode']))):

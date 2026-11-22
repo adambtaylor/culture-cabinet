@@ -1,6 +1,6 @@
 {% extends 'provider_base.html' %}
 {% block title %}Across your Cabinet{% endblock %}
-{% block navigation %}<nav aria-label="Cabinet"><a href="{% url 'catalogue' %}">Catalogue &amp; responses</a> · <a href="{% url 'discovery' %}">Music &amp; event discovery</a> · <a href="{% url 'profiles' %}">Profiles</a></nav>{% endblock %}
+{% block navigation %}<nav aria-label="Cabinet">{% if household_authorized %}<a href="{% url 'catalogue' %}">Catalogue &amp; responses</a> · {% endif %}<a href="{% url 'discovery' %}">Music &amp; event discovery</a> · <a href="{% url 'profiles' %}">Profiles</a></nav>{% endblock %}
 {% block content %}
 <p class="eyebrow">{{ selected_profile.label }} · Current discovery</p>
 <h1>Across your Cabinet</h1>
@@ -12,13 +12,13 @@
 <section class="paper-panel" aria-labelledby="seeds-heading">
   <h2 id="seeds-heading">Your independent starting points</h2>
   <p>Up to five catalogue seeds and five music/event seeds are shown. Counts describe linked candidates in the current cache, not complete provider coverage.</p>
-  <ul class="lane-summary">{% for lane in lanes %}<li><strong>{% if lane.url %}<a href="{{ lane.url }}" target="_blank" rel="noopener noreferrer" referrerpolicy="no-referrer">{{ lane.title }}</a>{% else %}{{ lane.title }}{% endif %}</strong> · {{ lane.choice }} · {{ lane.source }} · {{ lane.count }} linked candidates</li>{% empty %}<li>No positive responses yet. Use Catalogue &amp; responses or Music &amp; event discovery to tell Cabinet what you enjoyed or are interested in.</li>{% endfor %}</ul>
+  <ul class="lane-summary">{% for lane in lanes %}<li><strong>{% if lane.url %}<a href="{{ lane.url }}" target="_blank" rel="noopener noreferrer" referrerpolicy="no-referrer">{{ lane.title }}</a>{% else %}{{ lane.title }}{% endif %}</strong> · {{ lane.choice }} · {{ lane.source }} · {{ lane.count }} linked candidates</li>{% empty %}<li>{% if household_authorized %}No positive responses yet. Use Catalogue &amp; responses or Music &amp; event discovery to tell Cabinet what you enjoyed or are interested in.{% else %}No cached response lanes are available for this profile.{% endif %}</li>{% endfor %}</ul>
   <p>Connections across media: verified adaptation and shared-theme links are not connected to these live rounds yet. Items appearing together are not evidence that they are related. <a href="{% url 'cross_media_sample' %}">Explore the separately labelled research samples</a>.</p>
 </section>
 {% for section in sections %}
 <section aria-labelledby="{{ section.id }}">
   <h2 id="{{ section.id }}">{{ section.title }}</h2>
-  <p><a href="{% url section.action %}">Explore and respond in {% if section.action == 'catalogue' %}the catalogue{% else %}music &amp; events{% endif %}</a></p>
+  {% if household_authorized %}<p><a href="{% url section.action %}">Explore and respond in {% if section.action == 'catalogue' %}the catalogue{% else %}music &amp; events{% endif %}</a></p>{% endif %}
   <div class="provider-grid">
   {% for card in section.cards %}<article class="paper-panel provider-card">
     {% if card.classification %}<p class="eyebrow">{{ card.classification }}</p>{% endif %}
@@ -29,6 +29,7 @@
     {% if card.venue %}<p>{{ card.venue }}</p>{% endif %}
     {% if card.gallery_event %}{% include 'cabinet/gallery_detail.html' with event=card.gallery_event %}{% endif %}
     {% if card.rrr_event %}{% include 'cabinet/rrr_detail.html' with event=card.rrr_event %}{% endif %}
+    {% if card.artwork_label %}<p>{{ card.artwork_label }}.</p>{% endif %}
     {% if card.availability %}<p>{{ card.availability }}</p>{% endif %}
     <p class="source-meta">{{ card.source }} · {{ card.provenance }}<br>{{ card.freshness }}<br>Retrieved: {{ card.retrieved_at|default_if_none:'unknown' }}</p>
     <p><a href="{{ card.url }}" target="_blank" rel="noopener noreferrer" referrerpolicy="no-referrer">Dive deeper: {{ card.title }} on {{ card.source }}</a></p>
@@ -37,7 +38,7 @@
 </section>
 {% endfor %}
 {% if gallery_brief_note %}<p>{{ gallery_brief_note }}</p>{% endif %}
-{% for check in gallery_source_checks %}<p class="source-meta">{{ check.source }} · {{ check.status }}{% if check.stage %} · {{ check.stage }}{% endif %} · Checked {{ check.checked_at|default:'unknown' }}</p>{% endfor %}
+{% for check in gallery_source_checks %}<p class="source-meta">{{ check.source }} · {{ check.status }}{% if check.stage %} · {{ check.stage }}{% endif %} · Checked {{ check.checked_at|default:'unknown' }}{% if check.source_url %} · <a href="{{ check.source_url }}" target="_blank" rel="noopener noreferrer">Source</a>{% endif %}</p>{% endfor %}
 {% include 'cabinet/gallery_offers.html' %}
 <section aria-labelledby="coverage-heading">
   <h2 id="coverage-heading">What is available now</h2>
@@ -45,10 +46,10 @@
   {% for source in coverage %}<p><strong>{{ source.name }} · {{ source.status }}</strong><br>{{ source.detail }}</p>{% endfor %}
   <h3>Recent public requests in this session</h3>
   {% for result in public_results %}<p><strong>{{ result.source }} · {{ result.outcome.status }}</strong> · {{ result.at }}<br>{{ result.outcome.message }}</p>{% empty %}<p>No current public result in this session. A request may not have been made, or its temporary result has expired.</p>{% endfor %}
-  <details><summary>Connector readiness and coverage gaps</summary>
+  {% if household_authorized %}<details><summary>Connector readiness and coverage gaps</summary>
     {% for source in sources %}<p><strong>{{ source.name }} · {{ source.status }}</strong><br>{{ source.detail }}</p>{% endfor %}
     <p>Gallery coverage is limited to bounded reads of named public sources; wider gallery, community and regional coverage remains partial. Ticket availability is unverified; a future event date does not establish that tickets are on sale. Past listings are excluded from these suggestions.</p>
-  </details>
+  </details>{% else %}<p>Source reads are unavailable for this profile. Cached outcomes and original card links remain visible above.</p>{% endif %}
   <p class="source-meta">Catalogue history revision: {{ intake_revision|default_if_none:'no active durable run' }} · Music/event history revision: {{ discovery_revision|default_if_none:'no household responses' }}.</p>
 </section>
 {% endblock %}

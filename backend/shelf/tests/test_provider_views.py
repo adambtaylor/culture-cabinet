@@ -81,6 +81,49 @@ class ProviderViewsTests(ProviderFixture, TestCase):
         self.client.logout()
         self.assertEqual(self.client.get('/profiles/1/').status_code, 302)
 
+    def test_personal_profile_cannot_start_provider_acquisition(self):
+        personal = Profile.objects.create(kind='personal', owner=self.owner, label='Private', active=True)
+        Grant.objects.create(user=self.owner, profile=personal, can_view=True, can_select=True, can_mutate=True)
+        self.assertEqual(self.client.post('/profiles/select/', {'profile_id': personal.pk}).status_code, 302)
+        page = self.client.get(f'/profiles/{personal.pk}/')
+        self.assertEqual(page.status_code, 200)
+        fields = {'action': 'search', 'revision': page.context['revision'], 'nonce': page.context['nonce'],
+                  'medium': 'movie', 'query': 'fiction'}
+        with patch.object(catalogue, '_request', side_effect=AssertionError('credential path opened')) as send, \
+                patch('shelf.provider_views.durable.upgrade', side_effect=AssertionError('work reserved')) as reserve:
+            response = self.client.post(f'/profiles/{personal.pk}/catalogue/action/', fields)
+        self.assertEqual(response.status_code, 404)
+        send.assert_not_called()
+        reserve.assert_not_called()
+
+    def test_personal_profile_refresh_denies_before_hydration_or_run_mutation(self):
+        personal = Profile.objects.create(kind='personal', owner=self.owner, label='Private', active=True)
+        Grant.objects.create(user=self.owner, profile=personal, can_view=True, can_select=True, can_mutate=True)
+        self.client.post('/profiles/select/', {'profile_id': personal.pk})
+        from shelf import durable_intake
+        run = durable_intake.new_run(self.owner, personal.pk, revision=4, nonce='personal-refresh-nonce')
+        run.receipts = {'existing': 'receipt-digest'}
+        run.save(update_fields=['receipts'])
+        state = intake.new_state(self.owner.pk, personal.pk)
+        state.update(run_id=str(run.pk), revision=run.revision, nonce=run.nonce)
+        session = self.client.session
+        session[intake.SESSION_KEY] = state
+        session.save()
+        before = (run.revision, run.nonce, dict(run.receipts))
+        for malformed in (False, True):
+            data = {'action': 'refresh', 'revision': run.revision, 'nonce': run.nonce}
+            if malformed:
+                data['revision'] = 'not-an-integer'
+            with patch('shelf.provider_views._state', side_effect=AssertionError('state must not be loaded')), \
+                    patch('shelf.provider_views.durable.hydrate', side_effect=AssertionError('hydration must not run')), \
+                    patch('shelf.provider_views.durable.upgrade', side_effect=AssertionError('reservation must not run')), \
+                    patch.object(catalogue, 'initial_deck', side_effect=AssertionError('external acquisition must not run')) as external:
+                response = self.client.post(f'/profiles/{personal.pk}/catalogue/action/', data)
+            self.assertEqual(response.status_code, 404)
+            external.assert_not_called()
+        run.refresh_from_db()
+        self.assertEqual((run.revision, run.nonce, run.receipts), before)
+
     def test_csrf_required_and_no_get_mutations(self):
         client = Client(enforce_csrf_checks=True)
         client.force_login(self.owner)

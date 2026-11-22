@@ -160,6 +160,14 @@ def apply(request, profile_id, fields, catalog=()):
         raise ValueError('Invalid authored discovery form.')
     digest = revision(fields)
     with transaction.atomic():
+        if action in ('seed_authorized_defaults', 'refresh', 'shortlist_add'):
+            from shelf.legacy_authority import legacy_owner_granted
+            if not legacy_owner_granted(request.user.pk, profile_id):
+                raise Conflict('Household discovery catalog is unavailable for this profile.')
+        if action == 'seed_authorized_defaults':
+            from shelf.legacy_authority import legacy_owner_granted
+            if mode not in ('household', 'sample') or not legacy_owner_granted(request.user.pk, profile_id):
+                raise Conflict('Household topic packet is unavailable for this profile.')
         state = owned(request, profile_id, mode)
         if state is None:
             if fields['revision'] != 0 or nonce != initial_nonce(request.user.pk, profile_id, mode):
@@ -207,6 +215,10 @@ def apply(request, profile_id, fields, catalog=()):
                 data['shortlist'].append(snapshot)
         else:
             data['shortlist'] = [row for row in data['shortlist'] if row['key'] != fields.get('identity')]
+        if action in ('seed_authorized_defaults', 'refresh', 'shortlist_add'):
+            from shelf.legacy_authority import legacy_owner_granted
+            if not legacy_owner_granted(request.user.pk, profile_id):
+                raise Conflict('Household discovery catalog is unavailable for this profile.')
         public_authorized(request, profile_id)
         # Keep the fixed operator packet receipt so later cleanup cannot
         # accidentally turn a replay into re-authoring an owner-removed seed.
@@ -243,6 +255,9 @@ def authorize_defaults_operator(actor, profile_id, session_guard):
         current = get_user_model().objects.filter(pk=1, username='demo-curator', is_active=True).first()
         if current is None or not _profiles(current, 'select').filter(pk=profile_id).exists():
             raise ValueError('Current owner selection authority is required.')
+        from shelf.legacy_authority import legacy_owner_granted
+        if not legacy_owner_granted(actor.pk, profile_id):
+            raise ValueError('Current legacy household authority is required.')
 
     digest = revision(DEFAULT_SEEDS)
     receipt_key = 'operator-defaults:' + digest

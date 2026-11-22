@@ -8,6 +8,7 @@ from django.views.decorators.http import require_POST
 from shelf import event_plans, real_outings, google_handoff
 from shelf.calendar_handoff import CalendarHandoff, instant, zone
 from shelf.event_plan_views import _form, _guard
+from shelf.provider_views import _profile
 
 
 class HoldActionForm(forms.Form):
@@ -19,8 +20,9 @@ class HoldActionForm(forms.Form):
 
 
 def render_detail(request,plan):
+    selected_profile = _profile(request, plan.profile_id, 'select')
     calendar=CalendarHandoff.from_dict(plan.data['calendar'])
-    response=render(request,'cabinet/real_outing.html',{'plan':plan,'selected_profile':plan.profile,'calendar':calendar,
+    response=render(request,'cabinet/real_outing.html',{'plan':plan,'selected_profile':selected_profile,'calendar':calendar,
         'occupied_start':instant(calendar.event.start).astimezone(zone(calendar.event.timezone)),
         'occupied_end':instant(calendar.event.end).astimezone(zone(calendar.event.timezone)),
         'source':plan.data['source'],'preview_digest':event_plans.preview_digest(plan),

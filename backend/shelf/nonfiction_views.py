@@ -147,17 +147,22 @@ def context(request, profile_id, mode):
     ready = storage.available()
     state = storage.owned(request, profile_id, mode) if ready else None
     data = state.data if state else storage.empty_data()
-    clusters = discovery_catalog(request, profile_id, mode)
+    from shelf.legacy_authority import legacy_owner_granted
+    household_authorized = legacy_owner_granted(request.user.pk, profile_id)
+    seeds = (data['seeds'] if household_authorized else [seed for seed in data['seeds']
+             if seed['id'] not in {row['id'] for row in storage.DEFAULT_SEEDS}])
+    clusters = discovery_catalog(request, profile_id, mode) if household_authorized else []
     shortlist = [display_episode(row) for row in data['shortlist']]
     selected = {row['key'] for row in shortlist}
     for cluster in clusters:
         for episode in cluster['episodes']:
             episode['selected'] = episode['key'] in selected
     return {'selected_profile': profile, 'mode': mode, 'ready': ready, 'clusters': clusters,
-        'seeds': data['seeds'], 'shortlist': shortlist,
+        'seeds': seeds, 'shortlist': shortlist,
         'revision': state.revision if state else 0,
         'nonce': state.nonce if state else storage.initial_nonce(request.user.pk, profile_id, mode),
         'default_authorization': storage.DEFAULT_AUTHORIZATION,
+        'household_authorized': household_authorized,
         'temporary_notice': 'Authored discovery requests and this shortlist are stored locally until you remove them. They are separate from ratings and likes.'}
 
 
@@ -176,9 +181,15 @@ def action(request, profile_id):
     data = fields(request, ActionForm)
     if data is None:
         return HttpResponse('Invalid bounded discovery form.', status=400, content_type='text/plain')
+    if data['action'] in ('seed_authorized_defaults', 'refresh', 'shortlist_add'):
+        from shelf.legacy_authority import legacy_owner_granted
+        if not legacy_owner_granted(request.user.pk, profile_id):
+            return HttpResponse('Household discovery catalog is unavailable for this profile.\n', status=404,
+                                content_type='text/plain')
     if not storage.available():
         raise Conflict('Discovery storage is unavailable.')
-    clusters = discovery_catalog(request, profile_id, data['mode'])
+    clusters = (discovery_catalog(request, profile_id, data['mode'])
+                if data['action'] in ('refresh', 'shortlist_add') else [])
     items = {row['key']: row for cluster in clusters for row in cluster['episodes']}
     if data['action'] == 'refresh':
         # State reserves the nonce atomically before this explicit, bounded read.

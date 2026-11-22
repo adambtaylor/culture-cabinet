@@ -9,7 +9,7 @@ from django.utils import timezone
 
 from shelf import obtain_preview as preview
 from shelf.acquisition_backend import PrivateSearch
-from shelf.models import AcquisitionJob, ObtainSelection
+from shelf.models import AcquisitionJob, Grant, ObtainPreview, ObtainSelection, Profile, SavedItem
 from shelf.tests.test_saved import SavedFixture
 
 
@@ -107,6 +107,25 @@ class ObtainUITests(SavedFixture, TestCase):
         self.backend.enqueue.assert_not_called()
         self.assertEqual(AcquisitionJob.objects.count(), 0)
         self.assertEqual(self.client.get(f'{self.base}{self.saved.pk}/obtain/').status_code, 200)
+
+    def test_personal_saved_item_shows_search_unavailable_without_form_and_post_creates_no_preview(self):
+        profile = Profile.objects.create(kind='personal', owner=self.owner, label='Personal', active=True)
+        Grant.objects.create(user=self.owner, profile=profile, can_view=True, can_select=True)
+        saved = SavedItem.objects.create(actor=self.owner, profile=profile, provider='tmdb', medium='movie',
+            source_id=987, list_kind='watch', title='Personal Fiction Film',
+            url='https://fiction.invalid/film', fetched_at=timezone.now())
+        session = self.client.session
+        session['selected_profile_id'] = profile.pk
+        session.save()
+        base = f'/profiles/{profile.pk}/saved/{saved.pk}/preview/'
+        page = self.client.get(base)
+        self.assertEqual(page.status_code, 200)
+        self.assertContains(page, 'Personal Fiction Film')
+        self.assertContains(page, 'Listing search is unavailable for this profile')
+        self.assertNotContains(page, 'Search listings')
+        self.assertNotIn(base + 'search/', Page(page).links)
+        self.assertEqual(self.client.post(base + 'search/', {'season': '1', 'episode': '1'}).status_code, 404)
+        self.assertEqual(ObtainPreview.objects.count(), 0)
 
     def test_rendered_csrf_flow_exact_hidden_choice_and_disabled_job(self):
         # Submit actual rendered forms through CSRF middleware, including masked tokens.

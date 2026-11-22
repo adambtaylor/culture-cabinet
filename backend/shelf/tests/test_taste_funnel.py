@@ -127,6 +127,60 @@ class TasteFunnelHTTPTests(TestCase):
         self.assertEqual(self.page().context['snapshot'], page.context['snapshot'])
         self.assertEqual(self.client.get(self.action_url).status_code, 405)
 
+    def test_personal_profile_does_not_receive_cached_household_source_report(self):
+        personal = Profile.objects.create(pk=2, kind='personal', owner=self.actor, active=True, label='Private')
+        Grant.objects.create(user=self.actor, profile=personal, can_view=True, can_select=True, can_mutate=True)
+        session = self.client.session
+        report = [{'name': 'Household venue report'}]
+        session['funnel_source_results'] = report
+        session['selected_profile_id'] = personal.pk
+        session.save()
+        page = self.client.get('/profiles/2/taste/')
+        self.assertEqual(page.status_code, 200)
+        self.assertEqual(page.context['source_results'], [])
+        token = 'a' * 32
+        self.client.cookies[settings.CSRF_COOKIE_NAME] = token
+        fields = {'revision': page.context['revision'], 'nonce': page.context['nonce'],
+                  'confirmed': 'on', 'csrfmiddlewaretoken': token}
+        with patch.object(catalogue, 'initial_deck') as initial, patch.object(sources, 'fetch_public') as public:
+            response = self.client.post('/profiles/2/taste/fetch/', fields)
+            initial.assert_not_called()
+            public.assert_not_called()
+        self.assertEqual(response.status_code, 404)
+        self.assertFalse(DiscoveryState.objects.exists())
+        session = self.client.session
+        session['selected_profile_id'] = 1
+        session.save()
+        self.assertEqual(self.page().context['source_results'], report)
+
+    def test_source_and_synthesis_controls_match_profile_authority(self):
+        page = self.page()
+        self.assertContains(page, 'Gather current candidates')
+        self.post('rate', 'tmdb:movie:100', basis='interest', value=4)
+        self.assertContains(self.page(), 'Synergize</button>')
+        personal = Profile.objects.create(pk=2, kind='personal', owner=self.actor, active=True, label='Private')
+        Grant.objects.create(user=self.actor, profile=personal, can_view=True, can_select=True, can_mutate=True)
+        session = self.client.session
+        session['selected_profile_id'] = personal.pk
+        state = intake.new_state(self.actor.pk, personal.pk)
+        intake.merge(state, self.provider_cards)
+        state['started'] = True
+        session[intake.SESSION_KEY] = state
+        session.save()
+        page = self.client.get('/profiles/2/taste/')
+        self.assertEqual(page.status_code, 200)
+        self.assertNotContains(page, 'Gather current candidates')
+        self.assertNotContains(page, 'Synergize</button>')
+        self.assertContains(page, 'authorized legacy owner profile')
+        fields = self.fields('rate', 'tmdb:movie:100', page=page, client=self.client,
+                             basis='interest', value=5)
+        self.client.post('/profiles/2/taste/action/', fields)
+        page = self.client.get('/profiles/2/taste/')
+        self.assertEqual(page.status_code, 200)
+        self.assertNotContains(page, 'Gather current candidates')
+        self.assertNotContains(page, 'Synergize</button>')
+        self.assertContains(page, 'Synthetic movie 100')
+
     def test_numeric_one_to_five_edit_clear_and_experience_are_real_posts(self):
         key = 'tmdb:movie:100'
         for basis in ('interest', 'enjoyment'):

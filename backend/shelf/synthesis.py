@@ -73,6 +73,10 @@ def signal_value(basis, value):
 
 
 def snapshot(actor, profile_id):
+    from shelf.legacy_authority import legacy_owner_granted
+    if ((actor.pk, profile_id) != (1, 1)
+            or not legacy_owner_granted(actor.pk, profile_id)):
+        raise Blocked('Current legacy owner household and grant required.')
     from shelf.taste_funnel import synthesis_snapshot
     value = bounded(synthesis_snapshot(actor, profile_id))
     fields = {'actor_id', 'profile_id', 'mode', 'revision_map', 'signals', 'input_digest'}
@@ -111,8 +115,15 @@ def request(request, profile_id, expected_digest, *, purpose='manual'):
         raise Blocked('Supported explicit synthesis intent required.')
     if request.method != 'POST':
         raise Blocked('Explicit Synergize action required.')
+    if (request.user.pk, profile_id) != (1, 1):
+        from django.http import Http404
+        raise Http404
     with transaction.atomic():
         public_authorized(request, profile_id)
+        from shelf.legacy_authority import legacy_owner_granted
+        if ((request.user.pk, profile_id) != (1, 1)
+                or not legacy_owner_granted(request.user.pk, profile_id)):
+            raise Blocked('Current legacy owner household and grant required.')
         current = snapshot(request.user, profile_id)
         if current['input_digest'] != expected_digest:
             raise Conflict('Taste signals changed. Review before requesting synthesis.')
@@ -161,7 +172,9 @@ def operator_run(actor, profile_id, run_id, session_guard):
     if not callable(session_guard):
         raise Blocked('A current bounded operator session is required.')
     session_guard()
-    if actor.pk != 1 or profile_id != 1 or not _profiles(actor, 'select').filter(pk=profile_id).exists():
+    from shelf.legacy_authority import legacy_owner_granted
+    if ((actor.pk, profile_id) != (1, 1) or not legacy_owner_granted(actor.pk, profile_id)
+            or not _profiles(actor, 'select').filter(pk=profile_id).exists()):
         raise Blocked('Existing owner and current profile grant required.')
     return SynthesisRun.objects.select_for_update().get(pk=run_id, actor=actor,
         profile_id=profile_id, mode='household')

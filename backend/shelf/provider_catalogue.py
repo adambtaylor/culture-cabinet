@@ -368,7 +368,13 @@ def _send(command, provider, secret):
 
 def _request(operation, value=None, *, actor_id, profile_id):
     provider, command = _command(operation, value)
-    if type(actor_id) is not int or type(profile_id) is not int or (actor_id, profile_id) != (1, 1):
+    from shelf.legacy_authority import legacy_owner_granted
+    # The installed provider credential is permanently bound to the legacy
+    # household identity. Reject account substitutions before opening the
+    # credential store, even when a stale or foreign grant exists.
+    if ((type(actor_id) is not int or type(profile_id) is not int
+            or (actor_id, profile_id) != (1, 1))
+            or not legacy_owner_granted(actor_id, profile_id)):
         raise CatalogueError(Status.AUTH)
     store = record = None
     try:
@@ -380,7 +386,7 @@ def _request(operation, value=None, *, actor_id, profile_id):
         credential_store.lock_store(store)
         record = credential_store.read_record(store)
         credential_store.validate_metadata(record.metadata, now=credential_store.utc_now(), provider=provider)
-        if (record.metadata.binding.actor_id, record.metadata.binding.profile_id) != ('1', '1'):
+        if (record.metadata.binding.actor_id, record.metadata.binding.profile_id) != (str(actor_id), str(profile_id)):
             raise CatalogueError(Status.METADATA)
         credential_store._secret_text(record.secret)
         # Release the store lock and all descriptors before bounded HTTP I/O.

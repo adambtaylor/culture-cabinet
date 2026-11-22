@@ -165,6 +165,16 @@ class AuthoredDiscoveryTests(TestCase):
             self.operator()
         self.assertIsNone(self.state())
 
+    def test_operator_rejects_personal_exact_id_collision(self):
+        self.actor.username = 'demo-curator'
+        self.actor.save()
+        self.profile.kind = 'personal'
+        self.profile.owner = self.actor
+        self.profile.save()
+        with self.assertRaisesRegex(ValueError, 'legacy household authority'):
+            self.operator()
+        self.assertEqual(AuthoredDiscoveryState.objects.count(), 0)
+
     def test_operator_idempotence_preserves_custom_seed_and_owner_removal(self):
         custom = dict(storage.DEFAULT_SEEDS[0], id='custom', topic='SYNTHETIC custom topic')
         self.apply('seed_add', seed=custom)

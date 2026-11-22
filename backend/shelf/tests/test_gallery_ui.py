@@ -37,8 +37,9 @@ class GalleryUITests(TestCase):
                            for name in ('artwork', 'shipping', 'framing', 'fees', 'tax', 'installation', 'fx')}}
         self.offer['components']['artwork'] = {
             'status': 'known', 'amount': '1100.00', 'source_basis': 'Listed item <script>CANARY</script>'}
-        self.fetch = self.enterContext(patch.object(sources, 'fetch_public', return_value=GalleryOutcome(
-            'ready', (self.event,), 'Synthetic bounded public read', offers=(self.offer,))))
+        self.fetch = self.enterContext(patch.object(sources, 'fetch_public', return_value=GalleryOutcome('ready',
+            (self.event,), 'Synthetic bounded public read', offers=(self.offer,), source_checks=({'source': 'Synthetic check',
+            'status': 'checked', 'source_url': 'https://source.example/check'},))))
         self.enterContext(patch('socket.create_connection', side_effect=AssertionError('Network forbidden')))
 
     def page(self):
@@ -54,6 +55,12 @@ class GalleryUITests(TestCase):
     def read(self):
         self.assertEqual(self.client.post(self.action, self.fields()).status_code, 302)
         return self.page()
+
+    def budget_event(self, price):
+        return sources.Candidate('synthetic:event:' + price, 'Synthetic priced event ' + price,
+            'event', 'Synthetic gallery', 'live-automated', 1, self.now.isoformat(),
+            url='https://source.example/event', category='gallery', artwork_price=price,
+            artwork_currency='AUD', price_per='individual artwork')
 
     def test_get_is_local_and_explicit_read_replays_without_new_io(self):
         fields = self.fields()
@@ -76,6 +83,31 @@ class GalleryUITests(TestCase):
         self.assertNotContains(response, self.offer['title'])
         self.assertNotContains(response, 'Your authorized art brief')
 
+    def test_owner_authority_is_resolved_once_for_many_display_cards(self):
+        counts = []
+        for size in (1, 11):
+            cards = [self.budget_event(str(i)) for i in range(size)]
+            with patch.object(discovery_views, 'candidates', return_value=cards), \
+                 patch.object(discovery_views, '_household_authorized', wraps=discovery_views._household_authorized) as authority:
+                page = self.client.get(self.url)
+                self.assertEqual(page.status_code, 200, page.content)
+                self.assertEqual(len(page.context['events']), size)
+                for card in cards:
+                    for fact in (card.title, card.url, f'AUD {card.artwork_price} per individual artwork'):
+                        self.assertContains(page, fact)
+                counts.append(authority.call_count)
+            if size == 1:
+                self.assertTrue(page.context['household_authorized'])
+                self.assertContains(page, 'within budget')
+                self.profile.kind, self.profile.owner = Profile.Kind.PERSONAL, self.actor
+                self.profile.save(update_fields=['kind', 'owner'])
+                self.grant.delete()
+                Grant.objects.create(user=self.actor, profile=self.profile, can_view=True, can_select=True)
+            else:
+                self.assertFalse(page.context['household_authorized'])
+                self.assertNotContains(page, 'within budget')
+        self.assertEqual(counts, [2, 2])
+
     def test_opening_and_run_have_distinct_precision_and_unknown_end(self):
         response = self.read()
         for text in ('Gallery opening:', '2026-11-06', 'Exhibition run:', '2026-11-07',
@@ -97,6 +129,10 @@ class GalleryUITests(TestCase):
         self.assertNotContains(response, '<script>CANARY</script>')
 
     def test_exact_ceiling_is_unqualified_even_with_confirmed_stock_and_costs(self):
+        self.fetch.return_value = GalleryOutcome('ready', tuple(self.budget_event(price)
+            for price in ('2499.99', '2500')), 'Synthetic budget read', offers=(self.offer,),
+            source_checks=({'source': 'Synthetic check', 'status': 'checked',
+                            'source_url': 'https://source.example/check'},))
         self.offer['availability'] = 'available'
         self.offer['components'] = {name: {'status': 'included', 'source_basis': 'Explicitly included'}
                                     for name in self.offer['components']}
@@ -105,7 +141,18 @@ class GalleryUITests(TestCase):
         response = self.read()
         self.assertContains(response, 'Unqualified purchase lead')
         self.assertContains(response, 'Observed complete total: AUD 2500.00')
+        self.assertContains(response, 'exactly AUD 2500 fails')
         self.assertNotContains(response, 'Current cost and stock screening: strictly below')
+        self.offer['components']['artwork'].update(status='known', amount='2499.99', source_basis='Listed item price')
+        discovery = self.read()
+        recommendations = self.client.get('/profiles/1/recommendations/')
+        for response in (discovery, recommendations):
+            self.assertContains(response, 'Current stated all-in costs are below AUD 2500')
+        self.assertContains(response, 'href="https://source.example/check"')
+        self.assertContains(response, f'href="{self.offer["offer_url"]}"')
+        for text in ('AUD 2499.99 per individual artwork — within budget',
+                     'AUD 2500 per individual artwork — outside budget'):
+            self.assertContains(discovery, text)
 
     def test_recommendations_reuse_gallery_detail_and_offer_labels_without_fetch(self):
         self.read()
@@ -115,7 +162,65 @@ class GalleryUITests(TestCase):
         self.assertContains(response, 'Gallery opening:')
         self.assertContains(response, 'Artwork sale leads')
         self.assertContains(response, 'Unqualified purchase lead')
+        discovery_views.PUBLIC_CACHE.set(f'1:1:{self.client.session.session_key}', {'check': {'at': self.now,
+            'outcome': GalleryOutcome('ready', (), 'Check only', source_checks=({'source': 'Check', 'status': 'checked',
+            'source_url': 'https://source.example/check'},))}})
+        self.assertContains(self.client.get('/profiles/1/recommendations/'), 'href="https://source.example/check"')
         self.fetch.assert_not_called()
+
+    def test_personal_profile_shows_only_its_session_gallery_observations(self):
+        self.profile.kind, self.profile.owner = Profile.Kind.PERSONAL, self.actor
+        self.profile.save()
+        self.offer.update(title='Synthetic personal offer', medium='Print')
+        check = {'source': 'Synthetic seller source', 'status': 'checked', 'stage': 'offer',
+                 'checked_at': self.now.isoformat(), 'source_url': 'https://source.example/check'}
+        discovery_views.PUBLIC_CACHE.set(f'1:1:{self.client.session.session_key}', {
+            'synthetic': {'at': self.now, 'outcome': GalleryOutcome(
+                'ready', (self.event, self.budget_event('2499.99'), self.budget_event('2500')),
+                'Synthetic observation', offers=(self.offer,), source_checks=(check,))}})
+        for url in (self.url, '/profiles/1/recommendations/'):
+            with self.subTest(url=url):
+                response = self.client.get(url)
+                self.assertEqual(response.status_code, 200)
+                for text in ('Synthetic personal offer', 'Synthetic artist', 'Synthetic seller',
+                             'unconfirmed', '2026-10-31T03:00:00+00:00', 'Listed item price',
+                             'Synthetic seller source', self.offer['offer_url'],
+                             'href="https://source.example/check"'):
+                    self.assertContains(response, text)
+                if url == self.url:
+                    for text in ('AUD 2499.99', 'AUD 2500', 'per individual artwork',
+                                 'https://source.example/event', self.event.source_url):
+                        self.assertContains(response, text)
+                for text in ('Your authorized art brief', 'Looking question:', 'AUD 2,500', 'Unqualified purchase lead',
+                             'within budget', 'outside budget'):
+                    self.assertNotContains(response, text)
+        self.fetch.assert_not_called()
+
+    def test_event_price_budget_and_source_units_follow_profile_authority(self):
+        def priced(key, title, category, price, unit=None, gallery=False):
+            fields = dict(url=f'https://source.example/{key.rsplit(":", 1)[-1]}', category=category,
+                artwork_price=price, artwork_currency='AUD', price_per=unit, **({'source_url': f'https://source.example/{key.rsplit(":", 1)[-1]}'} if gallery else {}))
+            cls = GalleryEvent if gallery else sources.Candidate
+            return cls(key, title, 'event', 'Synthetic priced source', 'live-automated', 1, self.now.isoformat(), **fields)
+        cards = (priced('synthetic:event:community-below', 'Synthetic community below budget', 'community', '2499.99', 'individual artwork'),
+            priced('synthetic:event:community-ceiling', 'Synthetic community at ceiling', 'community', '2500', 'individual artwork'),
+            priced('synthetic:event:community-unspecified', 'Synthetic community unspecified unit', 'community', '2499.99'))
+        self.fetch.return_value = GalleryOutcome('ready', cards, 'Synthetic priced event read')
+        self.assertEqual(self.client.post(self.action, self.fields()).status_code, 302)
+        owner_pages = (self.client.get(self.url), self.client.get('/profiles/1/recommendations/'))
+        for page in owner_pages:
+            for text in ('AUD 2499.99 per individual artwork — within budget', 'AUD 2500 per individual artwork — outside budget'): self.assertContains(page, text)
+            self.assertContains(page, 'Listed price AUD 2499.99 (unit unspecified) — source-listed; extras and availability unknown')
+            self.assertNotContains(page, 'Listed price AUD 2499.99 (unit unspecified) — within budget')
+            self.assertNotContains(page, 'Listed price AUD 2499.99 (unit unspecified) — outside budget')
+        self.profile.kind, self.profile.owner = Profile.Kind.PERSONAL, self.actor
+        self.profile.save(update_fields=['kind', 'owner'])
+        personal_pages = (self.client.get(self.url), self.client.get('/profiles/1/recommendations/'))
+        for page in personal_pages:
+            for text in ('https://source.example/community-below', 'https://source.example/community-ceiling', 'https://source.example/community-unspecified', 'AUD 2499.99', 'AUD 2500', 'per individual artwork', 'unit unspecified'): self.assertContains(page, text)
+            self.assertContains(page, 'Listed price AUD 2499.99 (unit unspecified) — source-listed; extras and availability unknown')
+            for text in ('within budget', 'outside budget', 'per item'): self.assertNotContains(page, text)
+        self.fetch.assert_called_once()
 
     def test_other_profile_cannot_see_owner_cache_or_personal_brief(self):
         self.read()

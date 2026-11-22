@@ -8,7 +8,9 @@ from pathlib import Path
 import importlib.util
 from unittest.mock import patch
 
-from django.test import TestCase, override_settings
+from django.db import connection
+from django.db.migrations.executor import MigrationExecutor
+from django.test import TestCase, TransactionTestCase, override_settings
 from shelf import google_handoff, real_outings, event_plans
 from shelf.acquisition_contract import Blocked
 from shelf.calendar_handoff import CalendarHandoff
@@ -180,3 +182,23 @@ class RealOutingTests(TestCase):
         with self.assertRaises(ValueError):real_outings.record_operator(actor=self.actor,profile_id=1,
             plan_id=plan.pk,kind='calendar',key=packet['key'],evidence=readback(packet),session_guard=guard)
         plan.refresh_from_db();self.assertEqual(plan.data['handoffs']['calendar']['state'],'reserved_unknown')
+
+
+@override_settings(ROOT_URLCONF='cabinet.provider_urls', ALLOWED_HOSTS=['testserver'])
+class RealOutingSchema0031Tests(TransactionTestCase):
+    form = RealOutingTests.form
+    read_detail = RealOutingTests.read_detail
+
+    def test_owned_real_hold_detail_works_without_profile_owner_column(self):
+        from shelf.tests.test_date_night import EveningUITests
+        current = [('shelf', '0032_account_personal_profile')]
+        old = [('shelf', '0031_beta_problem_reports')]
+        EveningUITests.setUp(self)
+        plan = RealOutingTests.save_hold(self)
+        MigrationExecutor(connection).migrate(old)
+        try:
+            response = self.client.get(f'/profiles/1/event-plans/{plan.pk}/')
+            self.assertEqual(response.status_code, 200, response.content)
+            self.assertContains(response, plan.data['source']['title'])
+        finally:
+            MigrationExecutor(connection).migrate(current)

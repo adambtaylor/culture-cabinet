@@ -17,6 +17,7 @@ urlpatterns = [
     path("logout/", views.DemoLogoutView.as_view(), name="logout"),
     path("", views.catalogue, name="catalogue"),
     path("profiles/", views.profiles, name="profiles"),
+    path("profiles/provision/", views.provision_profile, name="provision_profile"),
     path("profiles/select/", views.select_profile, name="select_profile"),
     path("profiles/<int:profile_id>/", views.profile_catalogue, name="profile_catalogue"),
     path('profiles/<int:profile_id>/feedback/<uuid:target_id>/', views.feedback_detail, name='feedback_detail'),

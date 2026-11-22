@@ -100,6 +100,8 @@ def index(request,profile_id):
         return {'card':card,'why':why,'ratings':projection['ratings'].get(card['key'],{}),
                 'saved':card['key'] in projection['saved']}
     snapshot=funnel.synthesis_snapshot(request.user,profile_id)
+    from shelf.legacy_authority import legacy_owner_granted
+    can_household_actions=legacy_owner_granted(request.user.pk,profile_id)
     jobs=[]
     if SynthesisRun._meta.db_table in connection.introspection.table_names():
         jobs=[{'run':run,'display':synthesis.status(run,snapshot['input_digest'])}
@@ -120,7 +122,9 @@ def index(request,profile_id):
         'next_responses':response_page+1 if len(historical)>response_page*24 else None,
         'projection':projection,'selection':selected,'preview':signed,
         'revision':row.revision if row else 0,'nonce':row.nonce if row else storage.initial_nonce(request.user.pk,profile_id,'household'),
-        'snapshot':snapshot,'jobs':jobs,'source_results':request.session.get('funnel_source_results',[]),
+        'snapshot':snapshot,'jobs':jobs,'source_results':request.session.get('funnel_source_results',[])
+            if discovery_views._household_authorized(request,profile_id) else [],
+        'can_gather_candidates':can_household_actions,'can_synergize':can_household_actions and bool(snapshot['signals']),
         'sources':discovery_sources.source_statuses()}))
 
 
@@ -150,6 +154,9 @@ def synergize(request,profile_id):
 def fetch_round(request,profile_id):
     data=fields(request,FetchForm)
     if data is None:return HttpResponse('Invalid source form.',status=400)
+    from shelf.legacy_authority import legacy_owner_granted
+    if not legacy_owner_granted(request.user.pk, profile_id):
+        return HttpResponse('Household source gathering is unavailable for this profile.\n',status=404)
     storage.public_authorized(request,profile_id)
     fingerprint=funnel.digest(['funnel-source-read',data])
     with transaction.atomic():
