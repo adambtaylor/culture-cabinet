@@ -23,6 +23,10 @@ def page(request, profile, **extra):
 def start(request, profile_id, item_id):
     profile = _profile(request, profile_id, 'select')
     item = saved.owned_item(request.user, profile_id, item_id)
+    try:
+        preview._search_authority(request.user, profile_id)
+    except Blocked:
+        return page(request, profile, obtain_search_unavailable=True)
     return page(request, profile, obtain_preview_available=preview.available(),
         obtain_search={'title': item.title, 'scope': saved.SCOPES[item.medium], 'is_tv': item.medium == 'tv',
                        'url': f'/profiles/{profile_id}/saved/{item_id}/preview/search/'})

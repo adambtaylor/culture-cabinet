@@ -28,6 +28,8 @@
   <p>Your persisted submission receipt appears below. Remote progress and cancellation are unavailable with add-only access.</p>
 {% elif obtain_search or obtain_preview %}
   {% include 'cabinet/obtain_preview.html' %}
+{% elif obtain_search_unavailable %}
+  <p role="status">Listing search is unavailable for this profile. Your saved item remains available in your list.</p>
 {% elif obtain_available and obtain_confirmation %}
   <p>Review this exact selection before any authorized action.</p>
   <dl class="statements">

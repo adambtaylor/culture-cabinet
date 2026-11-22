@@ -140,6 +140,14 @@ class SynthesisTests(TestCase):
         Grant.objects.create(user=self.actor, profile=personal, can_view=True, can_select=True)
         self.assertEqual(self.post(profile=2).status_code, 404)  # Foreign grant cannot defeat ownership/session scope.
         self.assertFalse(SynthesisRun.objects.exists())
+        personal_client = Client()
+        personal_client.force_login(other)
+        personal_session = personal_client.session
+        personal_session['selected_profile_id'] = 2
+        personal_session.save()
+        self.assertEqual(personal_client.post('/profiles/2/synergize/',
+            {'digest': self.current()['input_digest']}).status_code, 404)
+        self.assertEqual(SynthesisRun.objects.count(), 0)
         session = self.client.session
         session['selected_profile_id'] = 2
         session.save()
